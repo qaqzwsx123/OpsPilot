@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpsPilot · 安全可控 SQL Agent</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">✦</span><span>OpsPilot</span></div>
+      <div class="workspace"><span class="workspace-dot"></span>生产运维空间 <span class="chevron">⌄</span></div>
+      <nav>
+        <button class="nav-item active" data-page="agent"><span>◈</span> 智能查询</button>
+        <button class="nav-item" data-page="audit"><span>◷</span> 审计中心</button>
+        <button class="nav-item" data-page="skills"><span>◇</span> Skills 与 SOP</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="security-card"><span class="shield">◈</span><div><strong>安全执行已开启</strong><small>高危操作需人工审批</small></div></div>
+        <div class="user"><div class="avatar">L</div><div><strong>Lenovo</strong><small>运维管理员</small></div><span>⋮</span></div>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div><p class="eyebrow">AI OPERATIONS CONSOLE</p><h1 id="page-title">智能运维查询</h1></div>
+        <div class="header-actions"><span class="system-live"><i></i> 系统运行正常</span><button class="icon-button" title="通知">⌁</button><button class="icon-button" title="设置">⚙</button></div>
+      </header>
+
+      <section id="agent-page" class="page active-page">
+        <section class="hero">
+          <div><span class="pill">SQL WORKFLOW + AGENTIC RAG</span><h2>把运维经验，变成每个人都能安全调用的能力。</h2><p>结构化数据优先查询，知识库按需兜底。每一步都有审查、授权与审计。</p></div>
+          <div class="hero-orbit"><span class="orbit-core">AI</span><span class="orbit-dot dot-one"></span><span class="orbit-dot dot-two"></span><span class="orbit-dot dot-three"></span></div>
+        </section>
+
+        <section class="metrics">
+          <article><span class="metric-icon violet">▦</span><div><strong>13</strong><small>核心业务表</small></div><em>已接入</em></article>
+          <article><span class="metric-icon cyan">⌁</span><div><strong>700<span>+</span></strong><small>可查询指标</small></div><em>实时</em></article>
+          <article><span class="metric-icon orange">◉</span><div><strong>93<span>%</span></strong><small>查询成功率</small></div><em>评测集</em></article>
+          <article><span class="metric-icon green">◈</span><div><strong>100<span>%</span></strong><small>高危操作审批</small></div><em>安全</em></article>
+        </section>
+
+        <section class="workspace-grid">
+          <article class="query-card card">
+            <div class="card-heading"><div><p class="section-label">ASK OPSPILOT</p><h3>你想了解什么？</h3></div><span class="mode-badge">● 安全模式</span></div>
+            <div class="prompt-box"><textarea id="question" rows="4" placeholder="例如：查询华东区离线设备，并按最近更新时间排序">查询华东区离线设备</textarea><div class="prompt-footer"><span id="requester">当前身份：Lenovo / 运维管理员</span><button id="run-query" class="primary-button">运行查询 <span>↗</span></button></div></div>
+            <div class="suggestions"><span>试试：</span><button data-query="查询最近的 P1 告警">最近的 P1 告警</button><button data-query="列出未关闭的高优工单">未关闭高优工单</button><button data-query="P1 告警应该如何处理">P1 告警处置 SOP</button><button data-query="删除已关闭告警">测试高危操作</button></div>
+          </article>
+
+          <article class="trace-card card">
+            <div class="card-heading"><div><p class="section-label">LIVE TRACE</p><h3>工作流轨迹</h3></div><span id="trace-status" class="trace-status idle">等待任务</span></div>
+            <ol id="trace-list" class="trace-list">
+              <li class="muted"><span class="trace-node">1</span><div><strong>Recall</strong><small>等待查询请求</small></div></li>
+              <li class="muted"><span class="trace-node">2</span><div><strong>Writer</strong><small>生成受控 SQL</small></div></li>
+              <li class="muted"><span class="trace-node">3</span><div><strong>Reviewer & Runner</strong><small>审查、授权与执行</small></div></li>
+            </ol>
+          </article>
+        </section>
+
+        <section class="result-layout">
+          <article class="result-card card">
+            <div class="card-heading"><div><p class="section-label">EXECUTION RESULT</p><h3>查询结果</h3></div><button id="copy-sql" class="text-button" disabled>复制 SQL</button></div>
+            <div id="result-empty" class="empty-state"><div class="empty-icon">⌘</div><strong>等待一次安全查询</strong><p>查询结果、生成 SQL 与知识库来源将显示在这里。</p></div>
+            <div id="result-content" hidden>
+              <div id="result-status" class="result-status"></div>
+              <pre id="sql-code" class="sql-code"></pre>
+              <div id="table-wrap" class="table-wrap"></div>
+              <div id="rag-answer" class="rag-answer" hidden></div>
+              <div id="sources" class="sources" hidden></div>
+              <div id="approval-box" class="approval-box" hidden><div><span>⚠</span><div><strong>检测到需要审批的操作</strong><p id="approval-description"></p></div></div><button id="approve-button" class="warning-button">模拟人工审批</button></div>
+            </div>
+          </article>
+          <article class="insight-card card">
+            <div class="card-heading"><div><p class="section-label">SAFETY POLICY</p><h3>执行护栏</h3></div></div>
+            <div class="policy-list"><div><span class="policy-check">✓</span><div><strong>元数据范围约束</strong><small>只访问被召回的授权表</small></div></div><div><span class="policy-check">✓</span><div><strong>SQL 审查</strong><small>仅允许单条只读查询</small></div></div><div><span class="policy-check">✓</span><div><strong>风险分级</strong><small>写操作进入人工审批流</small></div></div><div><span class="policy-check">✓</span><div><strong>全链路审计</strong><small>保留问题、SQL 与执行轨迹</small></div></div></div>
+            <div class="context-stat"><span>Context Engineering</span><strong>Token ↓ 43%</strong><div><i></i></div></div>
+          </article>
+        </section>
+      </section>
+
+      <section id="audit-page" class="page">
+        <div class="section-intro"><span class="pill">AUDITABLE BY DEFAULT</span><h2>每次决策，都有迹可循。</h2><p>记录用户问题、执行 SQL、风险判断和最终结果，方便故障复盘与合规审计。</p></div>
+        <article class="card audit-card"><div class="card-heading"><div><p class="section-label">RECENT ACTIVITIES</p><h3>审计记录</h3></div><button id="refresh-audit" class="text-button">刷新记录</button></div><div id="audit-list" class="audit-list"></div></article>
+      </section>
+
+      <section id="skills-page" class="page">
+        <div class="section-intro"><span class="pill">REUSABLE EXPERIENCE</span><h2>让 SOP 成为 Agent 的可复用能力。</h2><p>Skill 以 Markdown 维护，新增运维能力不需要修改核心 Agent 代码。</p></div>
+        <div id="skills-list" class="skill-grid"></div>
+      </section>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
