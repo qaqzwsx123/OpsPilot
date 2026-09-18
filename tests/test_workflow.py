@@ -55,6 +55,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(result.rows), 24)
 
+    def test_viewer_cannot_request_write_approval(self) -> None:
+        result = SqlAgentWorkflow().run("删除已关闭告警", "test-viewer", role="viewer")
+        self.assertEqual(result.status, "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()

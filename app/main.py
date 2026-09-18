@@ -18,6 +18,7 @@ from app.skills import SkillRegistry
 from app.tool_registry import catalog, invoke
 from app.workflow import SqlAgentWorkflow
 from app.rag import KnowledgeRag
+from app.policy import permitted, policy_summary, role_catalog
 
 
 app = FastAPI(title="安全可控 SQL Agent", version="0.1.0")
@@ -29,12 +30,17 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 class QueryRequest(BaseModel):
     question: str = Field(min_length=2, max_length=500)
     requester: str = Field(default="anonymous", min_length=1, max_length=64)
+    role: str = Field(default="operator", min_length=1, max_length=32)
 
 
 class KnowledgeDocumentRequest(BaseModel):
     title: str = Field(min_length=2, max_length=100)
     content: str = Field(min_length=10, max_length=4000)
     tags: str = Field(default="未分类", max_length=200)
+
+
+class ApprovalActionRequest(BaseModel):
+    role: str = Field(default="approver", min_length=1, max_length=32)
 
 
 @app.on_event("startup")
@@ -57,7 +63,7 @@ def console() -> FileResponse:
 
 @app.post("/api/v1/query")
 def query(request: QueryRequest) -> dict:
-    return workflow.run(request.question, request.requester).to_dict()
+    return workflow.run(request.question, request.requester, request.role).to_dict()
 
 
 @app.post("/api/v1/query/stream")
@@ -68,7 +74,7 @@ def stream_query(request: QueryRequest) -> StreamingResponse:
 
         def worker() -> None:
             try:
-                result = workflow.run(request.question, request.requester, lambda event: queue.put(("stage", event.to_dict())))
+                result = workflow.run(request.question, request.requester, request.role, lambda event: queue.put(("stage", event.to_dict())))
                 queue.put(("result", result.to_dict()))
             except Exception as exc:  # errors remain structured for the browser client
                 queue.put(("error", {"message": "工作流执行失败", "type": type(exc).__name__}))
@@ -86,7 +92,9 @@ def stream_query(request: QueryRequest) -> StreamingResponse:
 
 
 @app.post("/api/v1/approvals/{approval_id}/approve")
-def approve_request(approval_id: str) -> dict:
+def approve_request(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
+    if not permitted(request.role, "approve_change"):
+        raise HTTPException(status_code=403, detail="当前角色无审批权限。请切换到值班负责人。")
     approval = approve(approval_id)
     if approval is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
@@ -94,7 +102,7 @@ def approve_request(approval_id: str) -> dict:
     if execution is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
     outcome = execution.get("outcome")
-    write_audit(approval["requester"], "approval_resolved", {"approval_id": approval_id, "outcome": outcome})
+    write_audit(approval["requester"], "approval_resolved", {"approval_id": approval_id, "outcome": outcome, "approver_role": request.role})
     messages = {
         "executed": "审批完成，已执行受控 Demo 操作。",
         "safe_mode": "审批已记录。安全模式关闭了写库执行；设置 SAFE_SQL_AGENT_ALLOW_APPROVED_WRITES=true 后才可执行。",
@@ -163,6 +171,11 @@ def metrics() -> dict:
 @app.get("/api/v1/approvals")
 def approvals(limit: int = 100) -> list[dict]:
     return list_approvals(min(max(limit, 1), 200))
+
+
+@app.get("/api/v1/policies")
+def policies() -> dict:
+    return {"roles": role_catalog(), "policies": policy_summary()}
 
 
 @app.get("/api/v1/monitoring/overview")

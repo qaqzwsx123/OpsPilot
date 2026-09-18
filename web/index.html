@@ -17,13 +17,14 @@
         <button class="nav-item" data-page="metrics"><span>▥</span> 指标中心</button>
         <button class="nav-item" data-page="audit"><span>◷</span> 审计中心</button>
         <button class="nav-item" data-page="approval"><span>✓</span> 审批中心</button>
+        <button class="nav-item" data-page="policy"><span>⊹</span> 权限中心</button>
         <button class="nav-item" data-page="knowledge"><span>▤</span> 知识库</button>
         <button class="nav-item" data-page="tools"><span>⌘</span> 工具中心</button>
         <button class="nav-item" data-page="skills"><span>◇</span> Skills 与 SOP</button>
       </nav>
       <div class="sidebar-bottom">
         <div class="security-card"><span class="shield">◈</span><div><strong>安全执行已开启</strong><small>高危操作需人工审批</small></div></div>
-        <div class="user"><div class="avatar">L</div><div><strong>Lenovo</strong><small>运维管理员</small></div><span>⋮</span></div>
+        <div class="user"><div class="avatar">L</div><div><strong>Lenovo</strong><small id="role-label">运维工程师</small></div></div><select id="role-selector" class="role-selector"><option value="viewer">观察者</option><option value="operator" selected>运维工程师</option><option value="approver">值班负责人</option></select>
       </div>
     </aside>
 
@@ -106,6 +107,12 @@
       <section id="approval-page" class="page">
         <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><h2>高风险操作必须由人确认。</h2><p>查询 Agent 只能创建审批单；是否执行由安全开关、白名单和审批状态共同决定。</p></div>
         <article class="card approval-library"><div class="card-heading"><div><p class="section-label">APPROVAL QUEUE</p><h3>审批队列</h3></div><button id="refresh-approvals" class="text-button">刷新</button></div><div id="approval-list" class="approval-list"></div></article>
+      </section>
+
+      <section id="policy-page" class="page">
+        <div class="section-intro"><span class="pill">RBAC + RISK POLICY</span><h2>权限不是提示词，而是运行时护栏。</h2><p>切换角色后，查询、变更发起和审批权限会即时改变；所有拒绝和审批行为均写入审计日志。</p></div>
+        <div id="role-cards" class="role-grid"></div>
+        <article class="card policy-table-card"><div class="card-heading"><div><p class="section-label">EXECUTION POLICIES</p><h3>风险与权限矩阵</h3></div></div><div id="policy-table" class="policy-table"></div></article>
       </section>
 
       <section id="monitoring-page" class="page">

@@ -7,6 +7,7 @@ from app.context import ContextCompressor
 from app.database import create_approval, execute_readonly, recent_memory, save_memory, write_audit
 from app.models import QueryResult, WorkflowEvent
 from app.providers import ResilientSqlWriter
+from app.policy import permitted
 from app.rag import KnowledgeRag
 from app.sql_agent import MetadataRetriever, RiskAssessor, SqlFixer, SqlReviewer
 
@@ -24,7 +25,7 @@ class SqlAgentWorkflow:
         self.rag = KnowledgeRag()
         self.compressor = ContextCompressor(Path(__file__).resolve().parent.parent / "data" / "context")
 
-    def run(self, question: str, requester: str, on_event: EventHandler | None = None) -> QueryResult:
+    def run(self, question: str, requester: str, role: str = "operator", on_event: EventHandler | None = None) -> QueryResult:
         events: list[WorkflowEvent] = []
 
         def emit(stage: str, message: str, **details: object) -> None:
@@ -37,6 +38,10 @@ class SqlAgentWorkflow:
             save_memory(requester, "assistant", result.answer)
             return result
 
+        if not permitted(role, "read"):
+            result = QueryResult("blocked", "当前角色无权执行查询。请切换到观察者、运维工程师或值班负责人角色。", events=events)
+            write_audit(requester, "access_denied", {"role": role, "operation": "query"})
+            return finalize(result)
         memory = recent_memory(requester)
         if memory:
             emit("context", "已加载用户近期会话记忆", message_count=len(memory))
@@ -67,8 +72,12 @@ class SqlAgentWorkflow:
             emit("reviewer", "SQL 审查未通过，进入修复/拒绝路径", issues=review.issues)
             decision = self.risk_assessor.assess(generated.sql)
             if decision.mode.value == "manual":
+                if not permitted(role, "request_change"):
+                    emit("risk", "当前角色无权发起变更审批", role=role)
+                    write_audit(requester, "access_denied", {"role": role, "operation": "request_change"})
+                    return finalize(QueryResult("blocked", "观察者角色不能发起高危变更。请切换到运维工程师角色。", generated.sql, events=events))
                 approval_id = create_approval(requester, generated.sql, decision.reason)
-                write_audit(requester, "approval_requested", {"sql": generated.sql, "reason": decision.reason})
+                write_audit(requester, "approval_requested", {"sql": generated.sql, "reason": decision.reason, "role": role})
                 return finalize(QueryResult("approval_required", "该请求涉及写操作，已创建人工审批单。", generated.sql, approval_id=approval_id, events=events))
             write_audit(requester, "sql_blocked", {"sql": generated.sql, "issues": review.issues})
             return finalize(QueryResult("blocked", "SQL 未通过安全审查：" + "；".join(review.issues), generated.sql, events=events))

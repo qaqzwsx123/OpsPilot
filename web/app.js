@@ -2,6 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 let latestSql = "";
 let latestApprovalId = "";
 let selectedMetric = null;
+const currentRole = () => $("#role-selector").value;
 
 const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
 
@@ -51,7 +52,7 @@ async function runQuery() {
   const badge = $("#trace-status"); badge.textContent = "Agent 执行中"; badge.className = "trace-status running";
   $("#trace-list").innerHTML = `<li class="active"><span class="trace-node">…</span><div><strong>Agent 正在规划</strong><small>召回元数据、生成 SQL 并进行安全审查</small></div></li>`;
   try {
-    const response = await fetch("/api/v1/query/stream", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ question, requester:"Lenovo" }) });
+    const response = await fetch("/api/v1/query/stream", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ question, requester:"Lenovo", role:currentRole() }) });
     if (!response.ok || !response.body) throw new Error("无法建立流式连接");
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; const events = []; let resultReceived = false;
     const consumeFrame = (frame) => {
@@ -158,8 +159,8 @@ async function runEvaluation() {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", monitoring:"监控中心", metrics:"指标中心", audit:"审计中心", approval:"审批中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
+  const titles = { agent:"智能运维查询", monitoring:"监控中心", metrics:"指标中心", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
 document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = button.dataset.query; runQuery(); }));
@@ -174,6 +175,7 @@ $("#refresh-monitoring").addEventListener("click", loadMonitoring);
 $("#search-metrics").addEventListener("click", loadMetricCatalog);
 $("#refresh-metrics").addEventListener("click", () => { $("#metric-keyword").value = ""; $("#metric-category").value = ""; loadMetricCatalog(); });
 $("#analyze-metric").addEventListener("click", () => { if (!selectedMetric) return; document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = "查询指标 #" + selectedMetric.id + " 近24小时趋势"; runQuery(); });
+$("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); });
 $("#save-knowledge").addEventListener("click", saveKnowledge);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
@@ -200,11 +202,19 @@ async function resolveApproval(id, button) {
   if (!confirm("确认该审批单？安全模式下只记录审批，不会执行写库操作。")) return;
   if (button) { button.disabled = true; button.textContent = "处理中…"; }
   try {
-    const response = await fetch("/api/v1/approvals/" + id + "/approve", { method:"POST" }); const result = await response.json();
+    const response = await fetch("/api/v1/approvals/" + id + "/approve", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole() }) }); const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "审批失败");
     toast(result.message); loadApprovals(); loadAudit(); loadMetrics();
   } catch (error) { toast(error.message || "审批失败"); }
   finally { if (button) { button.disabled = false; button.textContent = "审批并尝试执行"; } }
+}
+
+async function loadPolicies() {
+  try {
+    const data = await (await fetch("/api/v1/policies")).json(); const active = currentRole();
+    $("#role-cards").innerHTML = data.roles.map((role) => '<article class="card role-card ' + (role.id === active ? "active-role" : "") + '"><p class="section-label">' + escapeHtml(role.id.toUpperCase()) + '</p><h3>' + escapeHtml(role.label) + '</h3><p>' + escapeHtml(role.description) + '</p><div>' + role.permissions.map((permission) => '<span>' + escapeHtml(permission) + '</span>').join("") + '</div></article>').join("");
+    $("#policy-table").innerHTML = data.policies.map((policy) => '<div class="policy-row"><div>' + escapeHtml(policy.operation) + '</div><div class="policy-tier ' + escapeHtml(policy.tier) + '">' + escapeHtml(policy.tier) + '</div><strong>' + escapeHtml(policy.required_permission) + '</strong></div>').join("");
+  } catch { $("#role-cards").innerHTML = '<div class="empty-state"><strong>无法加载权限策略</strong></div>'; }
 }
 
 function renderStateRows(target, rows, colors) {
