@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, execute_approved, initialize, list_audit, list_knowledge_documents, recent_memory, seed_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, recent_memory, seed_demo_data, system_metrics, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
 from app.workflow import SqlAgentWorkflow
@@ -132,9 +132,21 @@ def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
     return document
 
 
+@app.delete("/api/v1/knowledge/{document_id}")
+def delete_knowledge(document_id: int) -> None:
+    if not delete_knowledge_document(document_id):
+        raise HTTPException(status_code=404, detail="知识文档不存在")
+    write_audit("Lenovo", "knowledge_deleted", {"document_id": document_id})
+
+
 @app.get("/api/v1/metrics")
 def metrics() -> dict:
     return {**system_metrics(), "llm_enabled": settings.llm_enabled, "approved_writes_enabled": settings.allow_approved_writes}
+
+
+@app.get("/api/v1/approvals")
+def approvals(limit: int = 100) -> list[dict]:
+    return list_approvals(min(max(limit, 1), 200))
 
 
 @app.get("/api/v1/memory/{requester}")

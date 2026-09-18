@@ -138,8 +138,8 @@ async function runEvaluation() {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", audit:"审计中心", knowledge:"知识库", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge();
+  const titles = { agent:"智能运维查询", audit:"审计中心", approval:"审批中心", knowledge:"知识库", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge();
 }));
 $("#run-query").addEventListener("click", runQuery);
 document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { $("#question").value = button.dataset.query; runQuery(); }));
@@ -147,7 +147,36 @@ $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard
 $("#refresh-audit").addEventListener("click", loadAudit);
 $("#run-evaluation").addEventListener("click", runEvaluation);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
+$("#refresh-approvals").addEventListener("click", loadApprovals);
 $("#save-knowledge").addEventListener("click", saveKnowledge);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
-$("#approve-button").addEventListener("click", async () => { if (!latestApprovalId) return; const response = await fetch(`/api/v1/approvals/${latestApprovalId}/approve`, { method:"POST" }); const result = await response.json(); if (response.ok) { toast(result.message); $("#approve-button").disabled = true; $("#approve-button").textContent = result.outcome === "executed" ? "已执行" : "已审批"; loadAudit(); loadMetrics(); } else toast(result.detail || "审批失败"); });
-loadSkills(); loadKnowledge(); loadMetrics();
+$("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
+$("#show-system-info").addEventListener("click", async () => { try { const metric = await (await fetch("/api/v1/metrics")).json(); toast("LLM：" + (metric.llm_enabled ? "已配置" : "离线规则模式") + "；审批写库：" + (metric.approved_writes_enabled ? "已开启" : "安全关闭")); } catch { toast("无法读取运行配置"); } });
+$("#show-help").addEventListener("click", () => toast("可查询数据、查看审批与审计、维护知识库，并查看 Skill/SOP。"));
+loadSkills(); loadKnowledge(); loadApprovals(); loadMetrics();
+
+function renderApprovals(approvals) {
+  const target = $("#approval-list");
+  if (!approvals.length) { target.innerHTML = '<div class="empty-state"><strong>暂无审批单</strong><p>高危操作会在这里等待人工确认。</p></div>'; return; }
+  target.innerHTML = approvals.map(function(approval) {
+    const action = approval.status === "pending" ? '<div class="approval-action"><button class="warning-button" data-approval="' + approval.id + '">审批并尝试执行</button></div>' : "";
+    const result = approval.execution_result ? " · 结果：" + escapeHtml(JSON.stringify(approval.execution_result)) : "";
+    return '<article class="approval-item"><div><strong>' + escapeHtml(approval.reason) + '</strong><code>' + escapeHtml(approval.sql) + '</code><div class="approval-meta">' + escapeHtml(approval.requester) + ' · ' + new Date(approval.created_at).toLocaleString("zh-CN", {hour12:false}) + result + '</div>' + action + '</div><span class="approval-status ' + escapeHtml(approval.status) + '">' + escapeHtml(approval.status) + '</span></article>';
+  }).join("");
+  document.querySelectorAll("[data-approval]").forEach((button) => button.addEventListener("click", () => resolveApproval(button.dataset.approval, button)));
+}
+
+async function loadApprovals() {
+  try { renderApprovals(await (await fetch("/api/v1/approvals")).json()); } catch { $("#approval-list").innerHTML = '<div class="empty-state"><strong>无法加载审批队列</strong></div>'; }
+}
+
+async function resolveApproval(id, button) {
+  if (!confirm("确认该审批单？安全模式下只记录审批，不会执行写库操作。")) return;
+  if (button) { button.disabled = true; button.textContent = "处理中…"; }
+  try {
+    const response = await fetch("/api/v1/approvals/" + id + "/approve", { method:"POST" }); const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "审批失败");
+    toast(result.message); loadApprovals(); loadAudit(); loadMetrics();
+  } catch (error) { toast(error.message || "审批失败"); }
+  finally { if (button) { button.disabled = false; button.textContent = "审批并尝试执行"; } }
+}

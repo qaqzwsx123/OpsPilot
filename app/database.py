@@ -231,6 +231,27 @@ def add_knowledge_document(title: str, content: str, tags: str) -> dict[str, Any
     return dict(row)
 
 
+def delete_knowledge_document(document_id: int) -> bool:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM knowledge_documents WHERE id = ?", (document_id,))
+    return cursor.rowcount == 1
+
+
+def list_approvals(limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, created_at, requester, sql, reason, status, executed_at, execution_result "
+            "FROM approvals ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        if item["execution_result"]:
+            item["execution_result"] = json.loads(item["execution_result"])
+        result.append(item)
+    return result
+
+
 def list_audit(limit: int = 50) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()

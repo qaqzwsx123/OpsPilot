@@ -14,6 +14,7 @@
       <nav>
         <button class="nav-item active" data-page="agent"><span>◈</span> 智能查询</button>
         <button class="nav-item" data-page="audit"><span>◷</span> 审计中心</button>
+        <button class="nav-item" data-page="approval"><span>✓</span> 审批中心</button>
         <button class="nav-item" data-page="knowledge"><span>▤</span> 知识库</button>
         <button class="nav-item" data-page="skills"><span>◇</span> Skills 与 SOP</button>
       </nav>
@@ -26,7 +27,7 @@
     <main class="main-content">
       <header class="topbar">
         <div><p class="eyebrow">AI OPERATIONS CONSOLE</p><h1 id="page-title">智能运维查询</h1></div>
-        <div class="header-actions"><span class="system-live"><i></i> 系统运行正常</span><button class="icon-button" title="通知">⌁</button><button class="icon-button" title="设置">⚙</button></div>
+        <div class="header-actions"><span class="system-live"><i></i> 系统运行正常</span><button id="show-system-info" class="icon-button" title="运行配置">⌁</button><button id="show-help" class="icon-button" title="操作说明">?</button></div>
       </header>
 
       <section id="agent-page" class="page active-page">
@@ -97,6 +98,11 @@
           <article class="card knowledge-form"><p class="section-label">ADD KNOWLEDGE</p><h3>新增运维知识</h3><label>标题<input id="knowledge-title" placeholder="例如：数据库连接异常排障 SOP" /></label><label>标签<input id="knowledge-tags" placeholder="数据库,连接,排障" /></label><label>正文<textarea id="knowledge-content" rows="9" placeholder="写入操作步骤、判断条件、升级规则与验证方式……"></textarea></label><button id="save-knowledge" class="primary-button">保存并纳入 RAG <span>↗</span></button></article>
           <article class="card knowledge-library"><div class="card-heading"><div><p class="section-label">KNOWLEDGE LIBRARY</p><h3>已沉淀文档</h3></div><button id="refresh-knowledge" class="text-button">刷新</button></div><div id="knowledge-list" class="knowledge-list"></div></article>
         </div>
+      </section>
+
+      <section id="approval-page" class="page">
+        <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><h2>高风险操作必须由人确认。</h2><p>查询 Agent 只能创建审批单；是否执行由安全开关、白名单和审批状态共同决定。</p></div>
+        <article class="card approval-library"><div class="card-heading"><div><p class="section-label">APPROVAL QUEUE</p><h3>审批队列</h3></div><button id="refresh-approvals" class="text-button">刷新</button></div><div id="approval-list" class="approval-list"></div></article>
       </section>
     </main>
   </div>
