@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, audit_integrity, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
 from app.tool_registry import catalog, invoke
@@ -100,6 +100,9 @@ def approve_request(approval_id: str, request: ApprovalActionRequest = ApprovalA
     approval = approve(approval_id, request.actor, request.comment)
     if approval is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
+    if approval["status"] == "expired":
+        write_audit(approval["requester"], "approval_expired", {"approval_id": approval_id, "approver": request.actor})
+        return {"status": "expired", "approval_id": approval_id, "message": "审批单已过期（有效期 30 分钟），没有执行任何 SQL。请重新发起变更。"}
     execution = execute_approved(approval_id, settings.allow_approved_writes)
     if execution is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
@@ -130,6 +133,11 @@ def reject_request(approval_id: str, request: ApprovalActionRequest = ApprovalAc
 @app.get("/api/v1/audit")
 def audit(limit: int = 50) -> list[dict]:
     return list_audit(min(max(limit, 1), 200))
+
+
+@app.get("/api/v1/audit/integrity")
+def verify_audit_integrity() -> dict:
+    return audit_integrity()
 
 
 @app.get("/api/v1/skills")

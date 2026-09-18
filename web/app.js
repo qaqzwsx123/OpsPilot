@@ -156,6 +156,18 @@ async function runEvaluation() {
   finally { button.disabled = false; button.textContent = "运行评测"; }
 }
 
+async function verifyAuditIntegrity() {
+  const button = $("#verify-audit"); button.disabled = true; button.textContent = "校验中…";
+  try {
+    const result = await (await fetch("/api/v1/audit/integrity")).json();
+    const target = $("#evaluation-result"); target.hidden = false;
+    target.textContent = result.valid ? `审计链完整：已校验 ${result.checked_events} 条事件，未发现链路断裂。` : `审计链异常：第 ${result.checked_events + 1} 条附近存在断裂，请停止写入并核查数据库。`;
+    target.className = "evaluation-result " + (result.valid ? "integrity-ok" : "integrity-broken");
+    toast(result.valid ? "审计完整性校验通过" : "发现审计链异常");
+  } catch { toast("审计完整性校验失败"); }
+  finally { button.disabled = false; button.textContent = "验证完整性"; }
+}
+
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
@@ -167,6 +179,7 @@ document.querySelectorAll("[data-query]").forEach((button) => button.addEventLis
 $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard.writeText(latestSql); toast("SQL 已复制到剪贴板"); });
 $("#refresh-audit").addEventListener("click", loadAudit);
 $("#run-evaluation").addEventListener("click", runEvaluation);
+$("#verify-audit").addEventListener("click", verifyAuditIntegrity);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
 $("#search-knowledge").addEventListener("click", searchKnowledge);
 $("#reindex-knowledge").addEventListener("click", reindexKnowledge);
@@ -193,9 +206,10 @@ function renderApprovals(approvals) {
     const impact = '<div class="approval-impact"><b>影响预估</b><span>' + escapeHtml(estimate + samples) + '</span><small>仅执行只读预检，不修改数据</small></div>';
     const decision = approval.decided_by ? '<div class="approval-decision"><b>审批结论</b><span>' + escapeHtml(approval.decided_by) + (approval.decision_comment ? "：" + approval.decision_comment : "：未填写意见") + '</span></div>' : "";
     const result = approval.execution_result ? '<div class="approval-result">执行结果：' + escapeHtml(approval.execution_result.message || approval.execution_result.mode || JSON.stringify(approval.execution_result)) + '</div>' : "";
+    const expiry = approval.expires_at && approval.status === "pending" ? '<div class="approval-expiry">审批有效期至：' + new Date(approval.expires_at).toLocaleString("zh-CN", {hour12:false}) + '</div>' : "";
     const action = approval.status === "pending" ? '<div class="approval-action"><button class="warning-button" data-approval="' + approval.id + '">批准并进入安全执行</button><button class="secondary-button" data-reject="' + approval.id + '">拒绝</button></div>' : "";
-    const labels = { pending:"待审批", approved:"已批准", approved_safe_mode:"安全模式已批准", executed:"已执行", rejected:"已拒绝" };
-    return '<article class="approval-item"><div><strong>' + escapeHtml(approval.reason) + '</strong><code>' + escapeHtml(approval.sql) + '</code>' + impact + decision + result + '<div class="approval-meta">申请人：' + escapeHtml(approval.requester) + ' · ' + new Date(approval.created_at).toLocaleString("zh-CN", {hour12:false}) + '</div>' + action + '</div><span class="approval-status ' + escapeHtml(approval.status) + '">' + (labels[approval.status] || escapeHtml(approval.status)) + '</span></article>';
+    const labels = { pending:"待审批", approved:"已批准", approved_safe_mode:"安全模式已批准", executed:"已执行", rejected:"已拒绝", expired:"已过期" };
+    return '<article class="approval-item"><div><strong>' + escapeHtml(approval.reason) + '</strong><code>' + escapeHtml(approval.sql) + '</code>' + impact + decision + result + expiry + '<div class="approval-meta">申请人：' + escapeHtml(approval.requester) + ' · ' + new Date(approval.created_at).toLocaleString("zh-CN", {hour12:false}) + '</div>' + action + '</div><span class="approval-status ' + escapeHtml(approval.status) + '">' + (labels[approval.status] || escapeHtml(approval.status)) + '</span></article>';
   }).join("");
   document.querySelectorAll("[data-approval]").forEach((button) => button.addEventListener("click", () => resolveApproval(button.dataset.approval, button)));
   document.querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => rejectApproval(button.dataset.reject, button)));

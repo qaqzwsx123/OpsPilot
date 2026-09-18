@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "agent_demo.db"
 BACKUP_DIR = DATA_DIR / "backups"
+APPROVAL_TTL = timedelta(minutes=30)
 
 
 def utc_now() -> str:
@@ -53,14 +55,14 @@ def initialize() -> None:
             );
             CREATE TABLE IF NOT EXISTS audit_logs (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
-              action TEXT NOT NULL, payload TEXT NOT NULL
+              action TEXT NOT NULL, payload TEXT NOT NULL, prev_hash TEXT, entry_hash TEXT
             );
             CREATE TABLE IF NOT EXISTS approvals (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
               sql TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
               risk_level TEXT NOT NULL DEFAULT 'high', impact_preview TEXT,
               decision_comment TEXT, decided_by TEXT, decided_at TEXT,
-              executed_at TEXT, execution_result TEXT
+              expires_at TEXT, executed_at TEXT, execution_result TEXT
             );
             CREATE TABLE IF NOT EXISTS conversation_memory (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
@@ -98,6 +100,14 @@ def initialize() -> None:
             conn.execute("ALTER TABLE approvals ADD COLUMN decided_by TEXT")
         if "decided_at" not in columns:
             conn.execute("ALTER TABLE approvals ADD COLUMN decided_at TEXT")
+        if "expires_at" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN expires_at TEXT")
+        audit_columns = {row["name"] for row in conn.execute("PRAGMA table_info(audit_logs)").fetchall()}
+        if "prev_hash" not in audit_columns:
+            conn.execute("ALTER TABLE audit_logs ADD COLUMN prev_hash TEXT")
+        if "entry_hash" not in audit_columns:
+            conn.execute("ALTER TABLE audit_logs ADD COLUMN entry_hash TEXT")
+        _backfill_audit_hashes(conn)
 
 
 def seed_demo_data() -> None:
@@ -197,11 +207,36 @@ def execute_readonly(sql: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def _canonical_payload(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _audit_digest(previous: str, event_id: str, created_at: str, requester: str, action: str, payload: str) -> str:
+    value = "|".join((previous, event_id, created_at, requester, action, payload))
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _backfill_audit_hashes(conn: sqlite3.Connection) -> None:
+    previous = ""
+    rows = conn.execute("SELECT rowid, id, created_at, requester, action, payload, entry_hash FROM audit_logs ORDER BY rowid").fetchall()
+    for row in rows:
+        payload = _canonical_payload(json.loads(row["payload"]))
+        digest = _audit_digest(previous, row["id"], row["created_at"], row["requester"], row["action"], payload)
+        if row["entry_hash"] != digest:
+            conn.execute("UPDATE audit_logs SET prev_hash = ?, entry_hash = ? WHERE rowid = ?", (previous, digest, row["rowid"]))
+        previous = digest
+
+
 def write_audit(requester: str, action: str, payload: dict[str, Any]) -> None:
+    event_id, created_at = str(uuid4()), utc_now()
+    canonical_payload = _canonical_payload(payload)
     with connect() as conn:
+        previous_row = conn.execute("SELECT entry_hash FROM audit_logs WHERE entry_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1").fetchone()
+        previous = previous_row["entry_hash"] if previous_row else ""
+        digest = _audit_digest(previous, event_id, created_at, requester, action, canonical_payload)
         conn.execute(
-            "INSERT INTO audit_logs VALUES (?, ?, ?, ?, ?)",
-            (str(uuid4()), utc_now(), requester, action, json.dumps(payload, ensure_ascii=False)),
+            "INSERT INTO audit_logs (id, created_at, requester, action, payload, prev_hash, entry_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (event_id, created_at, requester, action, canonical_payload, previous, digest),
         )
 
 
@@ -237,14 +272,29 @@ def _impact_preview(conn: sqlite3.Connection, sql: str) -> dict[str, Any]:
 
 def create_approval(requester: str, sql: str, reason: str) -> str:
     approval_id = str(uuid4())
+    created_at = datetime.now(timezone.utc)
     with connect() as conn:
         preview = _impact_preview(conn, sql)
         conn.execute(
-            "INSERT INTO approvals (id, created_at, requester, sql, reason, status, risk_level, impact_preview) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (approval_id, utc_now(), requester, sql, reason, "pending", "high", json.dumps(preview, ensure_ascii=False)),
+            "INSERT INTO approvals (id, created_at, requester, sql, reason, status, risk_level, impact_preview, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (approval_id, created_at.isoformat(), requester, sql, reason, "pending", "high", json.dumps(preview, ensure_ascii=False), (created_at + APPROVAL_TTL).isoformat()),
         )
     return approval_id
+
+
+def _is_approval_expired(row: sqlite3.Row) -> bool:
+    return bool(row["expires_at"]) and datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) <= datetime.now(timezone.utc)
+
+
+def _expire_pending_approvals(conn: sqlite3.Connection) -> None:
+    pending = conn.execute("SELECT id, expires_at FROM approvals WHERE status = 'pending' AND expires_at IS NOT NULL").fetchall()
+    expired = [row["id"] for row in pending if datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) <= datetime.now(timezone.utc)]
+    if expired:
+        conn.executemany(
+            "UPDATE approvals SET status = 'expired', decision_comment = '系统自动过期：审批有效期为 30 分钟。', decided_at = ? WHERE id = ?",
+            [(utc_now(), approval_id) for approval_id in expired],
+        )
 
 
 def approve(approval_id: str, decided_by: str, comment: str = "") -> dict[str, Any] | None:
@@ -254,6 +304,12 @@ def approve(approval_id: str, decided_by: str, comment: str = "") -> dict[str, A
             return None
         if row["status"] != "pending":
             return dict(row)
+        if _is_approval_expired(row):
+            conn.execute(
+                "UPDATE approvals SET status = 'expired', decision_comment = '系统自动过期：审批有效期为 30 分钟。', decided_at = ? WHERE id = ?",
+                (utc_now(), approval_id),
+            )
+            return dict(conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone())
         conn.execute(
             "UPDATE approvals SET status = 'approved', decision_comment = ?, decided_by = ?, decided_at = ? WHERE id = ?",
             (comment.strip(), decided_by, utc_now(), approval_id),
@@ -462,9 +518,10 @@ def knowledge_chunks() -> list[dict[str, Any]]:
 
 def list_approvals(limit: int = 100) -> list[dict[str, Any]]:
     with connect() as conn:
+        _expire_pending_approvals(conn)
         rows = conn.execute(
             "SELECT id, created_at, requester, sql, reason, status, risk_level, impact_preview, decision_comment, "
-            "decided_by, decided_at, executed_at, execution_result "
+            "decided_by, decided_at, expires_at, executed_at, execution_result "
             "FROM approvals ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
     result = []
@@ -502,3 +559,17 @@ def list_audit(limit: int = 50) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+
+def audit_integrity() -> dict[str, Any]:
+    """Verify the append-only hash chain. It detects accidental/unauthorized local edits."""
+    with connect() as conn:
+        rows = conn.execute("SELECT id, created_at, requester, action, payload, prev_hash, entry_hash FROM audit_logs ORDER BY rowid").fetchall()
+    previous = ""
+    for index, row in enumerate(rows, start=1):
+        payload = _canonical_payload(json.loads(row["payload"]))
+        expected = _audit_digest(previous, row["id"], row["created_at"], row["requester"], row["action"], payload)
+        if row["prev_hash"] != previous or row["entry_hash"] != expected:
+            return {"valid": False, "checked_events": index - 1, "broken_at": row["id"]}
+        previous = expected
+    return {"valid": True, "checked_events": len(rows), "latest_hash": previous or None}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.database import approve, create_approval, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data
+from app.database import approve, audit_integrity, create_approval, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data, write_audit
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
 from app.workflow import SqlAgentWorkflow
 
@@ -76,6 +76,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(rejected)
         self.assertEqual(rejected["status"], "rejected")
         self.assertEqual(rejected["decision_comment"], "维护窗口不满足要求")
+
+    def test_audit_hash_chain_is_verifiable(self) -> None:
+        write_audit("test-audit", "integrity_test", {"case": "hash_chain"})
+        self.assertTrue(audit_integrity()["valid"])
 
 
 if __name__ == "__main__":
