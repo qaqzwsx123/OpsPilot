@@ -14,6 +14,7 @@
       <nav>
         <button class="nav-item active" data-page="agent"><span>◈</span> 智能查询</button>
         <button class="nav-item" data-page="monitoring"><span>◌</span> 监控中心</button>
+        <button class="nav-item" data-page="metrics"><span>▥</span> 指标中心</button>
         <button class="nav-item" data-page="audit"><span>◷</span> 审计中心</button>
         <button class="nav-item" data-page="approval"><span>✓</span> 审批中心</button>
         <button class="nav-item" data-page="knowledge"><span>▤</span> 知识库</button>
@@ -112,6 +113,15 @@
         <div id="monitoring-summary" class="monitor-summary"></div>
         <div class="monitor-layout"><article class="card"><div class="card-heading"><div><p class="section-label">ASSET STATUS</p><h3>资产运行状态</h3></div><button id="refresh-monitoring" class="text-button">刷新</button></div><div id="asset-state-list" class="state-list"></div></article><article class="card"><div class="card-heading"><div><p class="section-label">ALERT SEVERITY</p><h3>未关闭告警分布</h3></div></div><div id="alert-severity-list" class="state-list"></div></article></div>
         <article class="card latest-alert-card"><div class="card-heading"><div><p class="section-label">LATEST ALERTS</p><h3>最近告警</h3></div><button class="text-button monitor-query" data-query="查询最近的 P1 告警">用 Agent 分析 P1 告警</button></div><div id="monitoring-alert-list" class="table-wrap"></div></article>
+      </section>
+
+      <section id="metrics-page" class="page">
+        <div class="section-intro"><span class="pill">OBSERVABILITY METRICS</span><h2>指标可检索，也可追溯趋势。</h2><p>本地演示环境已初始化 700 条指标定义和 24 小时时序样本。可筛选、查看趋势，并把指定指标交给 Agent。</p></div>
+        <div class="metric-catalog-layout">
+          <article class="card metric-filter"><p class="section-label">METRIC EXPLORER</p><h3>筛选指标</h3><label>关键字<input id="metric-keyword" placeholder="例如：CPU、延迟、成功率" /></label><label>分类<select id="metric-category"><option value="">全部分类</option><option value="主机">主机</option><option value="网络">网络</option><option value="应用">应用</option><option value="数据库">数据库</option><option value="消息队列">消息队列</option><option value="作业">作业</option></select></label><button id="search-metrics" class="primary-button">查询指标 <span>↗</span></button><div class="metric-filter-note"><strong id="metric-count-note">—</strong><small>条本地演示指标定义</small></div></article>
+          <article class="card metric-list-card"><div class="card-heading"><div><p class="section-label">CATALOG</p><h3>指标目录</h3></div><button id="refresh-metrics" class="text-button">刷新</button></div><div id="metric-list" class="metric-list"></div></article>
+        </div>
+        <article id="trend-card" class="card trend-card" hidden><div class="card-heading"><div><p class="section-label">24H TREND</p><h3 id="trend-title">指标趋势</h3></div><button id="analyze-metric" class="text-button">交给 Agent 分析</button></div><div id="trend-summary" class="trend-summary"></div><svg id="trend-chart" viewBox="0 0 600 160" preserveAspectRatio="none"></svg><div id="trend-axis" class="trend-axis"></div></article>
       </section>
 
       <section id="tools-page" class="page">

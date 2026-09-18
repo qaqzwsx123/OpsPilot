@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, monitoring_overview, recent_memory, seed_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
 from app.tool_registry import catalog, invoke
@@ -40,6 +40,7 @@ class KnowledgeDocumentRequest(BaseModel):
 def startup() -> None:
     initialize()
     seed_demo_data()
+    seed_metric_demo_data()
 
 
 @app.get("/health")
@@ -153,6 +154,19 @@ def approvals(limit: int = 100) -> list[dict]:
 @app.get("/api/v1/monitoring/overview")
 def monitoring() -> dict:
     return monitoring_overview()
+
+
+@app.get("/api/v1/metric-definitions")
+def metric_definitions(keyword: str = "", category: str = "", limit: int = 60) -> list[dict]:
+    return list_metric_definitions(keyword.strip(), category.strip(), min(max(limit, 1), 100))
+
+
+@app.get("/api/v1/metric-definitions/{metric_id}/trend")
+def metric_definition_trend(metric_id: int, points: int = 24) -> dict:
+    trend = metric_trend(metric_id, min(max(points, 2), 48))
+    if trend is None:
+        raise HTTPException(status_code=404, detail="指标不存在")
+    return trend
 
 
 @app.get("/api/v1/tools")

@@ -1,6 +1,7 @@
 const $ = (selector) => document.querySelector(selector);
 let latestSql = "";
 let latestApprovalId = "";
+let selectedMetric = null;
 
 const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
 
@@ -138,8 +139,8 @@ async function runEvaluation() {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", monitoring:"监控中心", audit:"审计中心", approval:"审批中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
+  const titles = { agent:"智能运维查询", monitoring:"监控中心", metrics:"指标中心", audit:"审计中心", approval:"审批中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
 document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = button.dataset.query; runQuery(); }));
@@ -149,6 +150,9 @@ $("#run-evaluation").addEventListener("click", runEvaluation);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
 $("#refresh-approvals").addEventListener("click", loadApprovals);
 $("#refresh-monitoring").addEventListener("click", loadMonitoring);
+$("#search-metrics").addEventListener("click", loadMetricCatalog);
+$("#refresh-metrics").addEventListener("click", () => { $("#metric-keyword").value = ""; $("#metric-category").value = ""; loadMetricCatalog(); });
+$("#analyze-metric").addEventListener("click", () => { if (!selectedMetric) return; document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = "查询指标 #" + selectedMetric.id + " 近24小时趋势"; runQuery(); });
 $("#save-knowledge").addEventListener("click", saveKnowledge);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
@@ -217,4 +221,35 @@ async function invokeTool(name, button) {
     box.textContent = JSON.stringify(result, null, 2); toast("工具调用状态：" + result.status); loadAudit();
   } catch { toast("工具调用失败"); }
   finally { button.disabled = false; button.textContent = "试运行工具"; }
+}
+
+function renderMetricCatalog(metrics) {
+  const target = $("#metric-list");
+  target.innerHTML = metrics.length ? metrics.map((metric) => '<article class="metric-item"><div><strong>' + escapeHtml(metric.name) + '</strong><small>' + escapeHtml(metric.category) + ' · ' + escapeHtml(metric.asset_scope) + ' · ' + escapeHtml(metric.unit) + '</small></div><button class="text-button" data-metric="' + metric.id + '">查看趋势</button></article>').join("") : '<div class="empty-state"><strong>没有匹配指标</strong><p>尝试切换分类或关键词。</p></div>';
+  document.querySelectorAll("[data-metric]").forEach((button) => button.addEventListener("click", () => loadMetricTrend(button.dataset.metric)));
+}
+
+async function loadMetricCatalog() {
+  const keyword = $("#metric-keyword").value.trim(); const category = $("#metric-category").value;
+  try {
+    const response = await fetch("/api/v1/metric-definitions?limit=60&keyword=" + encodeURIComponent(keyword) + "&category=" + encodeURIComponent(category));
+    const metrics = await response.json(); renderMetricCatalog(metrics);
+    const system = await (await fetch("/api/v1/metrics")).json();
+    $("#metric-count-note").textContent = system.metric_definitions || metrics.length;
+  } catch { $("#metric-list").innerHTML = '<div class="empty-state"><strong>无法加载指标目录</strong></div>'; }
+}
+
+async function loadMetricTrend(metricId) {
+  try {
+    const metric = await (await fetch("/api/v1/metric-definitions/" + metricId + "/trend")).json();
+    selectedMetric = metric; $("#trend-card").hidden = false; $("#trend-title").textContent = metric.name + " · 24H 趋势";
+    const values = metric.points.map((point) => point.value); const minimum = Math.min.apply(null, values); const maximum = Math.max.apply(null, values); const span = maximum - minimum || 1;
+    const points = values.map((value, index) => (index * 600 / Math.max(1, values.length - 1)).toFixed(1) + "," + (145 - (value - minimum) / span * 118).toFixed(1)).join(" ");
+    const area = "0,160 " + points + " 600,160";
+    $("#trend-chart").innerHTML = '<polygon class="area" points="' + area + '"></polygon><polyline points="' + points + '"></polyline>';
+    const latest = values[values.length - 1]; const average = values.reduce((sum, value) => sum + value, 0) / values.length;
+    $("#trend-summary").innerHTML = '<span>当前值<strong>' + latest + " " + escapeHtml(metric.unit) + '</strong></span><span>24H 平均<strong>' + average.toFixed(2) + " " + escapeHtml(metric.unit) + '</strong></span><span>最小 / 最大<strong>' + minimum + " / " + maximum + '</strong></span>';
+    $("#trend-axis").innerHTML = '<span>' + new Date(metric.points[0].observed_at).toLocaleTimeString("zh-CN", {hour:"2-digit", minute:"2-digit"}) + '</span><span>现在</span>';
+    $("#trend-card").scrollIntoView({ behavior:"smooth", block:"nearest" });
+  } catch { toast("无法加载指标趋势"); }
 }

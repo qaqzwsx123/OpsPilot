@@ -28,6 +28,16 @@ SCHEMA: dict[str, dict[str, object]] = {
         "aliases": ["作业", "派单", "维修", "操作"],
         "description": "执行中的运维动作",
     },
+    "metric_definitions": {
+        "columns": ["id", "name", "category", "unit", "asset_scope", "description"],
+        "aliases": ["指标", "指标目录", "CPU", "内存", "延迟", "成功率"],
+        "description": "运维指标定义与指标分类",
+    },
+    "metric_samples": {
+        "columns": ["id", "metric_id", "observed_at", "value"],
+        "aliases": ["趋势", "时序", "采样", "监控值"],
+        "description": "指标时间序列采样数据",
+    },
 }
 
 
@@ -83,6 +93,20 @@ class RuleBasedSqlWriter:
             return None
         if any(word in q for word in ["删除", "清空", "更新", "修改", "写入"]):
             return GeneratedSql("DELETE FROM alerts WHERE status = 'closed';", "write_request", 0.75, ["alerts"])
+        metric_id_match = re.search(r"#\s*(\d{1,3})", question)
+        if "指标" in q and metric_id_match:
+            metric_id = int(metric_id_match.group(1))
+            return GeneratedSql(
+                "SELECT d.id, d.name, d.unit, s.observed_at, s.value FROM metric_definitions d "
+                "JOIN metric_samples s ON d.id = s.metric_id WHERE d.id = " + str(metric_id) +
+                " ORDER BY s.observed_at DESC LIMIT 24;",
+                "metric_trend", 0.9, ["metric_definitions", "metric_samples"],
+            )
+        if "指标目录" in q or ("指标" in q and "查询" in q):
+            return GeneratedSql(
+                "SELECT id, name, category, unit, asset_scope FROM metric_definitions ORDER BY id LIMIT 30;",
+                "metric_catalog", 0.84, ["metric_definitions"],
+            )
         if "各区域" in q and "离线" in q:
             return GeneratedSql(
                 "SELECT region, COUNT(*) AS offline_count FROM assets WHERE status = 'offline' GROUP BY region ORDER BY offline_count DESC LIMIT 20;",

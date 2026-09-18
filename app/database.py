@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -63,6 +63,15 @@ def initialize() -> None:
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
               role TEXT NOT NULL, content TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS metric_definitions (
+              id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
+              unit TEXT NOT NULL, asset_scope TEXT NOT NULL, description TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS metric_samples (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, metric_id INTEGER NOT NULL,
+              observed_at TEXT NOT NULL, value REAL NOT NULL,
+              FOREIGN KEY(metric_id) REFERENCES metric_definitions(id)
+            );
             """
         )
         # Lightweight migrations keep existing local demo databases compatible.
@@ -116,6 +125,47 @@ def seed_demo_data() -> None:
                 (2, "设备离线排障手册", "设备离线时依次检查供电、网络连通性、最近心跳和网关日志。若是单设备故障，优先安排现场巡检；若同区域批量离线，按网络故障升级。", "离线,设备,网络,排障"),
                 (3, "工单优先级规范", "高优工单要求在两小时内响应。关闭工单前必须记录根因、处理动作与验证结果。", "工单,优先级,规范"),
             ],
+        )
+
+
+def seed_metric_demo_data() -> None:
+    """Creates a deterministic local metric catalog and samples for UI demonstrations."""
+    initialize()
+    with connect() as conn:
+        if conn.execute("SELECT COUNT(*) FROM metric_definitions").fetchone()[0]:
+            return
+        families = [
+            ("CPU 使用率", "主机", "%"), ("内存使用率", "主机", "%"), ("磁盘使用率", "主机", "%"),
+            ("网络入站流量", "网络", "MB/s"), ("网络出站流量", "网络", "MB/s"), ("请求延迟 P95", "应用", "ms"),
+            ("请求成功率", "应用", "%"), ("消息积压量", "消息队列", "条"), ("数据库连接池使用率", "数据库", "%"),
+            ("任务执行耗时", "作业", "s"),
+        ]
+        definitions = []
+        samples = []
+        start = datetime(2026, 9, 18, 0, 0, tzinfo=timezone.utc)
+        for metric_id in range(1, 701):
+            label, category, unit = families[(metric_id - 1) % len(families)]
+            scope = f"asset-{(metric_id - 1) % 4 + 1}"
+            definitions.append((metric_id, f"{label} · {scope} · #{metric_id:03d}", category, unit, scope, f"{label} 的本地演示时序指标"))
+            baseline = 35 + (metric_id * 7) % 45
+            if unit == "ms":
+                baseline *= 3
+            elif unit == "MB/s":
+                baseline /= 2
+            elif unit == "条":
+                baseline *= 12
+            elif unit == "s":
+                baseline /= 4
+            for point in range(24):
+                wave = ((point * 11 + metric_id * 3) % 17) - 8
+                samples.append((metric_id, (start + timedelta(hours=point)).isoformat(), round(max(0.1, baseline + wave), 2)))
+        conn.executemany(
+            "INSERT INTO metric_definitions (id, name, category, unit, asset_scope, description) VALUES (?, ?, ?, ?, ?, ?)",
+            definitions,
+        )
+        conn.executemany(
+            "INSERT INTO metric_samples (metric_id, observed_at, value) VALUES (?, ?, ?)",
+            samples,
         )
 
 
@@ -209,7 +259,39 @@ def system_metrics() -> dict[str, int | bool]:
         knowledge_count = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
         audit_count = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
         approval_count = conn.execute("SELECT COUNT(*) FROM approvals WHERE status IN ('approved', 'executed')").fetchone()[0]
-    return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "audit_events": audit_count, "approved_actions": approval_count}
+        metric_count = conn.execute("SELECT COUNT(*) FROM metric_definitions").fetchone()[0]
+    return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "metric_definitions": metric_count, "audit_events": audit_count, "approved_actions": approval_count}
+
+
+def list_metric_definitions(keyword: str = "", category: str = "", limit: int = 60) -> list[dict[str, Any]]:
+    clauses, params = [], []
+    if keyword:
+        clauses.append("(name LIKE ? OR description LIKE ?)")
+        params.extend([f"%{keyword}%", f"%{keyword}%"])
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, category, unit, asset_scope, description FROM metric_definitions" + where + " ORDER BY id LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def metric_trend(metric_id: int, points: int = 24) -> dict[str, Any] | None:
+    with connect() as conn:
+        definition = conn.execute(
+            "SELECT id, name, category, unit, asset_scope, description FROM metric_definitions WHERE id = ?", (metric_id,)
+        ).fetchone()
+        if definition is None:
+            return None
+        rows = conn.execute(
+            "SELECT observed_at, value FROM metric_samples WHERE metric_id = ? ORDER BY observed_at DESC LIMIT ?",
+            (metric_id, points),
+        ).fetchall()
+    return {**dict(definition), "points": list(reversed([dict(row) for row in rows]))}
 
 
 def list_knowledge_documents(limit: int = 100) -> list[dict[str, Any]]:

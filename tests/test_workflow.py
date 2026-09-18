@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.database import DB_PATH, seed_demo_data
+from app.database import DB_PATH, seed_demo_data, seed_metric_demo_data
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
 from app.workflow import SqlAgentWorkflow
 
@@ -13,6 +13,7 @@ class WorkflowTests(unittest.TestCase):
         # Keep tests safe to run while the local Uvicorn demo server is using SQLite.
         # The seed function is idempotent, so no shared database needs to be deleted.
         seed_demo_data()
+        seed_metric_demo_data()
 
     def test_p1_alert_query_completes(self) -> None:
         result = SqlAgentWorkflow().run("查询最近的 P1 告警", "test-user")
@@ -48,6 +49,11 @@ class WorkflowTests(unittest.TestCase):
         fixed = SqlFixer().fix("SELECT id FROM alerts; DROP TABLE alerts;", ["只允许单条 SQL"], ["alerts"])
         self.assertEqual(fixed, "SELECT id FROM alerts LIMIT 100;")
         self.assertIsNone(SqlFixer().fix("DELETE FROM alerts;", ["只允许 SELECT 查询"], ["alerts"]))
+
+    def test_metric_trend_query_completes(self) -> None:
+        result = SqlAgentWorkflow().run("查询指标 #1 近24小时趋势", "test-user")
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(len(result.rows), 24)
 
 
 if __name__ == "__main__":
