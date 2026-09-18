@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.database import DB_PATH, seed_demo_data, seed_metric_demo_data
+from app.database import approve, create_approval, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
 from app.workflow import SqlAgentWorkflow
 
@@ -58,6 +58,24 @@ class WorkflowTests(unittest.TestCase):
     def test_viewer_cannot_request_write_approval(self) -> None:
         result = SqlAgentWorkflow().run("删除已关闭告警", "test-viewer", role="viewer")
         self.assertEqual(result.status, "blocked")
+
+    def test_safe_mode_approval_records_impact_without_deleting_rows(self) -> None:
+        before = len(execute_readonly("SELECT id FROM alerts WHERE status = 'closed'"))
+        approval_id = create_approval("test-approval", "DELETE FROM alerts WHERE status = 'closed';", "测试高风险变更")
+        approve(approval_id, "test-approver", "已核对影响范围")
+        result = execute_approved(approval_id, allow_writes=False)
+        self.assertEqual(result["outcome"], "safe_mode")
+        self.assertEqual(len(execute_readonly("SELECT id FROM alerts WHERE status = 'closed'")), before)
+        approval = next(item for item in list_approvals() if item["id"] == approval_id)
+        self.assertEqual(approval["status"], "approved_safe_mode")
+        self.assertEqual(approval["impact_preview"]["matched_rows"], before)
+
+    def test_approver_can_reject_pending_change_without_execution(self) -> None:
+        approval_id = create_approval("test-reject", "DELETE FROM alerts WHERE status = 'closed';", "测试拒绝流程")
+        rejected = reject_approval(approval_id, "test-approver", "维护窗口不满足要求")
+        self.assertIsNotNone(rejected)
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertEqual(rejected["decision_comment"], "维护窗口不满足要求")
 
 
 if __name__ == "__main__":

@@ -74,7 +74,7 @@
               <div id="table-wrap" class="table-wrap"></div>
               <div id="rag-answer" class="rag-answer" hidden></div>
               <div id="sources" class="sources" hidden></div>
-              <div id="approval-box" class="approval-box" hidden><div><span>⚠</span><div><strong>检测到需要审批的操作</strong><p id="approval-description"></p></div></div><button id="approve-button" class="warning-button">模拟人工审批</button></div>
+              <div id="approval-box" class="approval-box" hidden><div><span>⚠</span><div><strong>检测到需要审批的操作</strong><p id="approval-description"></p></div></div><button id="approve-button" class="warning-button">批准并进入安全执行</button></div>
             </div>
           </article>
           <article class="insight-card card">
@@ -105,7 +105,7 @@
       </section>
 
       <section id="approval-page" class="page">
-        <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><h2>高风险操作必须由人确认。</h2><p>查询 Agent 只能创建审批单；是否执行由安全开关、白名单和审批状态共同决定。</p></div>
+        <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><h2>高风险操作必须由人确认。</h2><p>审批前先做只读影响预估；审批意见、审批人、拒绝结论和执行结果均可追溯。默认安全模式不会执行写 SQL。</p></div>
         <article class="card approval-library"><div class="card-heading"><div><p class="section-label">APPROVAL QUEUE</p><h3>审批队列</h3></div><button id="refresh-approvals" class="text-button">刷新</button></div><div id="approval-list" class="approval-list"></div></article>
       </section>
 

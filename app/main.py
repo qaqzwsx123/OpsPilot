@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
 from app.tool_registry import catalog, invoke
@@ -41,6 +41,8 @@ class KnowledgeDocumentRequest(BaseModel):
 
 class ApprovalActionRequest(BaseModel):
     role: str = Field(default="approver", min_length=1, max_length=32)
+    actor: str = Field(default="Lenovo", min_length=1, max_length=64)
+    comment: str = Field(default="", max_length=500)
 
 
 @app.on_event("startup")
@@ -95,21 +97,34 @@ def stream_query(request: QueryRequest) -> StreamingResponse:
 def approve_request(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="当前角色无审批权限。请切换到值班负责人。")
-    approval = approve(approval_id)
+    approval = approve(approval_id, request.actor, request.comment)
     if approval is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
     execution = execute_approved(approval_id, settings.allow_approved_writes)
     if execution is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
     outcome = execution.get("outcome")
-    write_audit(approval["requester"], "approval_resolved", {"approval_id": approval_id, "outcome": outcome, "approver_role": request.role})
+    write_audit(approval["requester"], "approval_resolved", {"approval_id": approval_id, "outcome": outcome, "approver_role": request.role, "approver": request.actor, "comment": request.comment})
     messages = {
         "executed": "审批完成，已执行受控 Demo 操作。",
-        "safe_mode": "审批已记录。安全模式关闭了写库执行；设置 SAFE_SQL_AGENT_ALLOW_APPROVED_WRITES=true 后才可执行。",
+        "safe_mode": "审批已记录为“安全模式已批准”。未执行写库；影响范围仅作预估并已留痕。",
         "not_allowlisted": "审批已记录，但该 SQL 不在 Demo 执行白名单内。",
         "not_approved": "审批单当前不处于可执行状态。",
     }
     return {"status": execution["status"], "approval_id": approval_id, "outcome": outcome, "message": messages.get(outcome, "审批状态已更新。")}
+
+
+@app.post("/api/v1/approvals/{approval_id}/reject")
+def reject_request(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
+    if not permitted(request.role, "approve_change"):
+        raise HTTPException(status_code=403, detail="当前角色无审批权限。请切换到值班负责人。")
+    approval = reject_approval(approval_id, request.actor, request.comment)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="审批单不存在")
+    if approval["status"] != "rejected":
+        return {"status": approval["status"], "approval_id": approval_id, "message": "审批单当前已不是待处理状态。"}
+    write_audit(approval["requester"], "approval_rejected", {"approval_id": approval_id, "approver_role": request.role, "approver": request.actor, "comment": approval["decision_comment"]})
+    return {"status": "rejected", "approval_id": approval_id, "message": "审批已拒绝；没有执行任何 SQL，也没有修改业务数据。"}
 
 
 @app.get("/api/v1/audit")

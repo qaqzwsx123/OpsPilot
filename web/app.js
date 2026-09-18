@@ -187,11 +187,18 @@ function renderApprovals(approvals) {
   const target = $("#approval-list");
   if (!approvals.length) { target.innerHTML = '<div class="empty-state"><strong>暂无审批单</strong><p>高危操作会在这里等待人工确认。</p></div>'; return; }
   target.innerHTML = approvals.map(function(approval) {
-    const action = approval.status === "pending" ? '<div class="approval-action"><button class="warning-button" data-approval="' + approval.id + '">审批并尝试执行</button></div>' : "";
-    const result = approval.execution_result ? " · 结果：" + escapeHtml(JSON.stringify(approval.execution_result)) : "";
-    return '<article class="approval-item"><div><strong>' + escapeHtml(approval.reason) + '</strong><code>' + escapeHtml(approval.sql) + '</code><div class="approval-meta">' + escapeHtml(approval.requester) + ' · ' + new Date(approval.created_at).toLocaleString("zh-CN", {hour12:false}) + result + '</div>' + action + '</div><span class="approval-status ' + escapeHtml(approval.status) + '">' + escapeHtml(approval.status) + '</span></article>';
+    const preview = approval.impact_preview || {};
+    const estimate = preview.matched_rows === null || preview.matched_rows === undefined ? "无法预估" : ("预计影响 " + preview.matched_rows + " 行");
+    const samples = preview.sample_rows?.length ? "，已抽样 " + preview.sample_rows.length + " 条用于审批核对" : "";
+    const impact = '<div class="approval-impact"><b>影响预估</b><span>' + escapeHtml(estimate + samples) + '</span><small>仅执行只读预检，不修改数据</small></div>';
+    const decision = approval.decided_by ? '<div class="approval-decision"><b>审批结论</b><span>' + escapeHtml(approval.decided_by) + (approval.decision_comment ? "：" + approval.decision_comment : "：未填写意见") + '</span></div>' : "";
+    const result = approval.execution_result ? '<div class="approval-result">执行结果：' + escapeHtml(approval.execution_result.message || approval.execution_result.mode || JSON.stringify(approval.execution_result)) + '</div>' : "";
+    const action = approval.status === "pending" ? '<div class="approval-action"><button class="warning-button" data-approval="' + approval.id + '">批准并进入安全执行</button><button class="secondary-button" data-reject="' + approval.id + '">拒绝</button></div>' : "";
+    const labels = { pending:"待审批", approved:"已批准", approved_safe_mode:"安全模式已批准", executed:"已执行", rejected:"已拒绝" };
+    return '<article class="approval-item"><div><strong>' + escapeHtml(approval.reason) + '</strong><code>' + escapeHtml(approval.sql) + '</code>' + impact + decision + result + '<div class="approval-meta">申请人：' + escapeHtml(approval.requester) + ' · ' + new Date(approval.created_at).toLocaleString("zh-CN", {hour12:false}) + '</div>' + action + '</div><span class="approval-status ' + escapeHtml(approval.status) + '">' + (labels[approval.status] || escapeHtml(approval.status)) + '</span></article>';
   }).join("");
   document.querySelectorAll("[data-approval]").forEach((button) => button.addEventListener("click", () => resolveApproval(button.dataset.approval, button)));
+  document.querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => rejectApproval(button.dataset.reject, button)));
 }
 
 async function loadApprovals() {
@@ -199,14 +206,27 @@ async function loadApprovals() {
 }
 
 async function resolveApproval(id, button) {
-  if (!confirm("确认该审批单？安全模式下只记录审批，不会执行写库操作。")) return;
+  if (!confirm("确认批准该审批单？当前安全模式下只记录审批和影响预估，不会执行写库操作。")) return;
   if (button) { button.disabled = true; button.textContent = "处理中…"; }
   try {
-    const response = await fetch("/api/v1/approvals/" + id + "/approve", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole() }) }); const result = await response.json();
+    const comment = prompt("可选：填写审批意见（会写入审计日志）", "风险已核对，同意进入安全模式审批。") || "";
+    const response = await fetch("/api/v1/approvals/" + id + "/approve", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), actor:"Lenovo", comment }) }); const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "审批失败");
     toast(result.message); loadApprovals(); loadAudit(); loadMetrics();
   } catch (error) { toast(error.message || "审批失败"); }
-  finally { if (button) { button.disabled = false; button.textContent = "审批并尝试执行"; } }
+  finally { if (button) { button.disabled = false; button.textContent = "批准并进入安全执行"; } }
+}
+
+async function rejectApproval(id, button) {
+  const comment = prompt("请填写拒绝原因（会写入审计日志）", "影响范围或执行窗口不满足要求。") || "";
+  if (!confirm("确认拒绝该审批单？此操作不会执行 SQL，也不会修改业务数据。")) return;
+  if (button) { button.disabled = true; button.textContent = "处理中…"; }
+  try {
+    const response = await fetch("/api/v1/approvals/" + id + "/reject", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), actor:"Lenovo", comment }) }); const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "拒绝失败");
+    toast(result.message); loadApprovals(); loadAudit();
+  } catch (error) { toast(error.message || "拒绝失败"); }
+  finally { if (button) { button.disabled = false; button.textContent = "拒绝"; } }
 }
 
 async function loadPolicies() {

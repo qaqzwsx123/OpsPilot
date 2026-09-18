@@ -12,6 +12,7 @@ from app.config import settings
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "agent_demo.db"
+BACKUP_DIR = DATA_DIR / "backups"
 
 
 def utc_now() -> str:
@@ -57,6 +58,8 @@ def initialize() -> None:
             CREATE TABLE IF NOT EXISTS approvals (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
               sql TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
+              risk_level TEXT NOT NULL DEFAULT 'high', impact_preview TEXT,
+              decision_comment TEXT, decided_by TEXT, decided_at TEXT,
               executed_at TEXT, execution_result TEXT
             );
             CREATE TABLE IF NOT EXISTS conversation_memory (
@@ -85,6 +88,16 @@ def initialize() -> None:
             conn.execute("ALTER TABLE approvals ADD COLUMN executed_at TEXT")
         if "execution_result" not in columns:
             conn.execute("ALTER TABLE approvals ADD COLUMN execution_result TEXT")
+        if "risk_level" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'high'")
+        if "impact_preview" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN impact_preview TEXT")
+        if "decision_comment" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN decision_comment TEXT")
+        if "decided_by" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN decided_by TEXT")
+        if "decided_at" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN decided_at TEXT")
 
 
 def seed_demo_data() -> None:
@@ -192,26 +205,86 @@ def write_audit(requester: str, action: str, payload: dict[str, Any]) -> None:
         )
 
 
+def _normalized_sql(sql: str) -> str:
+    return " ".join(sql.strip().split()).rstrip(";")
+
+
+def _impact_preview(conn: sqlite3.Connection, sql: str) -> dict[str, Any]:
+    """Return an explainable, read-only impact estimate for supported demo changes."""
+    normalized = _normalized_sql(sql).lower()
+    if normalized == "delete from alerts where status = 'closed'":
+        sample = [dict(row) for row in conn.execute(
+            "SELECT id, severity, title, status, created_at FROM alerts WHERE status = 'closed' "
+            "ORDER BY created_at DESC LIMIT 10"
+        ).fetchall()]
+        return {
+            "operation": "DELETE",
+            "table": "alerts",
+            "matched_rows": conn.execute("SELECT COUNT(*) FROM alerts WHERE status = 'closed'").fetchone()[0],
+            "sample_rows": sample,
+            "estimate_mode": "exact_count",
+            "destructive": True,
+        }
+    return {
+        "operation": "UNKNOWN",
+        "table": "unknown",
+        "matched_rows": None,
+        "sample_rows": [],
+        "estimate_mode": "not_allowlisted",
+        "destructive": True,
+    }
+
+
 def create_approval(requester: str, sql: str, reason: str) -> str:
     approval_id = str(uuid4())
     with connect() as conn:
+        preview = _impact_preview(conn, sql)
         conn.execute(
-            "INSERT INTO approvals (id, created_at, requester, sql, reason, status) VALUES (?, ?, ?, ?, ?, ?)",
-            (approval_id, utc_now(), requester, sql, reason, "pending"),
+            "INSERT INTO approvals (id, created_at, requester, sql, reason, status, risk_level, impact_preview) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (approval_id, utc_now(), requester, sql, reason, "pending", "high", json.dumps(preview, ensure_ascii=False)),
         )
     return approval_id
 
 
-def approve(approval_id: str) -> dict[str, Any] | None:
+def approve(approval_id: str, decided_by: str, comment: str = "") -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
         if row is None:
             return None
         if row["status"] != "pending":
             return dict(row)
-        conn.execute("UPDATE approvals SET status = 'approved' WHERE id = ?", (approval_id,))
+        conn.execute(
+            "UPDATE approvals SET status = 'approved', decision_comment = ?, decided_by = ?, decided_at = ? WHERE id = ?",
+            (comment.strip(), decided_by, utc_now(), approval_id),
+        )
         row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
     return dict(row)
+
+
+def reject_approval(approval_id: str, decided_by: str, comment: str = "") -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        if row is None:
+            return None
+        if row["status"] != "pending":
+            return dict(row)
+        conn.execute(
+            "UPDATE approvals SET status = 'rejected', decision_comment = ?, decided_by = ?, decided_at = ? WHERE id = ?",
+            (comment.strip() or "审批人拒绝执行该变更。", decided_by, utc_now(), approval_id),
+        )
+        row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+    return dict(row)
+
+
+def _create_pre_execution_backup(conn: sqlite3.Connection, approval_id: str) -> str:
+    """Make a restorable local SQLite snapshot immediately before an enabled demo write."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"approval-{approval_id[:8]}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.db"
+    backup_path = BACKUP_DIR / name
+    with sqlite3.connect(backup_path) as destination:
+        conn.backup(destination)
+    return str(backup_path.relative_to(ROOT)).replace("\\", "/")
 
 
 def execute_approved(approval_id: str, allow_writes: bool) -> dict[str, Any] | None:
@@ -222,15 +295,27 @@ def execute_approved(approval_id: str, allow_writes: bool) -> dict[str, Any] | N
             return None
         if row["status"] != "approved":
             return {**dict(row), "outcome": "not_approved"}
-        sql = " ".join(row["sql"].strip().split()).rstrip(";")
+        sql = _normalized_sql(row["sql"])
         if not allow_writes:
-            return {**dict(row), "outcome": "safe_mode"}
+            preview = _impact_preview(conn, sql)
+            outcome = {
+                "mode": "safe_mode",
+                "would_affect_rows": preview["matched_rows"],
+                "message": "默认安全模式：审批已记录，未执行任何写库操作。",
+            }
+            conn.execute(
+                "UPDATE approvals SET status = 'approved_safe_mode', executed_at = ?, execution_result = ? WHERE id = ?",
+                (utc_now(), json.dumps(outcome, ensure_ascii=False), approval_id),
+            )
+            updated = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+            return {**dict(updated), "outcome": "safe_mode"}
         # The Demo deliberately permits exactly one auditable destructive action.
         # Production must replace this with an AST policy and short-lived credentials.
         if sql.lower() != "delete from alerts where status = 'closed'":
             return {**dict(row), "outcome": "not_allowlisted"}
+        backup_path = _create_pre_execution_backup(conn, approval_id)
         cursor = conn.execute(sql)
-        outcome = {"deleted_rows": cursor.rowcount}
+        outcome = {"deleted_rows": cursor.rowcount, "backup_path": backup_path, "mode": "executed"}
         conn.execute(
             "UPDATE approvals SET status = 'executed', executed_at = ?, execution_result = ? WHERE id = ?",
             (utc_now(), json.dumps(outcome), approval_id),
@@ -263,7 +348,7 @@ def system_metrics() -> dict[str, int | bool]:
         ).fetchone()[0]
         knowledge_count = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
         audit_count = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
-        approval_count = conn.execute("SELECT COUNT(*) FROM approvals WHERE status IN ('approved', 'executed')").fetchone()[0]
+        approval_count = conn.execute("SELECT COUNT(*) FROM approvals WHERE status IN ('approved', 'approved_safe_mode', 'executed')").fetchone()[0]
         metric_count = conn.execute("SELECT COUNT(*) FROM metric_definitions").fetchone()[0]
     return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "metric_definitions": metric_count, "audit_events": audit_count, "approved_actions": approval_count}
 
@@ -378,12 +463,15 @@ def knowledge_chunks() -> list[dict[str, Any]]:
 def list_approvals(limit: int = 100) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, created_at, requester, sql, reason, status, executed_at, execution_result "
+            "SELECT id, created_at, requester, sql, reason, status, risk_level, impact_preview, decision_comment, "
+            "decided_by, decided_at, executed_at, execution_result "
             "FROM approvals ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
     result = []
     for row in rows:
         item = dict(row)
+        if item["impact_preview"]:
+            item["impact_preview"] = json.loads(item["impact_preview"])
         if item["execution_result"]:
             item["execution_result"] = json.loads(item["execution_result"])
         result.append(item)

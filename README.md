@@ -16,7 +16,7 @@ Recall → Writer → Reviewer → Fix → Runner
 - 三路元数据召回：表名/字段名、业务别名、语义关键词。
 - 可替换的 SQL Writer：内置规则 Provider 保证 Demo 离线可跑；接口已预留给任意 LLM。
 - SQL Reviewer：单语句、只读、白名单表/字段、`LIMIT`、危险关键字检查。
-- 风险分级与审批单：`AUTO`、`MANUAL`、`BLOCKED`；所有决策写入审计日志。
+- 风险分级与审批单：`AUTO`、`MANUAL`、`BLOCKED`；审批前展示影响行数预估与样本，支持同意/拒绝、审批意见、审批人和完整审计。
 - Agentic RAG：无法生成可执行查询时，以运维知识库生成带来源的回答。
 - Context Engineering：超预算上下文先落盘、再保留摘要，减少后续提示词负担。
 - Skill 加载：读取 `skills/*/SKILL.md`，将 SOP 作为可复用运行时能力。
@@ -42,7 +42,7 @@ uvicorn app.main:app --reload
 
 - 配置 `SAFE_SQL_AGENT_LLM_*` 后，SQL Writer 优先调用 OpenAI 兼容接口；调用失败会自动降级为离线规则 Provider。
 - 配置 `SAFE_SQL_AGENT_MYSQL_URL` 后，审查通过的只读 SQL 会发往 MySQL，并从 `information_schema` 读取真实表/字段用于召回。安装驱动：`python -m pip install -e ".[mysql]"`。
-- 写库默认关闭。仅在本地演示受控审批执行时设置 `SAFE_SQL_AGENT_ALLOW_APPROVED_WRITES=true`；Demo 只白名单允许 `DELETE FROM alerts WHERE status = 'closed'`。
+- 写库默认关闭。安全模式审批后会显示 `approved_safe_mode`，表示“审批已留痕但没有执行 SQL”。仅在本地演示受控审批执行时设置 `SAFE_SQL_AGENT_ALLOW_APPROVED_WRITES=true`；Demo 只白名单允许 `DELETE FROM alerts WHERE status = 'closed'`，并会在真正执行前自动把 SQLite 备份到 `data/backups/`。
 
 运行测试：
 
