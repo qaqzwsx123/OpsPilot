@@ -10,8 +10,8 @@ from app.workflow import SqlAgentWorkflow
 class WorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        if DB_PATH.exists():
-            DB_PATH.unlink()
+        # Keep tests safe to run while the local Uvicorn demo server is using SQLite.
+        # The seed function is idempotent, so no shared database needs to be deleted.
         seed_demo_data()
 
     def test_p1_alert_query_completes(self) -> None:
@@ -47,4 +47,3 @@ class WorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

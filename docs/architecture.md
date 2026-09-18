@@ -59,3 +59,9 @@ Readonly Runner ── SQLite 只读执行、审计日志、结果上下文压�
 4. 将审批流接入企业 IAM 与工单平台，执行操作使用短期授权令牌。
 5. 建设带版本的数据集、离线评测和线上 Trace/指标看板。
 
+## 六、当前可运行版本与生产方案的边界
+
+- 当前本地页面会实际调用 `/api/v1/query/stream`，阶段事件以 SSE 逐条刷新；不是前端伪造动画。
+- 会话历史、审计记录、审批单和知识文档持久化在本地 SQLite；业务查询可通过 `SAFE_SQL_AGENT_MYSQL_URL` 切换到 MySQL。
+- 配置 OpenAI 兼容的 `SAFE_SQL_AGENT_LLM_*` 环境变量后，系统使用真实 LLM 的 JSON 结构化输出；缺少密钥时自动回退为离线规则 Provider，便于演示和回归测试。
+- “审批后执行”默认处于安全模式，只记录审批结果。只有显式开启 `SAFE_SQL_AGENT_ALLOW_APPROVED_WRITES=true` 后，才执行唯一白名单 Demo 操作。不要把该白名单机制直接用于生产。

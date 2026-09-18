@@ -35,10 +35,10 @@
         </section>
 
         <section class="metrics">
-          <article><span class="metric-icon violet">▦</span><div><strong>13</strong><small>核心业务表</small></div><em>已接入</em></article>
-          <article><span class="metric-icon cyan">⌁</span><div><strong>700<span>+</span></strong><small>可查询指标</small></div><em>实时</em></article>
-          <article><span class="metric-icon orange">◉</span><div><strong>93<span>%</span></strong><small>查询成功率</small></div><em>评测集</em></article>
-          <article><span class="metric-icon green">◈</span><div><strong>100<span>%</span></strong><small>高危操作审批</small></div><em>安全</em></article>
+          <article><span class="metric-icon violet">▦</span><div><strong id="metric-tables">—</strong><small>当前接入表</small></div><em>实时</em></article>
+          <article><span class="metric-icon cyan">⌁</span><div><strong id="metric-knowledge">—</strong><small>知识文档</small></div><em>实时</em></article>
+          <article><span class="metric-icon orange">◉</span><div><strong id="metric-eval">—</strong><small>离线评测通过率</small></div><em>可运行</em></article>
+          <article><span class="metric-icon green">◈</span><div><strong id="metric-audit">—</strong><small>审计事件</small></div><em>实时</em></article>
         </section>
 
         <section class="workspace-grid">
@@ -81,7 +81,7 @@
 
       <section id="audit-page" class="page">
         <div class="section-intro"><span class="pill">AUDITABLE BY DEFAULT</span><h2>每次决策，都有迹可循。</h2><p>记录用户问题、执行 SQL、风险判断和最终结果，方便故障复盘与合规审计。</p></div>
-        <article class="card audit-card"><div class="card-heading"><div><p class="section-label">RECENT ACTIVITIES</p><h3>审计记录</h3></div><button id="refresh-audit" class="text-button">刷新记录</button></div><div id="audit-list" class="audit-list"></div></article>
+        <article class="card audit-card"><div class="card-heading"><div><p class="section-label">RECENT ACTIVITIES</p><h3>审计记录</h3></div><div class="audit-actions"><button id="run-evaluation" class="text-button">运行评测</button><button id="refresh-audit" class="text-button">刷新记录</button></div></div><div id="evaluation-result" class="evaluation-result" hidden></div><div id="audit-list" class="audit-list"></div></article>
       </section>
 
       <section id="skills-page" class="page">

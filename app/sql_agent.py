@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from dataclasses import dataclass
 
 from app.models import CandidateTable, ExecutionMode, GeneratedSql, ReviewResult
@@ -30,13 +31,25 @@ SCHEMA: dict[str, dict[str, object]] = {
 }
 
 
+@lru_cache(maxsize=1)
+def active_schema() -> dict[str, dict[str, object]]:
+    """Uses demo metadata by default; fetches actual schema when MySQL is configured."""
+    from app.config import settings
+
+    if settings.mysql_enabled:
+        from app.mysql_adapter import introspect_schema
+
+        return introspect_schema()
+    return SCHEMA
+
+
 class MetadataRetriever:
     """Three-way recall: schema words, business aliases and description semantics."""
 
     def retrieve(self, question: str, top_k: int = 3) -> list[CandidateTable]:
         normalized = question.lower()
         candidates: list[CandidateTable] = []
-        for table, meta in SCHEMA.items():
+        for table, meta in active_schema().items():
             matched: list[str] = []
             score = 0
             if table in normalized:

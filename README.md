@@ -20,7 +20,7 @@ Recall → Writer → Reviewer → Fix → Runner
 - Agentic RAG：无法生成可执行查询时，以运维知识库生成带来源的回答。
 - Context Engineering：超预算上下文先落盘、再保留摘要，减少后续提示词负担。
 - Skill 加载：读取 `skills/*/SKILL.md`，将 SOP 作为可复用运行时能力。
-- FastAPI、SSE 事件流、SQLite 示例数据、单元测试和离线评测集。
+- FastAPI、真正逐阶段推送的 SSE 事件流、SQLite 示例数据、持久化会话记忆、审批执行开关、单元测试和离线评测集。
 
 ## 快速开始
 
@@ -35,6 +35,14 @@ uvicorn app.main:app --reload
 ```
 
 访问 `http://127.0.0.1:8000/` 打开可视化运营控制台；`http://127.0.0.1:8000/docs` 为 Swagger 接口文档。
+
+## 可选：接入真实服务
+
+复制 `.env.example` 中需要的变量到系统环境或 `.env` 加载方案中。
+
+- 配置 `SAFE_SQL_AGENT_LLM_*` 后，SQL Writer 优先调用 OpenAI 兼容接口；调用失败会自动降级为离线规则 Provider。
+- 配置 `SAFE_SQL_AGENT_MYSQL_URL` 后，审查通过的只读 SQL 会发往 MySQL，并从 `information_schema` 读取真实表/字段用于召回。安装驱动：`python -m pip install -e ".[mysql]"`。
+- 写库默认关闭。仅在本地演示受控审批执行时设置 `SAFE_SQL_AGENT_ALLOW_APPROVED_WRITES=true`；Demo 只白名单允许 `DELETE FROM alerts WHERE status = 'closed'`。
 
 运行测试：
 

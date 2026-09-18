@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from app.config import settings
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -55,10 +56,21 @@ def initialize() -> None:
             );
             CREATE TABLE IF NOT EXISTS approvals (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
-              sql TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL
+              sql TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL,
+              executed_at TEXT, execution_result TEXT
+            );
+            CREATE TABLE IF NOT EXISTS conversation_memory (
+              id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
+              role TEXT NOT NULL, content TEXT NOT NULL
             );
             """
         )
+        # Lightweight migrations keep existing local demo databases compatible.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(approvals)").fetchall()}
+        if "executed_at" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN executed_at TEXT")
+        if "execution_result" not in columns:
+            conn.execute("ALTER TABLE approvals ADD COLUMN execution_result TEXT")
 
 
 def seed_demo_data() -> None:
@@ -108,6 +120,10 @@ def seed_demo_data() -> None:
 
 
 def execute_readonly(sql: str) -> list[dict[str, Any]]:
+    if settings.mysql_enabled:
+        from app.mysql_adapter import execute_readonly as execute_mysql_readonly
+
+        return execute_mysql_readonly(sql)
     with connect() as conn:
         rows = conn.execute(sql).fetchall()
     return [dict(row) for row in rows]
@@ -125,7 +141,7 @@ def create_approval(requester: str, sql: str, reason: str) -> str:
     approval_id = str(uuid4())
     with connect() as conn:
         conn.execute(
-            "INSERT INTO approvals VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO approvals (id, created_at, requester, sql, reason, status) VALUES (?, ?, ?, ?, ?, ?)",
             (approval_id, utc_now(), requester, sql, reason, "pending"),
         )
     return approval_id
@@ -136,12 +152,67 @@ def approve(approval_id: str) -> dict[str, Any] | None:
         row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
         if row is None:
             return None
+        if row["status"] != "pending":
+            return dict(row)
         conn.execute("UPDATE approvals SET status = 'approved' WHERE id = ?", (approval_id,))
+        row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
     return dict(row)
+
+
+def execute_approved(approval_id: str, allow_writes: bool) -> dict[str, Any] | None:
+    """Executes only the explicitly allow-listed local Demo operation after approval."""
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        if row is None:
+            return None
+        if row["status"] != "approved":
+            return {**dict(row), "outcome": "not_approved"}
+        sql = " ".join(row["sql"].strip().split()).rstrip(";")
+        if not allow_writes:
+            return {**dict(row), "outcome": "safe_mode"}
+        # The Demo deliberately permits exactly one auditable destructive action.
+        # Production must replace this with an AST policy and short-lived credentials.
+        if sql.lower() != "delete from alerts where status = 'closed'":
+            return {**dict(row), "outcome": "not_allowlisted"}
+        cursor = conn.execute(sql)
+        outcome = {"deleted_rows": cursor.rowcount}
+        conn.execute(
+            "UPDATE approvals SET status = 'executed', executed_at = ?, execution_result = ? WHERE id = ?",
+            (utc_now(), json.dumps(outcome), approval_id),
+        )
+        updated = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+    return {**dict(updated), "outcome": "executed"}
+
+
+def save_memory(requester: str, role: str, content: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO conversation_memory VALUES (?, ?, ?, ?, ?)",
+            (str(uuid4()), utc_now(), requester, role, content),
+        )
+
+
+def recent_memory(requester: str, limit: int = 6) -> list[dict[str, str]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM conversation_memory WHERE requester = ? ORDER BY created_at DESC LIMIT ?",
+            (requester, limit),
+        ).fetchall()
+    return [dict(row) for row in reversed(rows)]
+
+
+def system_metrics() -> dict[str, int | bool]:
+    with connect() as conn:
+        table_count = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('assets', 'alerts', 'tickets', 'work_orders')"
+        ).fetchone()[0]
+        knowledge_count = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
+        audit_count = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+        approval_count = conn.execute("SELECT COUNT(*) FROM approvals WHERE status IN ('approved', 'executed')").fetchone()[0]
+    return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "audit_events": audit_count, "approved_actions": approval_count}
 
 
 def list_audit(limit: int = 50) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
-

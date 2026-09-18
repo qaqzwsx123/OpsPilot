@@ -4,10 +4,11 @@ from pathlib import Path
 from typing import Callable
 
 from app.context import ContextCompressor
-from app.database import create_approval, execute_readonly, write_audit
+from app.database import create_approval, execute_readonly, recent_memory, save_memory, write_audit
 from app.models import QueryResult, WorkflowEvent
+from app.providers import ResilientSqlWriter
 from app.rag import KnowledgeRag
-from app.sql_agent import MetadataRetriever, RiskAssessor, RuleBasedSqlWriter, SqlReviewer
+from app.sql_agent import MetadataRetriever, RiskAssessor, SqlReviewer
 
 
 EventHandler = Callable[[WorkflowEvent], None]
@@ -16,7 +17,7 @@ EventHandler = Callable[[WorkflowEvent], None]
 class SqlAgentWorkflow:
     def __init__(self) -> None:
         self.retriever = MetadataRetriever()
-        self.writer = RuleBasedSqlWriter()
+        self.writer = ResilientSqlWriter()
         self.reviewer = SqlReviewer()
         self.risk_assessor = RiskAssessor()
         self.rag = KnowledgeRag()
@@ -31,6 +32,14 @@ class SqlAgentWorkflow:
             if on_event:
                 on_event(event)
 
+        def finalize(result: QueryResult) -> QueryResult:
+            save_memory(requester, "assistant", result.answer)
+            return result
+
+        memory = recent_memory(requester)
+        if memory:
+            emit("context", "已加载用户近期会话记忆", message_count=len(memory))
+        save_memory(requester, "user", question)
         emit("recall", "开始三路元数据召回")
         candidates = self.retriever.retrieve(question)
         emit("recall", "元数据召回完成", tables=[candidate.name for candidate in candidates])
@@ -39,9 +48,9 @@ class SqlAgentWorkflow:
             emit("rag", "无法生成可靠 SQL，切换到运维知识库")
             answer, sources = self.rag.answer(question)
             write_audit(requester, "rag_fallback", {"question": question, "sources": sources})
-            return QueryResult("answered_by_rag", answer, sources=sources, events=events)
+            return finalize(QueryResult("answered_by_rag", answer, sources=sources, events=events))
 
-        emit("writer", "已生成候选 SQL", sql=generated.sql, confidence=generated.confidence)
+        emit("writer", "已生成候选 SQL", sql=generated.sql, confidence=generated.confidence, provider=self.writer.last_provider)
         review = self.reviewer.review(generated.sql, [candidate.name for candidate in candidates])
         if not review.accepted:
             emit("reviewer", "SQL 审查未通过，进入修复/拒绝路径", issues=review.issues)
@@ -49,9 +58,9 @@ class SqlAgentWorkflow:
             if decision.mode.value == "manual":
                 approval_id = create_approval(requester, generated.sql, decision.reason)
                 write_audit(requester, "approval_requested", {"sql": generated.sql, "reason": decision.reason})
-                return QueryResult("approval_required", "该请求涉及写操作，已创建人工审批单。", generated.sql, approval_id=approval_id, events=events)
+                return finalize(QueryResult("approval_required", "该请求涉及写操作，已创建人工审批单。", generated.sql, approval_id=approval_id, events=events))
             write_audit(requester, "sql_blocked", {"sql": generated.sql, "issues": review.issues})
-            return QueryResult("blocked", "SQL 未通过安全审查：" + "；".join(review.issues), generated.sql, events=events)
+            return finalize(QueryResult("blocked", "SQL 未通过安全审查：" + "；".join(review.issues), generated.sql, events=events))
 
         emit("reviewer", "SQL 审查通过", sql=review.normalized_sql)
         decision = self.risk_assessor.assess(review.normalized_sql or generated.sql)
@@ -59,7 +68,7 @@ class SqlAgentWorkflow:
         if decision.mode.value != "auto":
             approval_id = create_approval(requester, review.normalized_sql or generated.sql, decision.reason)
             write_audit(requester, "approval_requested", {"sql": review.normalized_sql, "reason": decision.reason})
-            return QueryResult("approval_required", "需要人工审批后才能执行。", review.normalized_sql, approval_id=approval_id, events=events)
+            return finalize(QueryResult("approval_required", "需要人工审批后才能执行。", review.normalized_sql, approval_id=approval_id, events=events))
 
         sql = review.normalized_sql or generated.sql
         try:
@@ -68,10 +77,9 @@ class SqlAgentWorkflow:
             emit("runner", "SQL 执行失败，转知识库兜底", error=type(exc).__name__)
             answer, sources = self.rag.answer(question)
             write_audit(requester, "sql_execution_failed", {"sql": sql, "error": type(exc).__name__})
-            return QueryResult("answered_by_rag", answer, sql=sql, sources=sources, events=events)
+            return finalize(QueryResult("answered_by_rag", answer, sql=sql, sources=sources, events=events))
         compacted, stats = self.compressor.compact(str(rows))
         emit("runner", "只读 SQL 执行完成", row_count=len(rows), context=stats)
         write_audit(requester, "sql_executed", {"question": question, "sql": sql, "row_count": len(rows)})
         answer = f"查询完成，共返回 {len(rows)} 条记录。"
-        return QueryResult("completed", answer, sql=sql, rows=rows, events=events)
-
+        return finalize(QueryResult("completed", answer, sql=sql, rows=rows, events=events))
