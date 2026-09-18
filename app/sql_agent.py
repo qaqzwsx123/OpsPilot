@@ -153,6 +153,24 @@ class SqlReviewer:
         return ReviewResult(True, [], normalized)
 
 
+class SqlFixer:
+    """Conservative deterministic repair. It only narrows read queries; it never repairs writes."""
+
+    def fix(self, sql: str, issues: list[str], allowed_tables: list[str]) -> str | None:
+        normalized = " ".join(sql.strip().split())
+        if not normalized.lower().startswith("select"):
+            return None
+        if any("未授权表" in issue or "未识别到" in issue for issue in issues):
+            return None
+        # A model can accidentally emit multiple statements. Keep only the first
+        # read statement and let the Reviewer revalidate it in the next iteration.
+        if normalized.count(";") > 1:
+            normalized = normalized.split(";", 1)[0].strip()
+        if " limit " not in normalized.lower():
+            normalized = normalized.rstrip(";") + " LIMIT 100"
+        return normalized + ("" if normalized.endswith(";") else ";")
+
+
 @dataclass(slots=True)
 class RiskDecision:
     mode: ExecutionMode

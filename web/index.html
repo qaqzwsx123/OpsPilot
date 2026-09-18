@@ -13,9 +13,11 @@
       <div class="workspace"><span class="workspace-dot"></span>生产运维空间 <span class="chevron">⌄</span></div>
       <nav>
         <button class="nav-item active" data-page="agent"><span>◈</span> 智能查询</button>
+        <button class="nav-item" data-page="monitoring"><span>◌</span> 监控中心</button>
         <button class="nav-item" data-page="audit"><span>◷</span> 审计中心</button>
         <button class="nav-item" data-page="approval"><span>✓</span> 审批中心</button>
         <button class="nav-item" data-page="knowledge"><span>▤</span> 知识库</button>
+        <button class="nav-item" data-page="tools"><span>⌘</span> 工具中心</button>
         <button class="nav-item" data-page="skills"><span>◇</span> Skills 与 SOP</button>
       </nav>
       <div class="sidebar-bottom">
@@ -103,6 +105,19 @@
       <section id="approval-page" class="page">
         <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><h2>高风险操作必须由人确认。</h2><p>查询 Agent 只能创建审批单；是否执行由安全开关、白名单和审批状态共同决定。</p></div>
         <article class="card approval-library"><div class="card-heading"><div><p class="section-label">APPROVAL QUEUE</p><h3>审批队列</h3></div><button id="refresh-approvals" class="text-button">刷新</button></div><div id="approval-list" class="approval-list"></div></article>
+      </section>
+
+      <section id="monitoring-page" class="page">
+        <div class="section-intro"><span class="pill">LIVE OPERATIONS</span><h2>从告警到工单，实时掌握运行状态。</h2><p>监控中心读取当前资产、未关闭告警和待处理工单；所有数据均可回到智能查询继续追问。</p></div>
+        <div id="monitoring-summary" class="monitor-summary"></div>
+        <div class="monitor-layout"><article class="card"><div class="card-heading"><div><p class="section-label">ASSET STATUS</p><h3>资产运行状态</h3></div><button id="refresh-monitoring" class="text-button">刷新</button></div><div id="asset-state-list" class="state-list"></div></article><article class="card"><div class="card-heading"><div><p class="section-label">ALERT SEVERITY</p><h3>未关闭告警分布</h3></div></div><div id="alert-severity-list" class="state-list"></div></article></div>
+        <article class="card latest-alert-card"><div class="card-heading"><div><p class="section-label">LATEST ALERTS</p><h3>最近告警</h3></div><button class="text-button monitor-query" data-query="查询最近的 P1 告警">用 Agent 分析 P1 告警</button></div><div id="monitoring-alert-list" class="table-wrap"></div></article>
+      </section>
+
+      <section id="tools-page" class="page">
+        <div class="section-intro"><span class="pill">TOOL / FUNCTION CALLING</span><h2>Agent 只能调用被注册和授权的工具。</h2><p>工具按风险分级。只读工具可直接试运行；变更工具必须进入审批；高危维护工具会被拒绝。</p></div>
+        <div id="tool-result" class="tool-result" hidden></div>
+        <div id="tool-list" class="tool-grid"></div>
       </section>
     </main>
   </div>

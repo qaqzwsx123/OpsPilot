@@ -252,6 +252,26 @@ def list_approvals(limit: int = 100) -> list[dict[str, Any]]:
     return result
 
 
+def monitoring_overview() -> dict[str, Any]:
+    with connect() as conn:
+        asset_states = [dict(row) for row in conn.execute(
+            "SELECT status, COUNT(*) AS count FROM assets GROUP BY status ORDER BY count DESC"
+        ).fetchall()]
+        alert_severity = [dict(row) for row in conn.execute(
+            "SELECT severity, COUNT(*) AS count FROM alerts WHERE status != 'closed' GROUP BY severity ORDER BY severity"
+        ).fetchall()]
+        latest_alerts = [dict(row) for row in conn.execute(
+            "SELECT a.id, a.severity, a.title, a.status, a.created_at, s.name AS asset_name, s.region "
+            "FROM alerts a JOIN assets s ON a.asset_id = s.id WHERE a.status != 'closed' "
+            "ORDER BY a.created_at DESC LIMIT 10"
+        ).fetchall()]
+        open_tickets = conn.execute("SELECT COUNT(*) FROM tickets WHERE status != 'closed'").fetchone()[0]
+    return {
+        "asset_states": asset_states, "alert_severity": alert_severity,
+        "latest_alerts": latest_alerts, "open_tickets": open_tickets,
+    }
+
+
 def list_audit(limit: int = 50) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()

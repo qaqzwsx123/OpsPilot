@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.database import DB_PATH, seed_demo_data
-from app.sql_agent import MetadataRetriever, SqlReviewer
+from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
 from app.workflow import SqlAgentWorkflow
 
 
@@ -43,6 +43,11 @@ class WorkflowTests(unittest.TestCase):
     def test_retrieval_is_business_aware(self) -> None:
         tables = MetadataRetriever().retrieve("有没有未关闭的高优工单")
         self.assertEqual(tables[0].name, "tickets")
+
+    def test_fixer_only_repairs_read_queries(self) -> None:
+        fixed = SqlFixer().fix("SELECT id FROM alerts; DROP TABLE alerts;", ["只允许单条 SQL"], ["alerts"])
+        self.assertEqual(fixed, "SELECT id FROM alerts LIMIT 100;")
+        self.assertIsNone(SqlFixer().fix("DELETE FROM alerts;", ["只允许 SELECT 查询"], ["alerts"]))
 
 
 if __name__ == "__main__":

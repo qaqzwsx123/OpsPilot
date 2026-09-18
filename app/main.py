@@ -12,9 +12,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, recent_memory, seed_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, monitoring_overview, recent_memory, seed_demo_data, system_metrics, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
+from app.tool_registry import catalog, invoke
 from app.workflow import SqlAgentWorkflow
 
 
@@ -147,6 +148,23 @@ def metrics() -> dict:
 @app.get("/api/v1/approvals")
 def approvals(limit: int = 100) -> list[dict]:
     return list_approvals(min(max(limit, 1), 200))
+
+
+@app.get("/api/v1/monitoring/overview")
+def monitoring() -> dict:
+    return monitoring_overview()
+
+
+@app.get("/api/v1/tools")
+def tools_catalog() -> list[dict[str, str]]:
+    return catalog()
+
+
+@app.post("/api/v1/tools/{tool_name}/invoke")
+def invoke_tool(tool_name: str) -> dict:
+    result = invoke(tool_name)
+    write_audit("Lenovo", "tool_invoked", {"tool": tool_name, "status": result["status"]})
+    return result
 
 
 @app.get("/api/v1/memory/{requester}")

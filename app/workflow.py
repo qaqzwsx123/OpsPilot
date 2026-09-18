@@ -8,7 +8,7 @@ from app.database import create_approval, execute_readonly, recent_memory, save_
 from app.models import QueryResult, WorkflowEvent
 from app.providers import ResilientSqlWriter
 from app.rag import KnowledgeRag
-from app.sql_agent import MetadataRetriever, RiskAssessor, SqlReviewer
+from app.sql_agent import MetadataRetriever, RiskAssessor, SqlFixer, SqlReviewer
 
 
 EventHandler = Callable[[WorkflowEvent], None]
@@ -19,6 +19,7 @@ class SqlAgentWorkflow:
         self.retriever = MetadataRetriever()
         self.writer = ResilientSqlWriter()
         self.reviewer = SqlReviewer()
+        self.fixer = SqlFixer()
         self.risk_assessor = RiskAssessor()
         self.rag = KnowledgeRag()
         self.compressor = ContextCompressor(Path(__file__).resolve().parent.parent / "data" / "context")
@@ -51,7 +52,17 @@ class SqlAgentWorkflow:
             return finalize(QueryResult("answered_by_rag", answer, sources=sources, events=events))
 
         emit("writer", "已生成候选 SQL", sql=generated.sql, confidence=generated.confidence, provider=self.writer.last_provider)
-        review = self.reviewer.review(generated.sql, [candidate.name for candidate in candidates])
+        allowed_tables = [candidate.name for candidate in candidates]
+        review = self.reviewer.review(generated.sql, allowed_tables)
+        repair_attempt = 0
+        while not review.accepted and repair_attempt < 2:
+            repaired_sql = self.fixer.fix(generated.sql, review.issues, allowed_tables)
+            if repaired_sql is None or repaired_sql == generated.sql:
+                break
+            repair_attempt += 1
+            emit("fix", "Reviewer 未通过，执行受控 SQL 修复", attempt=repair_attempt, sql=repaired_sql)
+            generated.sql = repaired_sql
+            review = self.reviewer.review(generated.sql, allowed_tables)
         if not review.accepted:
             emit("reviewer", "SQL 审查未通过，进入修复/拒绝路径", issues=review.issues)
             decision = self.risk_assessor.assess(generated.sql)

@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 let latestSql = "";
 let latestApprovalId = "";
 
-const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
+const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[character]);
@@ -138,16 +138,17 @@ async function runEvaluation() {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", audit:"审计中心", approval:"审批中心", knowledge:"知识库", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge();
+  const titles = { agent:"智能运维查询", monitoring:"监控中心", audit:"审计中心", approval:"审批中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
-document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { $("#question").value = button.dataset.query; runQuery(); }));
+document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = button.dataset.query; runQuery(); }));
 $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard.writeText(latestSql); toast("SQL 已复制到剪贴板"); });
 $("#refresh-audit").addEventListener("click", loadAudit);
 $("#run-evaluation").addEventListener("click", runEvaluation);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
 $("#refresh-approvals").addEventListener("click", loadApprovals);
+$("#refresh-monitoring").addEventListener("click", loadMonitoring);
 $("#save-knowledge").addEventListener("click", saveKnowledge);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
@@ -179,4 +180,41 @@ async function resolveApproval(id, button) {
     toast(result.message); loadApprovals(); loadAudit(); loadMetrics();
   } catch (error) { toast(error.message || "审批失败"); }
   finally { if (button) { button.disabled = false; button.textContent = "审批并尝试执行"; } }
+}
+
+function renderStateRows(target, rows, colors) {
+  const maximum = Math.max.apply(null, rows.map((row) => row.count).concat([1]));
+  target.innerHTML = rows.map((row, index) => '<div class="state-row"><span>' + escapeHtml(row.status || row.severity) + '</span><i><b style="width:' + Math.round(row.count / maximum * 100) + '%;background:' + (colors[index % colors.length]) + '"></b></i><em>' + row.count + '</em></div>').join("");
+}
+
+async function loadMonitoring() {
+  try {
+    const data = await (await fetch("/api/v1/monitoring/overview")).json();
+    const assetTotal = data.asset_states.reduce((sum, item) => sum + item.count, 0);
+    const alertTotal = data.alert_severity.reduce((sum, item) => sum + item.count, 0);
+    $("#monitoring-summary").innerHTML = '<article><strong>' + assetTotal + '</strong><small>纳管设备资产</small></article><article><strong>' + alertTotal + '</strong><small>未关闭告警</small></article><article><strong>' + data.open_tickets + '</strong><small>待处理工单</small></article>';
+    renderStateRows($("#asset-state-list"), data.asset_states, ["#26ad75", "#e88b42", "#7668ed"]);
+    renderStateRows($("#alert-severity-list"), data.alert_severity, ["#ed6d61", "#e99b47", "#796dec"]);
+    $("#monitoring-alert-list").innerHTML = renderRows(data.latest_alerts);
+  } catch { $("#monitoring-summary").innerHTML = '<div class="empty-state"><strong>无法加载监控数据</strong></div>'; }
+}
+
+function renderTools(tools) {
+  const target = $("#tool-list");
+  target.innerHTML = tools.map((tool) => '<article class="card tool-card"><span class="risk ' + escapeHtml(tool.risk) + '">' + escapeHtml(tool.risk.toUpperCase()) + '</span><p class="section-label">' + escapeHtml(tool.category) + '</p><h3>' + escapeHtml(tool.name) + '</h3><p>' + escapeHtml(tool.description) + '</p><button class="text-button" data-tool="' + escapeHtml(tool.name) + '">试运行工具</button></article>').join("");
+  document.querySelectorAll("[data-tool]").forEach((button) => button.addEventListener("click", () => invokeTool(button.dataset.tool, button)));
+}
+
+async function loadTools() {
+  try { renderTools(await (await fetch("/api/v1/tools")).json()); } catch { $("#tool-list").innerHTML = '<div class="empty-state"><strong>工具中心加载失败</strong></div>'; }
+}
+
+async function invokeTool(name, button) {
+  button.disabled = true; button.textContent = "调用中…";
+  try {
+    const response = await fetch("/api/v1/tools/" + encodeURIComponent(name) + "/invoke", { method:"POST" });
+    const result = await response.json(); const box = $("#tool-result"); box.hidden = false;
+    box.textContent = JSON.stringify(result, null, 2); toast("工具调用状态：" + result.status); loadAudit();
+  } catch { toast("工具调用失败"); }
+  finally { button.disabled = false; button.textContent = "试运行工具"; }
 }
