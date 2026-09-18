@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, audit_integrity, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, audit_integrity, data_catalog, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
 from app.tool_registry import catalog, invoke
@@ -138,6 +138,24 @@ def audit(limit: int = 50) -> list[dict]:
 @app.get("/api/v1/audit/integrity")
 def verify_audit_integrity() -> dict:
     return audit_integrity()
+
+
+@app.get("/api/v1/data/tables")
+def explorer_catalog(role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无数据浏览权限。")
+    return data_catalog()
+
+
+@app.get("/api/v1/data/tables/{table_name}")
+def explorer_table(table_name: str, role: str = "viewer", limit: int = 30, offset: int = 0) -> dict:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无数据浏览权限。")
+    snapshot = table_snapshot(table_name, min(max(limit, 1), 100), max(offset, 0))
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="该表不在数据浏览器授权范围内。")
+    write_audit("Lenovo", "data_explorer_viewed", {"table": table_name, "limit": snapshot["limit"], "offset": snapshot["offset"], "role": role})
+    return snapshot
 
 
 @app.get("/api/v1/skills")

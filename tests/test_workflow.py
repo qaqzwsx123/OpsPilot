@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.database import approve, audit_integrity, create_approval, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data, write_audit
+from app.database import approve, audit_integrity, create_approval, data_catalog, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
 from app.workflow import SqlAgentWorkflow
 
@@ -80,6 +80,13 @@ class WorkflowTests(unittest.TestCase):
     def test_audit_hash_chain_is_verifiable(self) -> None:
         write_audit("test-audit", "integrity_test", {"case": "hash_chain"})
         self.assertTrue(audit_integrity()["valid"])
+
+    def test_data_explorer_uses_allowlisted_tables_and_bounded_rows(self) -> None:
+        self.assertIn("assets", [table["name"] for table in data_catalog()])
+        snapshot = table_snapshot("assets", limit=2)
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(len(snapshot["rows"]), 2)
+        self.assertIsNone(table_snapshot("sqlite_master"))
 
 
 if __name__ == "__main__":

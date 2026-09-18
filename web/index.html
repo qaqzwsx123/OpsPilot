@@ -15,6 +15,7 @@
         <button class="nav-item active" data-page="agent"><span>◈</span> 智能查询</button>
         <button class="nav-item" data-page="monitoring"><span>◌</span> 监控中心</button>
         <button class="nav-item" data-page="metrics"><span>▥</span> 指标中心</button>
+        <button class="nav-item" data-page="data"><span>▤</span> 数据浏览器</button>
         <button class="nav-item" data-page="audit"><span>◷</span> 审计中心</button>
         <button class="nav-item" data-page="approval"><span>✓</span> 审批中心</button>
         <button class="nav-item" data-page="policy"><span>⊹</span> 权限中心</button>
@@ -129,6 +130,14 @@
           <article class="card metric-list-card"><div class="card-heading"><div><p class="section-label">CATALOG</p><h3>指标目录</h3></div><button id="refresh-metrics" class="text-button">刷新</button></div><div id="metric-list" class="metric-list"></div></article>
         </div>
         <article id="trend-card" class="card trend-card" hidden><div class="card-heading"><div><p class="section-label">24H TREND</p><h3 id="trend-title">指标趋势</h3></div><button id="analyze-metric" class="text-button">交给 Agent 分析</button></div><div id="trend-summary" class="trend-summary"></div><svg id="trend-chart" viewBox="0 0 600 160" preserveAspectRatio="none"></svg><div id="trend-axis" class="trend-axis"></div></article>
+      </section>
+
+      <section id="data-page" class="page">
+        <div class="section-intro"><span class="pill">READ-ONLY DATA EXPLORER</span><h2>像数据库客户端一样查看本地数据。</h2><p>展示经过白名单授权的 SQLite 表、字段结构和分页样例数据。这里没有修改、删除或执行任意 SQL 的入口。</p></div>
+        <div class="data-layout">
+          <article class="card data-catalog-card"><p class="section-label">AUTHORIZED TABLES</p><h3>表目录</h3><div id="data-catalog" class="data-catalog"></div></article>
+          <article class="card data-preview-card"><div class="card-heading"><div><p class="section-label">TABLE PREVIEW</p><h3 id="data-table-title">选择一张表</h3></div><button id="refresh-data" class="text-button">刷新</button></div><div class="data-toolbar"><label>当前表<select id="data-table-select"></select></label><span id="data-summary" class="data-summary">—</span></div><div id="data-schema" class="data-schema"></div><div id="data-table-wrap" class="table-wrap data-table-wrap"><div class="empty-state"><strong>等待加载表数据</strong></div></div><div class="data-pagination"><button id="prev-data" class="text-button">← 上一页</button><span id="data-page-note">—</span><button id="next-data" class="text-button">下一页 →</button></div></article>
+        </div>
       </section>
 
       <section id="tools-page" class="page">

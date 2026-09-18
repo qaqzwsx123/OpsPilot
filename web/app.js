@@ -2,6 +2,8 @@ const $ = (selector) => document.querySelector(selector);
 let latestSql = "";
 let latestApprovalId = "";
 let selectedMetric = null;
+let explorerCatalog = [];
+let explorerOffset = 0;
 const currentRole = () => $("#role-selector").value;
 
 const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
@@ -171,13 +173,17 @@ async function verifyAuditIntegrity() {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", monitoring:"监控中心", metrics:"指标中心", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
+  const titles = { agent:"智能运维查询", monitoring:"监控中心", metrics:"指标中心", data:"数据浏览器", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
 document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = button.dataset.query; runQuery(); }));
 $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard.writeText(latestSql); toast("SQL 已复制到剪贴板"); });
 $("#refresh-audit").addEventListener("click", loadAudit);
+$("#refresh-data").addEventListener("click", () => loadDataExplorer());
+$("#data-table-select").addEventListener("change", () => { explorerOffset = 0; loadDataTable(); });
+$("#prev-data").addEventListener("click", () => { explorerOffset = Math.max(0, explorerOffset - 30); loadDataTable(); });
+$("#next-data").addEventListener("click", () => { explorerOffset += 30; loadDataTable(); });
 $("#run-evaluation").addEventListener("click", runEvaluation);
 $("#verify-audit").addEventListener("click", verifyAuditIntegrity);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
@@ -188,7 +194,7 @@ $("#refresh-monitoring").addEventListener("click", loadMonitoring);
 $("#search-metrics").addEventListener("click", loadMetricCatalog);
 $("#refresh-metrics").addEventListener("click", () => { $("#metric-keyword").value = ""; $("#metric-category").value = ""; loadMetricCatalog(); });
 $("#analyze-metric").addEventListener("click", () => { if (!selectedMetric) return; document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = "查询指标 #" + selectedMetric.id + " 近24小时趋势"; runQuery(); });
-$("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); });
+$("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); if ($("#data-page").classList.contains("active-page")) loadDataExplorer(); });
 $("#save-knowledge").addEventListener("click", saveKnowledge);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
@@ -266,6 +272,36 @@ async function loadMonitoring() {
     renderStateRows($("#alert-severity-list"), data.alert_severity, ["#ed6d61", "#e99b47", "#796dec"]);
     $("#monitoring-alert-list").innerHTML = renderRows(data.latest_alerts);
   } catch { $("#monitoring-summary").innerHTML = '<div class="empty-state"><strong>无法加载监控数据</strong></div>'; }
+}
+
+function renderDataCatalog(tables) {
+  $("#data-catalog").innerHTML = tables.map((table) => '<button class="data-catalog-item" data-data-table="' + escapeHtml(table.name) + '"><strong>' + escapeHtml(table.label) + '</strong><small>' + escapeHtml(table.name) + ' · ' + table.row_count + ' 行 · ' + table.column_count + ' 列</small></button>').join("");
+  document.querySelectorAll("[data-data-table]").forEach((button) => button.addEventListener("click", () => { $("#data-table-select").value = button.dataset.dataTable; explorerOffset = 0; loadDataTable(); }));
+}
+
+async function loadDataExplorer() {
+  try {
+    const response = await fetch("/api/v1/data/tables?role=" + encodeURIComponent(currentRole())); const tables = await response.json();
+    if (!response.ok) throw new Error(tables.detail || "数据目录加载失败");
+    const current = $("#data-table-select").value; explorerCatalog = tables; renderDataCatalog(tables);
+    $("#data-table-select").innerHTML = tables.map((table) => '<option value="' + escapeHtml(table.name) + '">' + escapeHtml(table.label) + '（' + escapeHtml(table.name) + '）</option>').join("");
+    $("#data-table-select").value = tables.some((table) => table.name === current) ? current : (tables[0]?.name || "");
+    explorerOffset = 0; await loadDataTable();
+  } catch (error) { $("#data-table-wrap").innerHTML = '<div class="empty-state"><strong>无法加载数据浏览器</strong><p>' + escapeHtml(error.message || "请确认当前角色具有只读权限") + '</p></div>'; }
+}
+
+async function loadDataTable() {
+  const tableName = $("#data-table-select").value; if (!tableName) return;
+  try {
+    const response = await fetch("/api/v1/data/tables/" + encodeURIComponent(tableName) + "?role=" + encodeURIComponent(currentRole()) + "&limit=30&offset=" + explorerOffset); const snapshot = await response.json();
+    if (!response.ok) throw new Error(snapshot.detail || "表数据加载失败");
+    $("#data-table-title").textContent = snapshot.label + " · " + snapshot.name;
+    $("#data-summary").textContent = "共 " + snapshot.total + " 行，仅只读预览";
+    $("#data-schema").innerHTML = snapshot.schema.map((column) => '<span><b>' + escapeHtml(column.name) + '</b> ' + escapeHtml(column.type || "TEXT") + (column.primary_key ? " · PK" : "") + (column.required ? " · NOT NULL" : "") + '</span>').join("");
+    $("#data-table-wrap").innerHTML = renderRows(snapshot.rows);
+    $("#data-page-note").textContent = "第 " + (Math.floor(snapshot.offset / snapshot.limit) + 1) + " 页 · " + snapshot.rows.length + " / " + snapshot.total + " 行";
+    $("#prev-data").disabled = snapshot.offset === 0; $("#next-data").disabled = snapshot.offset + snapshot.limit >= snapshot.total;
+  } catch (error) { $("#data-table-wrap").innerHTML = '<div class="empty-state"><strong>无法加载表数据</strong><p>' + escapeHtml(error.message || "请求失败") + '</p></div>'; }
 }
 
 function renderTools(tools) {

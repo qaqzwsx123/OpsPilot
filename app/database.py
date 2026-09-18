@@ -15,6 +15,19 @@ DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "agent_demo.db"
 BACKUP_DIR = DATA_DIR / "backups"
 APPROVAL_TTL = timedelta(minutes=30)
+EXPLORER_TABLES = {
+    "assets": "设备资产",
+    "alerts": "监控告警",
+    "tickets": "运维工单",
+    "work_orders": "作业任务",
+    "metric_definitions": "指标定义",
+    "metric_samples": "指标样本",
+    "knowledge_documents": "知识库文档",
+    "knowledge_chunks": "知识库分块",
+    "approvals": "审批单",
+    "audit_logs": "审计日志",
+    "conversation_memory": "会话记忆",
+}
 
 
 def utc_now() -> str:
@@ -559,6 +572,39 @@ def list_audit(limit: int = 50) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
     return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+
+def data_catalog() -> list[dict[str, Any]]:
+    """Safe local SQLite catalog for the built-in read-only data explorer."""
+    with connect() as conn:
+        result = []
+        for name, label in EXPLORER_TABLES.items():
+            count = conn.execute(f"SELECT COUNT(*) FROM {name}").fetchone()[0]
+            columns = conn.execute(f"PRAGMA table_info({name})").fetchall()
+            result.append({"name": name, "label": label, "row_count": count, "column_count": len(columns)})
+    return result
+
+
+def table_snapshot(table_name: str, limit: int = 30, offset: int = 0) -> dict[str, Any] | None:
+    """Return schema plus a bounded sample. Table name is fixed to the allow-list above."""
+    if table_name not in EXPLORER_TABLES:
+        return None
+    with connect() as conn:
+        schema = [
+            {"name": row["name"], "type": row["type"], "required": bool(row["notnull"]), "primary_key": bool(row["pk"])}
+            for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        ]
+        total = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        rows = [dict(row) for row in conn.execute(f"SELECT * FROM {table_name} ORDER BY rowid DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()]
+    return {
+        "name": table_name,
+        "label": EXPLORER_TABLES[table_name],
+        "schema": schema,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "rows": rows,
+    }
 
 
 def audit_integrity() -> dict[str, Any]:
