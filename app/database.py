@@ -72,6 +72,11 @@ def initialize() -> None:
               observed_at TEXT NOT NULL, value REAL NOT NULL,
               FOREIGN KEY(metric_id) REFERENCES metric_definitions(id)
             );
+            CREATE TABLE IF NOT EXISTS knowledge_chunks (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL,
+              chunk_index INTEGER NOT NULL, content TEXT NOT NULL, token_count INTEGER NOT NULL,
+              FOREIGN KEY(document_id) REFERENCES knowledge_documents(id)
+            );
             """
         )
         # Lightweight migrations keep existing local demo databases compatible.
@@ -310,13 +315,64 @@ def add_knowledge_document(title: str, content: str, tags: str) -> dict[str, Any
         row = conn.execute(
             "SELECT id, title, content, tags FROM knowledge_documents WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
-    return dict(row)
+    document = dict(row)
+    index_knowledge_document(document["id"])
+    return document
 
 
 def delete_knowledge_document(document_id: int) -> bool:
     with connect() as conn:
+        conn.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
         cursor = conn.execute("DELETE FROM knowledge_documents WHERE id = ?", (document_id,))
     return cursor.rowcount == 1
+
+
+def _split_knowledge(content: str, size: int = 180, overlap: int = 30) -> list[str]:
+    normalized = " ".join(content.split())
+    if len(normalized) <= size:
+        return [normalized] if normalized else []
+    chunks, start = [], 0
+    while start < len(normalized):
+        end = min(len(normalized), start + size)
+        # Prefer ending at a sentence boundary when practical.
+        boundary = max(normalized.rfind(mark, start + size // 2, end) for mark in "。；；.!?")
+        if boundary > start:
+            end = boundary + 1
+        chunks.append(normalized[start:end])
+        if end == len(normalized):
+            break
+        start = max(start + 1, end - overlap)
+    return chunks
+
+
+def index_knowledge_document(document_id: int) -> int:
+    with connect() as conn:
+        document = conn.execute("SELECT content FROM knowledge_documents WHERE id = ?", (document_id,)).fetchone()
+        if document is None:
+            return 0
+        chunks = _split_knowledge(document["content"])
+        conn.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
+        conn.executemany(
+            "INSERT INTO knowledge_chunks (document_id, chunk_index, content, token_count) VALUES (?, ?, ?, ?)",
+            [(document_id, index, chunk, max(1, len(chunk) // 3)) for index, chunk in enumerate(chunks)],
+        )
+    return len(chunks)
+
+
+def rebuild_knowledge_index() -> int:
+    with connect() as conn:
+        ids = [row["id"] for row in conn.execute("SELECT id FROM knowledge_documents").fetchall()]
+    return sum(index_knowledge_document(document_id) for document_id in ids)
+
+
+def knowledge_chunks() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT c.document_id, c.chunk_index, c.content, c.token_count, d.title, d.tags "
+            "FROM knowledge_chunks c JOIN knowledge_documents d ON c.document_id = d.id "
+            "ORDER BY c.document_id, c.chunk_index"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_approvals(limit: int = 100) -> list[dict[str, Any]]:

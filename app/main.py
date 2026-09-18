@@ -12,11 +12,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, seed_demo_data, seed_metric_demo_data, system_metrics, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
 from app.tool_registry import catalog, invoke
 from app.workflow import SqlAgentWorkflow
+from app.rag import KnowledgeRag
 
 
 app = FastAPI(title="安全可控 SQL Agent", version="0.1.0")
@@ -41,6 +42,7 @@ def startup() -> None:
     initialize()
     seed_demo_data()
     seed_metric_demo_data()
+    rebuild_knowledge_index()
 
 
 @app.get("/health")
@@ -125,6 +127,18 @@ def skill_detail(skill_name: str) -> dict[str, str]:
 @app.get("/api/v1/knowledge")
 def knowledge() -> list[dict]:
     return list_knowledge_documents()
+
+
+@app.get("/api/v1/knowledge/search")
+def search_knowledge(query: str, limit: int = 3) -> list[dict]:
+    return KnowledgeRag().search(query, min(max(limit, 1), 10))
+
+
+@app.post("/api/v1/knowledge/reindex")
+def reindex_knowledge() -> dict:
+    chunks = rebuild_knowledge_index()
+    write_audit("Lenovo", "knowledge_reindexed", {"chunk_count": chunks})
+    return {"status": "completed", "chunk_count": chunks}
 
 
 @app.post("/api/v1/knowledge", status_code=201)

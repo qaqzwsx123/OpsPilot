@@ -115,6 +115,25 @@ async function saveKnowledge() {
   finally { button.disabled = false; button.innerHTML = "保存并纳入 RAG <span>↗</span>"; }
 }
 
+async function searchKnowledge() {
+  const query = $("#knowledge-query").value.trim();
+  if (!query) return toast("请输入要检索的问题");
+  try {
+    const evidence = await (await fetch("/api/v1/knowledge/search?query=" + encodeURIComponent(query))).json();
+    const target = $("#knowledge-search-result"); target.hidden = false;
+    target.innerHTML = evidence.length ? evidence.map((item) => '<div class="knowledge-evidence"><strong>' + escapeHtml(item.title) + " · 片段 " + (item.chunk_index + 1) + " · 得分 " + item.score + '</strong><p>' + escapeHtml(item.content) + '</p></div>').join("") : '<div class="knowledge-evidence">没有检索到足够匹配的证据。</div>';
+  } catch { toast("知识检索失败"); }
+}
+
+async function reindexKnowledge() {
+  const button = $("#reindex-knowledge"); button.disabled = true; button.textContent = "构建中…";
+  try {
+    const result = await (await fetch("/api/v1/knowledge/reindex", { method:"POST" })).json();
+    toast("索引已重建，共 " + result.chunk_count + " 个知识片段"); loadAudit();
+  } catch { toast("索引重建失败"); }
+  finally { button.disabled = false; button.textContent = "重建索引"; }
+}
+
 async function loadMetrics() {
   try {
     const metric = await (await fetch("/api/v1/metrics")).json();
@@ -148,6 +167,8 @@ $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard
 $("#refresh-audit").addEventListener("click", loadAudit);
 $("#run-evaluation").addEventListener("click", runEvaluation);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
+$("#search-knowledge").addEventListener("click", searchKnowledge);
+$("#reindex-knowledge").addEventListener("click", reindexKnowledge);
 $("#refresh-approvals").addEventListener("click", loadApprovals);
 $("#refresh-monitoring").addEventListener("click", loadMonitoring);
 $("#search-metrics").addEventListener("click", loadMetricCatalog);
