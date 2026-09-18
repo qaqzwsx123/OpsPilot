@@ -77,7 +77,41 @@ async function loadAudit() {
 
 async function loadSkills() {
   const target = $("#skills-list");
-  try { const skills = await (await fetch("/api/v1/skills")).json(); target.innerHTML = skills.map((skill, index) => `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维领域能力")}</p><span class="skill-tag">SKILL.md 已加载</span></article>`).join(""); } catch { target.innerHTML = "<p>加载 Skills 失败。</p>"; }
+  try {
+    const skills = await (await fetch("/api/v1/skills")).json();
+    target.innerHTML = skills.map((skill, index) => `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维领域能力")}</p><span class="skill-tag">SKILL.md 已加载</span><br><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看完整 SOP</button></article>`).join("");
+    document.querySelectorAll("[data-skill]").forEach((button) => button.addEventListener("click", () => viewSkill(button.dataset.skill)));
+  } catch { target.innerHTML = "<p>加载 Skills 失败。</p>"; }
+}
+
+async function viewSkill(name) {
+  try {
+    const skill = await (await fetch(`/api/v1/skills/${encodeURIComponent(name)}`)).json();
+    $("#skill-content").textContent = skill.content; $("#skill-detail").hidden = false;
+    $("#skill-detail").scrollIntoView({ behavior:"smooth", block:"start" });
+  } catch { toast("无法读取 Skill 内容"); }
+}
+
+function renderKnowledge(documents) {
+  const target = $("#knowledge-list");
+  target.innerHTML = documents.length ? documents.map((document) => `<article class="knowledge-item"><strong>${escapeHtml(document.title)}</strong><p>${escapeHtml(document.content)}</p><div>${String(document.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
+}
+
+async function loadKnowledge() {
+  try { renderKnowledge(await (await fetch("/api/v1/knowledge")).json()); } catch { $("#knowledge-list").innerHTML = "<div class='empty-state'><strong>无法加载知识库</strong></div>"; }
+}
+
+async function saveKnowledge() {
+  const title = $("#knowledge-title").value.trim(); const tags = $("#knowledge-tags").value.trim() || "未分类"; const content = $("#knowledge-content").value.trim();
+  if (title.length < 2 || content.length < 10) return toast("标题至少 2 个字符，正文至少 10 个字符");
+  const button = $("#save-knowledge"); button.disabled = true; button.textContent = "保存中…";
+  try {
+    const response = await fetch("/api/v1/knowledge", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content }) });
+    const document = await response.json(); if (!response.ok) throw new Error(document.detail || "保存失败");
+    $("#knowledge-title").value = ""; $("#knowledge-tags").value = ""; $("#knowledge-content").value = "";
+    toast(`“${document.title}” 已纳入 RAG`); loadKnowledge(); loadMetrics();
+  } catch (error) { toast(error.message || "保存失败"); }
+  finally { button.disabled = false; button.innerHTML = "保存并纳入 RAG <span>↗</span>"; }
 }
 
 async function loadMetrics() {
@@ -104,13 +138,16 @@ async function runEvaluation() {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", audit:"审计中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "skills") loadSkills();
+  const titles = { agent:"智能运维查询", audit:"审计中心", knowledge:"知识库", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge();
 }));
 $("#run-query").addEventListener("click", runQuery);
 document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { $("#question").value = button.dataset.query; runQuery(); }));
 $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard.writeText(latestSql); toast("SQL 已复制到剪贴板"); });
 $("#refresh-audit").addEventListener("click", loadAudit);
 $("#run-evaluation").addEventListener("click", runEvaluation);
+$("#refresh-knowledge").addEventListener("click", loadKnowledge);
+$("#save-knowledge").addEventListener("click", saveKnowledge);
+$("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", async () => { if (!latestApprovalId) return; const response = await fetch(`/api/v1/approvals/${latestApprovalId}/approve`, { method:"POST" }); const result = await response.json(); if (response.ok) { toast(result.message); $("#approve-button").disabled = true; $("#approve-button").textContent = result.outcome === "executed" ? "已执行" : "已审批"; loadAudit(); loadMetrics(); } else toast(result.detail || "审批失败"); });
-loadSkills(); loadMetrics();
+loadSkills(); loadKnowledge(); loadMetrics();

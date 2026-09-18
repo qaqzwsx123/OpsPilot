@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import approve, execute_approved, initialize, list_audit, recent_memory, seed_demo_data, system_metrics, write_audit
+from app.database import add_knowledge_document, approve, execute_approved, initialize, list_audit, list_knowledge_documents, recent_memory, seed_demo_data, system_metrics, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
 from app.workflow import SqlAgentWorkflow
@@ -27,6 +27,12 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 class QueryRequest(BaseModel):
     question: str = Field(min_length=2, max_length=500)
     requester: str = Field(default="anonymous", min_length=1, max_length=64)
+
+
+class KnowledgeDocumentRequest(BaseModel):
+    title: str = Field(min_length=2, max_length=100)
+    content: str = Field(min_length=10, max_length=4000)
+    tags: str = Field(default="未分类", max_length=200)
 
 
 @app.on_event("startup")
@@ -103,6 +109,27 @@ def audit(limit: int = 50) -> list[dict]:
 def skills() -> list[dict[str, str]]:
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
     return [{"name": item.name, "description": item.description} for item in registry.load()]
+
+
+@app.get("/api/v1/skills/{skill_name}")
+def skill_detail(skill_name: str) -> dict[str, str]:
+    registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
+    for item in registry.load():
+        if item.name == skill_name:
+            return {"name": item.name, "description": item.description, "content": item.content}
+    raise HTTPException(status_code=404, detail="Skill 不存在")
+
+
+@app.get("/api/v1/knowledge")
+def knowledge() -> list[dict]:
+    return list_knowledge_documents()
+
+
+@app.post("/api/v1/knowledge", status_code=201)
+def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
+    document = add_knowledge_document(request.title, request.content, request.tags)
+    write_audit("Lenovo", "knowledge_created", {"document_id": document["id"], "title": document["title"]})
+    return document
 
 
 @app.get("/api/v1/metrics")

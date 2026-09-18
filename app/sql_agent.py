@@ -83,6 +83,19 @@ class RuleBasedSqlWriter:
             return None
         if any(word in q for word in ["删除", "清空", "更新", "修改", "写入"]):
             return GeneratedSql("DELETE FROM alerts WHERE status = 'closed';", "write_request", 0.75, ["alerts"])
+        if "各区域" in q and "离线" in q:
+            return GeneratedSql(
+                "SELECT region, COUNT(*) AS offline_count FROM assets WHERE status = 'offline' GROUP BY region ORDER BY offline_count DESC LIMIT 20;",
+                "offline_assets_by_region", 0.9, ["assets"],
+            )
+        if ("p1" in q or "告警" in q) and any(word in q for word in ["设备", "关联", "影响"]):
+            where = " WHERE a.severity = 'P1'" if "p1" in q else ""
+            return GeneratedSql(
+                "SELECT a.id AS alert_id, a.severity, a.title AS alert_title, a.status AS alert_status, "
+                "s.name AS asset_name, s.region, s.status AS asset_status "
+                "FROM alerts a JOIN assets s ON a.asset_id = s.id" + where + " ORDER BY a.created_at DESC LIMIT 20;",
+                "alerts_with_assets", 0.89, ["alerts", "assets"],
+            )
         if "告警" in q or "p1" in q or "报警" in q:
             where = []
             if "p1" in q:

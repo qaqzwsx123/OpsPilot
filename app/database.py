@@ -212,6 +212,25 @@ def system_metrics() -> dict[str, int | bool]:
     return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "audit_events": audit_count, "approved_actions": approval_count}
 
 
+def list_knowledge_documents(limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, title, content, tags FROM knowledge_documents ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_knowledge_document(title: str, content: str, tags: str) -> dict[str, Any]:
+    with connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO knowledge_documents (title, content, tags) VALUES (?, ?, ?)", (title, content, tags)
+        )
+        row = conn.execute(
+            "SELECT id, title, content, tags FROM knowledge_documents WHERE id = ?", (cursor.lastrowid,)
+        ).fetchone()
+    return dict(row)
+
+
 def list_audit(limit: int = 50) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()

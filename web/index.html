@@ -14,6 +14,7 @@
       <nav>
         <button class="nav-item active" data-page="agent"><span>◈</span> 智能查询</button>
         <button class="nav-item" data-page="audit"><span>◷</span> 审计中心</button>
+        <button class="nav-item" data-page="knowledge"><span>▤</span> 知识库</button>
         <button class="nav-item" data-page="skills"><span>◇</span> Skills 与 SOP</button>
       </nav>
       <div class="sidebar-bottom">
@@ -86,7 +87,16 @@
 
       <section id="skills-page" class="page">
         <div class="section-intro"><span class="pill">REUSABLE EXPERIENCE</span><h2>让 SOP 成为 Agent 的可复用能力。</h2><p>Skill 以 Markdown 维护，新增运维能力不需要修改核心 Agent 代码。</p></div>
+        <article id="skill-detail" class="card skill-detail" hidden><button id="close-skill-detail" class="text-button">关闭</button><pre id="skill-content"></pre></article>
         <div id="skills-list" class="skill-grid"></div>
+      </section>
+
+      <section id="knowledge-page" class="page">
+        <div class="section-intro"><span class="pill">KNOWLEDGE IN, RAG OUT</span><h2>把排障经验沉淀进知识库。</h2><p>保存后立即可被 Agentic RAG 检索，用于回答 SOP、排障步骤和规范类问题。</p></div>
+        <div class="knowledge-layout">
+          <article class="card knowledge-form"><p class="section-label">ADD KNOWLEDGE</p><h3>新增运维知识</h3><label>标题<input id="knowledge-title" placeholder="例如：数据库连接异常排障 SOP" /></label><label>标签<input id="knowledge-tags" placeholder="数据库,连接,排障" /></label><label>正文<textarea id="knowledge-content" rows="9" placeholder="写入操作步骤、判断条件、升级规则与验证方式……"></textarea></label><button id="save-knowledge" class="primary-button">保存并纳入 RAG <span>↗</span></button></article>
+          <article class="card knowledge-library"><div class="card-heading"><div><p class="section-label">KNOWLEDGE LIBRARY</p><h3>已沉淀文档</h3></div><button id="refresh-knowledge" class="text-button">刷新</button></div><div id="knowledge-list" class="knowledge-list"></div></article>
+        </div>
       </section>
     </main>
   </div>
