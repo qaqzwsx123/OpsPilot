@@ -353,8 +353,9 @@ async function executeSkill(name, input) {
 
 function renderKnowledge(documents, total) {
   const target = $("#knowledge-list");
-  target.innerHTML = documents.length ? documents.map((document) => `<article class="knowledge-item"><button class="text-button knowledge-delete" data-delete-knowledge="${document.id}">删除</button><strong>${escapeHtml(document.title)}</strong><p>${escapeHtml(document.content)}</p><div>${String(document.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
+  target.innerHTML = documents.length ? documents.map((document) => `<article class="knowledge-item"><button class="text-button knowledge-delete" data-delete-knowledge="${document.id}">删除</button><button class="text-button knowledge-chunks" data-knowledge-chunks="${document.id}">分块</button><strong>${escapeHtml(document.title)} <em class="knowledge-status ${document.status}">${document.status === "expired" ? "已过期" : "有效"}</em></strong><small>版本 v${document.version} · 更新于 ${new Date(document.updated_at).toLocaleDateString("zh-CN")}${document.expires_at ? " · 有效至 " + document.expires_at : ""}</small><p>${escapeHtml(document.content)}</p><div>${String(document.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
   document.querySelectorAll("[data-delete-knowledge]").forEach((button) => button.addEventListener("click", () => deleteKnowledge(button.dataset.deleteKnowledge)));
+  document.querySelectorAll("[data-knowledge-chunks]").forEach((button) => button.addEventListener("click", () => showKnowledgeChunks(button.dataset.knowledgeChunks)));
   const page = total ? Math.floor(knowledgeOffset / knowledgePageSize) + 1 : 1;
   const pages = Math.max(1, Math.ceil(total / knowledgePageSize));
   $("#knowledge-page-note").textContent = `第 ${page} / ${pages} 页 · 共 ${total} 份`;
@@ -364,7 +365,9 @@ function renderKnowledge(documents, total) {
 
 async function loadKnowledge() {
   try {
-    const response = await fetch("/api/v1/knowledge?role=" + encodeURIComponent(currentRole()) + "&limit=" + knowledgePageSize + "&offset=" + knowledgeOffset);
+    if (!$("#run-knowledge-evaluation")) { const button = document.createElement("button"); button.id = "run-knowledge-evaluation"; button.className = "text-button"; button.textContent = "运行检索评测"; button.addEventListener("click", runKnowledgeEvaluation); document.querySelector(".knowledge-actions").prepend(button); }
+    const tag = $("#knowledge-tag-filter").value; const status = $("#knowledge-status-filter").value;
+    const response = await fetch("/api/v1/knowledge?role=" + encodeURIComponent(currentRole()) + "&limit=" + knowledgePageSize + "&offset=" + knowledgeOffset + "&tag=" + encodeURIComponent(tag) + "&status=" + encodeURIComponent(status));
     const payload = await response.json(); if (!response.ok) throw new Error(payload.detail);
     if (!payload.items.length && knowledgeOffset > 0) { knowledgeOffset = Math.max(0, knowledgeOffset - knowledgePageSize); return loadKnowledge(); }
     renderKnowledge(payload.items, payload.total);
@@ -374,14 +377,32 @@ async function loadKnowledge() {
   }
 }
 
+async function runKnowledgeEvaluation() {
+  const button = $("#run-knowledge-evaluation"); button.disabled = true; button.textContent = "评测中…";
+  try { const response = await fetch("/api/v1/knowledge/evaluation", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({role:currentRole(), requester:"Lenovo"})}); const report = await response.json(); if (!response.ok) throw new Error(report.detail); const target = $("#knowledge-search-result"); target.hidden = false; target.innerHTML = '<div class="knowledge-evidence"><strong>检索质量评测：Hit@3 ' + report.hit_at_3 + '%（' + report.passed + '/' + report.total + '）</strong><p>' + report.results.map((item) => (item.passed ? '✓ ' : '× ') + item.question + ' → ' + item.expected).join('<br>') + '</p></div>'; toast("检索评测已完成"); loadAudit(); } catch (error) { toast(error.message || "检索评测失败"); } finally { button.disabled = false; button.textContent = "运行检索评测"; }
+}
+
+async function loadKnowledgeTags() {
+  try { const response = await fetch("/api/v1/knowledge/tags?role=" + encodeURIComponent(currentRole())); const tags = await response.json(); if (!response.ok) throw new Error(); $("#knowledge-tag-filter").innerHTML = '<option value="">全部标签</option>' + tags.map((tag) => '<option value="' + escapeHtml(tag) + '">' + escapeHtml(tag) + '</option>').join(""); } catch { /* keep default filter */ }
+}
+
+async function showKnowledgeChunks(documentId) {
+  try {
+    const response = await fetch("/api/v1/knowledge/" + documentId + "/chunks?role=" + encodeURIComponent(currentRole())); const chunks = await response.json(); if (!response.ok) throw new Error(chunks.detail || "加载失败");
+    activeAuditAction = "";
+    renderAuditAction("文档分块预览", "KNOWLEDGE CHUNKS", '<p class="modal-lead">共 ' + chunks.length + ' 个分块。每个分块是 RAG 检索、评分和引用的最小证据单元。</p><div class="knowledge-chunk-list">' + chunks.map((chunk) => '<div><strong>片段 ' + (chunk.chunk_index + 1) + ' · 约 ' + chunk.token_count + ' Token</strong><p>' + escapeHtml(chunk.content) + '</p></div>').join("") + '</div>', "关闭");
+    $("#confirm-audit-action").onclick = () => setAuditActionVisible(false); setAuditActionVisible(true);
+  } catch (error) { toast(error.message || "无法加载文档分块"); }
+}
+
 async function saveKnowledge() {
-  const title = $("#knowledge-title").value.trim(); const tags = $("#knowledge-tags").value.trim() || "未分类"; const content = $("#knowledge-content").value.trim();
+  const title = $("#knowledge-title").value.trim(); const tags = $("#knowledge-tags").value.trim() || "未分类"; const content = $("#knowledge-content").value.trim(); const expires_at = $("#knowledge-expires-at").value;
   if (title.length < 2 || content.length < 10) return toast("标题至少 2 个字符，正文至少 10 个字符");
   const button = $("#save-knowledge"); button.disabled = true; button.textContent = "保存中…";
   try {
-    const response = await fetch("/api/v1/knowledge", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content, role:currentRole(), requester:"Lenovo" }) });
+    const response = await fetch("/api/v1/knowledge", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content, expires_at, role:currentRole(), requester:"Lenovo" }) });
     const document = await response.json(); if (!response.ok) throw new Error(document.detail || "保存失败");
-    $("#knowledge-title").value = ""; $("#knowledge-tags").value = ""; $("#knowledge-content").value = "";
+    $("#knowledge-title").value = ""; $("#knowledge-tags").value = ""; $("#knowledge-expires-at").value = ""; $("#knowledge-content").value = "";
     knowledgeOffset = 0; toast(`“${document.title}” 已纳入 RAG`); loadKnowledge(); loadMetrics();
   } catch (error) { toast(error.message || "保存失败"); }
   finally { button.disabled = false; button.innerHTML = "保存并纳入 RAG <span>↗</span>"; }
@@ -402,7 +423,7 @@ async function searchKnowledge() {
   try {
     const response = await fetch("/api/v1/knowledge/search?query=" + encodeURIComponent(query) + "&role=" + encodeURIComponent(currentRole())); const evidence = await response.json(); if (!response.ok) throw new Error(evidence.detail || "知识检索失败");
     const target = $("#knowledge-search-result"); target.hidden = false;
-    target.innerHTML = evidence.length ? evidence.map((item) => '<div class="knowledge-evidence"><strong>' + escapeHtml(item.title) + " · 片段 " + (item.chunk_index + 1) + " · 得分 " + item.score + '</strong><p>' + escapeHtml(item.content) + '</p></div>').join("") : '<div class="knowledge-evidence">没有检索到足够匹配的证据。</div>';
+    target.innerHTML = evidence.length ? evidence.map((item) => '<div class="knowledge-evidence"><strong>' + escapeHtml(item.title) + " · 片段 " + (item.chunk_index + 1) + '</strong><small>混合得分 ' + item.score + " · 词法 " + item.lexical_score + " · 向量 " + item.semantic_score + '</small><p>' + escapeHtml(item.content) + '</p></div>').join("") : '<div class="knowledge-evidence">没有检索到足够匹配的证据。</div>';
   } catch { toast("知识检索失败"); }
 }
 
@@ -437,6 +458,7 @@ function setAuditActionVisible(visible) {
 function renderAuditAction(title, eyebrow, body, confirmText) {
   $("#audit-action-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + eyebrow + '</p><h2 id="audit-action-title">' + title + '</h2></div><button id="close-audit-action" class="modal-close" aria-label="关闭">×</button></div>' + body;
   $("#confirm-audit-action").textContent = confirmText;
+  $("#confirm-audit-action").onclick = null;
   $("#close-audit-action").addEventListener("click", () => setAuditActionVisible(false));
 }
 
@@ -545,7 +567,7 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
   const titles = { agent:"智能运维查询", chat:"Agent 聊天", monitoring:"监控中心", metrics:"指标中心", data:"数据浏览器", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "chat") loadChat(); if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
+  if (button.dataset.page === "chat") loadChat(); if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") { loadKnowledgeTags(); loadKnowledge(); } if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
 document.querySelectorAll("[data-guide]").forEach((button) => button.addEventListener("click", () => openPageGuide(button.dataset.guide)));
@@ -595,6 +617,8 @@ $("#next-data").addEventListener("click", () => { explorerOffset += 30; loadData
 $("#run-evaluation").addEventListener("click", openEvaluationDialog);
 $("#verify-audit").addEventListener("click", openIntegrityDialog);
 $("#refresh-knowledge").addEventListener("click", () => { knowledgeOffset = 0; loadKnowledge(); });
+$("#knowledge-tag-filter").addEventListener("change", () => { knowledgeOffset = 0; loadKnowledge(); });
+$("#knowledge-status-filter").addEventListener("change", () => { knowledgeOffset = 0; loadKnowledge(); });
 $("#prev-knowledge").addEventListener("click", () => { knowledgeOffset = Math.max(0, knowledgeOffset - knowledgePageSize); loadKnowledge(); });
 $("#next-knowledge").addEventListener("click", () => { knowledgeOffset += knowledgePageSize; loadKnowledge(); });
 $("#search-knowledge").addEventListener("click", searchKnowledge);
@@ -620,7 +644,7 @@ $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hi
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
 $("#show-system-info").addEventListener("click", async () => { try { const metric = await (await fetch("/api/v1/metrics")).json(); toast("LLM：" + (metric.llm_enabled ? "已配置" : "离线规则模式") + "；审批写库：" + (metric.approved_writes_enabled ? "已开启" : "安全关闭")); } catch { toast("无法读取运行配置"); } });
 $("#show-help").addEventListener("click", () => toast("可查询数据、查看审批与审计、维护知识库，并查看 Skill/SOP。"));
-loadSkills(); loadKnowledge(); loadApprovals(); loadMetrics();
+loadSkills(); loadKnowledgeTags(); loadKnowledge(); loadApprovals(); loadMetrics();
 
 function chatRequestOptions(method, body) {
   return { method, headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) };

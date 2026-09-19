@@ -13,13 +13,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
 from app.tool_registry import catalog, definition, invoke
 from app.workflow import SqlAgentWorkflow
 from app.rag import KnowledgeRag
+from app.knowledge_evaluation import run_knowledge_evaluation
 from app.policy import permitted, policy_summary, role_catalog
 
 
@@ -49,6 +50,7 @@ class KnowledgeDocumentRequest(BaseModel):
     title: str = Field(min_length=2, max_length=100)
     content: str = Field(min_length=10, max_length=4000)
     tags: str = Field(default="未分类", max_length=200)
+    expires_at: str = Field(default="", max_length=10)
     role: str = Field(default="operator", min_length=1, max_length=32)
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
@@ -294,17 +296,31 @@ def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
 
 
 @app.get("/api/v1/knowledge")
-def knowledge(role: str = "viewer", limit: int = 5, offset: int = 0) -> dict:
+def knowledge(role: str = "viewer", limit: int = 5, offset: int = 0, tag: str = "", status: str = "") -> dict:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
     bounded_limit = min(max(limit, 1), 20)
     bounded_offset = max(offset, 0)
     return {
-        "items": list_knowledge_documents(bounded_limit, bounded_offset),
-        "total": knowledge_document_count(),
+        "items": list_knowledge_documents(bounded_limit, bounded_offset, tag, status),
+        "total": knowledge_document_count(tag, status),
         "limit": bounded_limit,
         "offset": bounded_offset,
     }
+
+
+@app.get("/api/v1/knowledge/tags")
+def knowledge_tag_catalog(role: str = "viewer") -> list[str]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
+    return knowledge_tags()
+
+
+@app.get("/api/v1/knowledge/{document_id}/chunks")
+def knowledge_document_chunks(document_id: int, role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
+    return document_chunks(document_id)
 
 
 @app.get("/api/v1/knowledge/search")
@@ -312,6 +328,15 @@ def search_knowledge(query: str, limit: int = 3, role: str = "viewer") -> list[d
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无知识检索权限。")
     return KnowledgeRag().search(query, min(max(limit, 1), 10))
+
+
+@app.post("/api/v1/knowledge/evaluation")
+def evaluate_knowledge(request: MutationActorRequest) -> dict:
+    if not permitted(request.role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无知识检索评测权限。")
+    report = run_knowledge_evaluation()
+    write_audit(request.requester, "knowledge_evaluation_completed", {"total": report["total"], "passed": report["passed"], "hit_at_3": report["hit_at_3"], "role": request.role})
+    return report
 
 
 @app.post("/api/v1/knowledge/reindex")
@@ -327,7 +352,7 @@ def reindex_knowledge(request: MutationActorRequest) -> dict:
 def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
-    document = add_knowledge_document(request.title, request.content, request.tags)
+    document = add_knowledge_document(request.title, request.content, request.tags, request.expires_at)
     write_audit(request.requester, "knowledge_created", {"document_id": document["id"], "title": document["title"], "role": request.role})
     return document
 

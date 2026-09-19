@@ -71,7 +71,13 @@ def initialize() -> None:
               FOREIGN KEY(asset_id) REFERENCES assets(id)
             );
             CREATE TABLE IF NOT EXISTS knowledge_documents (
-              id INTEGER PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL
+              id INTEGER PRIMARY KEY, title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL,
+              version INTEGER NOT NULL DEFAULT 1, updated_at TEXT, expires_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_versions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL, version INTEGER NOT NULL,
+              title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL, created_at TEXT NOT NULL,
+              FOREIGN KEY(document_id) REFERENCES knowledge_documents(id)
             );
             CREATE TABLE IF NOT EXISTS audit_logs (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
@@ -151,6 +157,15 @@ def initialize() -> None:
         metric_columns = {row["name"] for row in conn.execute("PRAGMA table_info(metric_definitions)").fetchall()}
         if "source" not in metric_columns:
             conn.execute("ALTER TABLE metric_definitions ADD COLUMN source TEXT NOT NULL DEFAULT 'demo'")
+        knowledge_columns = {row["name"] for row in conn.execute("PRAGMA table_info(knowledge_documents)").fetchall()}
+        if "version" not in knowledge_columns:
+            conn.execute("ALTER TABLE knowledge_documents ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
+        if "updated_at" not in knowledge_columns:
+            conn.execute("ALTER TABLE knowledge_documents ADD COLUMN updated_at TEXT")
+        if "expires_at" not in knowledge_columns:
+            conn.execute("ALTER TABLE knowledge_documents ADD COLUMN expires_at TEXT")
+        conn.execute("UPDATE knowledge_documents SET updated_at = COALESCE(updated_at, ?)", (utc_now(),))
+        conn.execute("INSERT INTO knowledge_versions (document_id, version, title, content, tags, created_at) SELECT id, version, title, content, tags, updated_at FROM knowledge_documents d WHERE NOT EXISTS (SELECT 1 FROM knowledge_versions v WHERE v.document_id = d.id AND v.version = d.version)")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_metric_samples_metric_time ON metric_samples(metric_id, observed_at)")
         _backfill_audit_hashes(conn)
 
@@ -193,7 +208,7 @@ def seed_demo_data() -> None:
             [(301, 2, "dispatch_engineer", "pending", "2026-09-18T01:17:00Z")],
         )
         conn.executemany(
-            "INSERT INTO knowledge_documents VALUES (?, ?, ?, ?)",
+            "INSERT INTO knowledge_documents (id, title, content, tags) VALUES (?, ?, ?, ?)",
             [
                 (1, "P1 告警处置 SOP", "P1 告警需要在 5 分钟内确认。先确认告警范围，再检查设备网络与心跳；无法恢复时创建高优工单并升级值班负责人。", "P1,告警,SOP,升级"),
                 (2, "设备离线排障手册", "设备离线时依次检查供电、网络连通性、最近心跳和网关日志。若是单设备故障，优先安排现场巡检；若同区域批量离线，按网络故障升级。", "离线,设备,网络,排障"),
@@ -715,27 +730,40 @@ def list_metric_imports(limit: int = 8) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def knowledge_document_count() -> int:
+def knowledge_document_count(tag: str = "", status: str = "") -> int:
     with connect() as conn:
-        return conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
+        where, params = _knowledge_where(tag, status)
+        return conn.execute("SELECT COUNT(*) FROM knowledge_documents" + where, params).fetchone()[0]
 
 
-def list_knowledge_documents(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+def _knowledge_where(tag: str = "", status: str = "") -> tuple[str, list[str]]:
+    clauses, params = [], []
+    if tag:
+        clauses.append("tags LIKE ?"); params.append("%" + tag + "%")
+    if status == "active": clauses.append("(expires_at IS NULL OR expires_at >= date('now'))")
+    if status == "expired": clauses.append("expires_at IS NOT NULL AND expires_at < date('now')")
+    return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+
+def list_knowledge_documents(limit: int = 100, offset: int = 0, tag: str = "", status: str = "") -> list[dict[str, Any]]:
     with connect() as conn:
+        where, params = _knowledge_where(tag, status)
         rows = conn.execute(
-            "SELECT id, title, content, tags FROM knowledge_documents ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
+            "SELECT id, title, content, tags, version, updated_at, expires_at, CASE WHEN expires_at IS NOT NULL AND expires_at < date('now') THEN 'expired' ELSE 'active' END AS status FROM knowledge_documents" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", (*params, limit, offset)
         ).fetchall()
     return [dict(row) for row in rows]
 
 
-def add_knowledge_document(title: str, content: str, tags: str) -> dict[str, Any]:
+def add_knowledge_document(title: str, content: str, tags: str, expires_at: str | None = None) -> dict[str, Any]:
+    now = utc_now()
     with connect() as conn:
         cursor = conn.execute(
-            "INSERT INTO knowledge_documents (title, content, tags) VALUES (?, ?, ?)", (title, content, tags)
+            "INSERT INTO knowledge_documents (title, content, tags, version, updated_at, expires_at) VALUES (?, ?, ?, 1, ?, ?)", (title, content, tags, now, expires_at or None)
         )
         row = conn.execute(
-            "SELECT id, title, content, tags FROM knowledge_documents WHERE id = ?", (cursor.lastrowid,)
+            "SELECT id, title, content, tags, version, updated_at, expires_at, 'active' AS status FROM knowledge_documents WHERE id = ?", (cursor.lastrowid,)
         ).fetchone()
+        conn.execute("INSERT INTO knowledge_versions (document_id, version, title, content, tags, created_at) VALUES (?, 1, ?, ?, ?, ?)", (cursor.lastrowid, title, content, tags, now))
     document = dict(row)
     index_knowledge_document(document["id"])
     return document
@@ -744,8 +772,19 @@ def add_knowledge_document(title: str, content: str, tags: str) -> dict[str, Any
 def delete_knowledge_document(document_id: int) -> bool:
     with connect() as conn:
         conn.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
+        conn.execute("DELETE FROM knowledge_versions WHERE document_id = ?", (document_id,))
         cursor = conn.execute("DELETE FROM knowledge_documents WHERE id = ?", (document_id,))
     return cursor.rowcount == 1
+
+
+def knowledge_tags() -> list[str]:
+    return sorted({tag.strip() for row in list_knowledge_documents(limit=1000) for tag in row["tags"].replace("，", ",").split(",") if tag.strip()})
+
+
+def document_chunks(document_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT chunk_index, content, token_count FROM knowledge_chunks WHERE document_id = ? ORDER BY chunk_index", (document_id,)).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _split_knowledge(content: str, size: int = 180, overlap: int = 30) -> list[str]:
@@ -791,6 +830,7 @@ def knowledge_chunks() -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT c.document_id, c.chunk_index, c.content, c.token_count, d.title, d.tags "
             "FROM knowledge_chunks c JOIN knowledge_documents d ON c.document_id = d.id "
+            "WHERE d.expires_at IS NULL OR d.expires_at >= date('now') "
             "ORDER BY c.document_id, c.chunk_index"
         ).fetchall()
     return [dict(row) for row in rows]

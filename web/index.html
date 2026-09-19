@@ -114,8 +114,8 @@
       <section id="knowledge-page" class="page">
         <div class="section-intro"><span class="pill">KNOWLEDGE IN, RAG OUT</span><button class="page-help-button" data-guide="knowledge">使用说明 ?</button><h2>把排障经验沉淀进知识库。</h2><p>保存后立即可被 Agentic RAG 检索，用于回答 SOP、排障步骤和规范类问题。</p></div>
         <div class="knowledge-layout">
-          <article class="card knowledge-form"><p class="section-label">ADD KNOWLEDGE</p><h3>新增运维知识</h3><label>标题<input id="knowledge-title" placeholder="例如：数据库连接异常排障 SOP" /></label><label>标签<input id="knowledge-tags" placeholder="数据库,连接,排障" /></label><label>正文<textarea id="knowledge-content" rows="9" placeholder="写入操作步骤、判断条件、升级规则与验证方式……"></textarea></label><button id="save-knowledge" class="primary-button">保存并纳入 RAG <span>↗</span></button></article>
-          <article class="card knowledge-library"><div class="card-heading"><div><p class="section-label">KNOWLEDGE LIBRARY</p><h3>已沉淀文档</h3></div><div class="knowledge-actions"><button id="reindex-knowledge" class="text-button">重建索引</button><button id="refresh-knowledge" class="text-button">刷新</button></div></div><div class="knowledge-search"><input id="knowledge-query" placeholder="输入问题，验证混合检索效果" /><button id="search-knowledge" class="text-button">检索</button></div><div id="knowledge-search-result" class="knowledge-search-result" hidden></div><div id="knowledge-list" class="knowledge-list"></div><div class="record-pagination knowledge-pagination"><button id="prev-knowledge" class="text-button">← 上一页</button><span id="knowledge-page-note">第 1 页</span><button id="next-knowledge" class="text-button">下一页 →</button></div></article>
+          <article class="card knowledge-form"><p class="section-label">ADD KNOWLEDGE</p><h3>新增运维知识</h3><label>标题<input id="knowledge-title" placeholder="例如：数据库连接异常排障 SOP" /></label><label>标签<input id="knowledge-tags" placeholder="数据库,连接,排障" /></label><label>有效至（可选）<input id="knowledge-expires-at" type="date" /></label><label>正文<textarea id="knowledge-content" rows="9" placeholder="写入操作步骤、判断条件、升级规则与验证方式……"></textarea></label><button id="save-knowledge" class="primary-button">保存并纳入 RAG <span>↗</span></button></article>
+          <article class="card knowledge-library"><div class="card-heading"><div><p class="section-label">KNOWLEDGE LIBRARY</p><h3>已沉淀文档</h3></div><div class="knowledge-actions"><button id="reindex-knowledge" class="text-button">重建索引</button><button id="refresh-knowledge" class="text-button">刷新</button></div></div><div class="knowledge-search"><input id="knowledge-query" placeholder="输入问题，验证混合检索效果" /><button id="search-knowledge" class="text-button">检索</button></div><div class="knowledge-filter"><select id="knowledge-tag-filter"><option value="">全部标签</option></select><select id="knowledge-status-filter"><option value="">全部状态</option><option value="active">有效</option><option value="expired">已过期</option></select></div><div id="knowledge-search-result" class="knowledge-search-result" hidden></div><div id="knowledge-list" class="knowledge-list"></div><div class="record-pagination knowledge-pagination"><button id="prev-knowledge" class="text-button">← 上一页</button><span id="knowledge-page-note">第 1 页</span><button id="next-knowledge" class="text-button">下一页 →</button></div></article>
         </div>
       </section>
 
@@ -177,6 +177,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-agent-tool-orchestration"></script>
+  <script src="/static/app.js?v=20260919-knowledge-governance"></script>
 </body>
 </html>
