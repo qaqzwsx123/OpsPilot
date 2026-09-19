@@ -98,11 +98,12 @@ async function viewSkill(name) {
 
 function renderKnowledge(documents) {
   const target = $("#knowledge-list");
-  target.innerHTML = documents.length ? documents.map((document) => `<article class="knowledge-item"><strong>${escapeHtml(document.title)}</strong><p>${escapeHtml(document.content)}</p><div>${String(document.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
+  target.innerHTML = documents.length ? documents.map((document) => `<article class="knowledge-item"><button class="text-button knowledge-delete" data-delete-knowledge="${document.id}">删除</button><strong>${escapeHtml(document.title)}</strong><p>${escapeHtml(document.content)}</p><div>${String(document.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
+  document.querySelectorAll("[data-delete-knowledge]").forEach((button) => button.addEventListener("click", () => deleteKnowledge(button.dataset.deleteKnowledge)));
 }
 
 async function loadKnowledge() {
-  try { renderKnowledge(await (await fetch("/api/v1/knowledge")).json()); } catch { $("#knowledge-list").innerHTML = "<div class='empty-state'><strong>无法加载知识库</strong></div>"; }
+  try { const response = await fetch("/api/v1/knowledge?role=" + encodeURIComponent(currentRole())); const documents = await response.json(); if (!response.ok) throw new Error(documents.detail); renderKnowledge(documents); } catch { $("#knowledge-list").innerHTML = "<div class='empty-state'><strong>无法加载知识库</strong></div>"; }
 }
 
 async function saveKnowledge() {
@@ -110,7 +111,7 @@ async function saveKnowledge() {
   if (title.length < 2 || content.length < 10) return toast("标题至少 2 个字符，正文至少 10 个字符");
   const button = $("#save-knowledge"); button.disabled = true; button.textContent = "保存中…";
   try {
-    const response = await fetch("/api/v1/knowledge", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content }) });
+    const response = await fetch("/api/v1/knowledge", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content, role:currentRole(), requester:"Lenovo" }) });
     const document = await response.json(); if (!response.ok) throw new Error(document.detail || "保存失败");
     $("#knowledge-title").value = ""; $("#knowledge-tags").value = ""; $("#knowledge-content").value = "";
     toast(`“${document.title}” 已纳入 RAG`); loadKnowledge(); loadMetrics();
@@ -118,11 +119,20 @@ async function saveKnowledge() {
   finally { button.disabled = false; button.innerHTML = "保存并纳入 RAG <span>↗</span>"; }
 }
 
+async function deleteKnowledge(documentId) {
+  if (!confirm("确认删除这份知识文档？它将不再参与 RAG 检索。")) return;
+  try {
+    const response = await fetch("/api/v1/knowledge/" + documentId, { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) });
+    const result = response.ok ? null : await response.json(); if (!response.ok) throw new Error(result.detail || "删除失败");
+    toast("知识文档已删除，并已同步移除索引"); loadKnowledge(); loadAudit(); loadMetrics();
+  } catch (error) { toast(error.message || "删除失败"); }
+}
+
 async function searchKnowledge() {
   const query = $("#knowledge-query").value.trim();
   if (!query) return toast("请输入要检索的问题");
   try {
-    const evidence = await (await fetch("/api/v1/knowledge/search?query=" + encodeURIComponent(query))).json();
+    const response = await fetch("/api/v1/knowledge/search?query=" + encodeURIComponent(query) + "&role=" + encodeURIComponent(currentRole())); const evidence = await response.json(); if (!response.ok) throw new Error(evidence.detail || "知识检索失败");
     const target = $("#knowledge-search-result"); target.hidden = false;
     target.innerHTML = evidence.length ? evidence.map((item) => '<div class="knowledge-evidence"><strong>' + escapeHtml(item.title) + " · 片段 " + (item.chunk_index + 1) + " · 得分 " + item.score + '</strong><p>' + escapeHtml(item.content) + '</p></div>').join("") : '<div class="knowledge-evidence">没有检索到足够匹配的证据。</div>';
   } catch { toast("知识检索失败"); }
@@ -131,7 +141,7 @@ async function searchKnowledge() {
 async function reindexKnowledge() {
   const button = $("#reindex-knowledge"); button.disabled = true; button.textContent = "构建中…";
   try {
-    const result = await (await fetch("/api/v1/knowledge/reindex", { method:"POST" })).json();
+    const response = await fetch("/api/v1/knowledge/reindex", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || "索引重建失败");
     toast("索引已重建，共 " + result.chunk_count + " 个知识片段"); loadAudit();
   } catch { toast("索引重建失败"); }
   finally { button.disabled = false; button.textContent = "重建索引"; }
@@ -317,7 +327,7 @@ async function loadTools() {
 async function invokeTool(name, button) {
   button.disabled = true; button.textContent = "调用中…";
   try {
-    const response = await fetch("/api/v1/tools/" + encodeURIComponent(name) + "/invoke", { method:"POST" });
+    const response = await fetch("/api/v1/tools/" + encodeURIComponent(name) + "/invoke", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) });
     const result = await response.json(); const box = $("#tool-result"); box.hidden = false;
     box.textContent = JSON.stringify(result, null, 2); toast("工具调用状态：" + result.status); loadAudit();
   } catch { toast("工具调用失败"); }

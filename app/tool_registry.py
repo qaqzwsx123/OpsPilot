@@ -31,6 +31,10 @@ def catalog() -> list[dict[str, str]]:
     return [asdict(tool) for tool in TOOLS]
 
 
+def definition(name: str) -> ToolDefinition | None:
+    return next((tool for tool in TOOLS if tool.name == name), None)
+
+
 def invoke(name: str) -> dict[str, Any]:
     readonly_queries = {
         "asset_lookup": "SELECT id, name, region, status, owner, updated_at FROM assets WHERE status != 'online' ORDER BY updated_at DESC LIMIT 20;",

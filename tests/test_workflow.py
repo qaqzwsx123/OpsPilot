@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 
 from app.database import approve, audit_integrity, create_approval, data_catalog, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
+from fastapi import HTTPException
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
 from app.workflow import SqlAgentWorkflow
 
@@ -87,6 +89,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(snapshot)
         self.assertEqual(len(snapshot["rows"]), 2)
         self.assertIsNone(table_snapshot("sqlite_master"))
+
+    def test_tool_invocation_enforces_role_and_manual_tools_create_approval(self) -> None:
+        with self.assertRaises(HTTPException) as denied:
+            invoke_tool("close_alert", ToolInvokeRequest(role="viewer", requester="test-viewer"))
+        self.assertEqual(denied.exception.status_code, 403)
+        requested = invoke_tool("close_alert", ToolInvokeRequest(role="operator", requester="test-operator"))
+        self.assertEqual(requested["status"], "approval_required")
+        self.assertTrue(requested["approval_id"])
+
+    def test_viewer_cannot_write_knowledge_base(self) -> None:
+        with self.assertRaises(HTTPException) as denied:
+            create_knowledge(KnowledgeDocumentRequest(title="无权写入", content="这条文档不应该被观察者写入知识库。", role="viewer"))
+        self.assertEqual(denied.exception.status_code, 403)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
@@ -12,16 +13,25 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, audit_integrity, data_catalog, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import add_knowledge_document, approve, audit_integrity, create_approval, data_catalog, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry
-from app.tool_registry import catalog, invoke
+from app.tool_registry import catalog, definition, invoke
 from app.workflow import SqlAgentWorkflow
 from app.rag import KnowledgeRag
 from app.policy import permitted, policy_summary, role_catalog
 
 
-app = FastAPI(title="安全可控 SQL Agent", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    initialize()
+    seed_demo_data()
+    seed_metric_demo_data()
+    rebuild_knowledge_index()
+    yield
+
+
+app = FastAPI(title="安全可控 SQL Agent", version="0.1.0", lifespan=lifespan)
 workflow = SqlAgentWorkflow()
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
@@ -37,20 +47,23 @@ class KnowledgeDocumentRequest(BaseModel):
     title: str = Field(min_length=2, max_length=100)
     content: str = Field(min_length=10, max_length=4000)
     tags: str = Field(default="未分类", max_length=200)
+    role: str = Field(default="operator", min_length=1, max_length=32)
+    requester: str = Field(default="Lenovo", min_length=1, max_length=64)
+
+
+class MutationActorRequest(BaseModel):
+    role: str = Field(default="operator", min_length=1, max_length=32)
+    requester: str = Field(default="Lenovo", min_length=1, max_length=64)
+
+
+class ToolInvokeRequest(MutationActorRequest):
+    pass
 
 
 class ApprovalActionRequest(BaseModel):
     role: str = Field(default="approver", min_length=1, max_length=32)
     actor: str = Field(default="Lenovo", min_length=1, max_length=64)
     comment: str = Field(default="", max_length=500)
-
-
-@app.on_event("startup")
-def startup() -> None:
-    initialize()
-    seed_demo_data()
-    seed_metric_demo_data()
-    rebuild_knowledge_index()
 
 
 @app.get("/health")
@@ -174,34 +187,44 @@ def skill_detail(skill_name: str) -> dict[str, str]:
 
 
 @app.get("/api/v1/knowledge")
-def knowledge() -> list[dict]:
+def knowledge(role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
     return list_knowledge_documents()
 
 
 @app.get("/api/v1/knowledge/search")
-def search_knowledge(query: str, limit: int = 3) -> list[dict]:
+def search_knowledge(query: str, limit: int = 3, role: str = "viewer") -> list[dict]:
+    if not permitted(role, "rag"):
+        raise HTTPException(status_code=403, detail="当前角色无知识检索权限。")
     return KnowledgeRag().search(query, min(max(limit, 1), 10))
 
 
 @app.post("/api/v1/knowledge/reindex")
-def reindex_knowledge() -> dict:
+def reindex_knowledge(request: MutationActorRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     chunks = rebuild_knowledge_index()
-    write_audit("Lenovo", "knowledge_reindexed", {"chunk_count": chunks})
+    write_audit(request.requester, "knowledge_reindexed", {"chunk_count": chunks, "role": request.role})
     return {"status": "completed", "chunk_count": chunks}
 
 
 @app.post("/api/v1/knowledge", status_code=201)
 def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     document = add_knowledge_document(request.title, request.content, request.tags)
-    write_audit("Lenovo", "knowledge_created", {"document_id": document["id"], "title": document["title"]})
+    write_audit(request.requester, "knowledge_created", {"document_id": document["id"], "title": document["title"], "role": request.role})
     return document
 
 
 @app.delete("/api/v1/knowledge/{document_id}")
-def delete_knowledge(document_id: int) -> None:
+def delete_knowledge(document_id: int, request: MutationActorRequest) -> None:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     if not delete_knowledge_document(document_id):
         raise HTTPException(status_code=404, detail="知识文档不存在")
-    write_audit("Lenovo", "knowledge_deleted", {"document_id": document_id})
+    write_audit(request.requester, "knowledge_deleted", {"document_id": document_id, "role": request.role})
 
 
 @app.get("/api/v1/metrics")
@@ -243,9 +266,20 @@ def tools_catalog() -> list[dict[str, str]]:
 
 
 @app.post("/api/v1/tools/{tool_name}/invoke")
-def invoke_tool(tool_name: str) -> dict:
+def invoke_tool(tool_name: str, request: ToolInvokeRequest) -> dict:
+    tool = definition(tool_name)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="工具不存在")
+    required_permission = "request_change" if tool.risk == "manual" else "read"
+    if not permitted(request.role, required_permission):
+        write_audit(request.requester, "tool_access_denied", {"tool": tool_name, "role": request.role, "required_permission": required_permission})
+        raise HTTPException(status_code=403, detail="当前角色无该工具调用权限。")
+    if tool.risk == "manual":
+        approval_id = create_approval(request.requester, f"TOOL {tool_name}", f"工具 {tool.name} 会改变运维状态，需要人工审批。")
+        write_audit(request.requester, "tool_approval_requested", {"tool": tool_name, "approval_id": approval_id, "role": request.role})
+        return {"status": "approval_required", "tool": tool_name, "approval_id": approval_id, "message": "已创建工具变更审批单，请前往审批中心确认。"}
     result = invoke(tool_name)
-    write_audit("Lenovo", "tool_invoked", {"tool": tool_name, "status": result["status"]})
+    write_audit(request.requester, "tool_invoked", {"tool": tool_name, "status": result["status"], "role": request.role})
     return result
 
 
