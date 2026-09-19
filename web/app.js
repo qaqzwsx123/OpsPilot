@@ -13,6 +13,63 @@ const currentRole = () => $("#role-selector").value;
 
 const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
 let selectedTraceIndex = -1;
+const pageGuides = {
+  agent: { eyebrow:"SAFE SQL WORKFLOW", title:"智能查询使用说明", lead:"这里把自然语言运维问题转换为受控查询。系统优先查询授权的结构化数据，无法生成可靠 SQL 时才使用知识库回答。", sections:[
+    { title:"如何使用", text:"输入问题后点击“运行查询”。可直接使用示例问题，例如查询 P1 告警、离线设备或未关闭工单。" },
+    { title:"执行过程", text:"工作流会依次召回授权表、生成 SQL、审查 SQL、评估风险并执行只读查询。点击工作流节点可查看每一步的实际证据。" },
+    { title:"安全边界", text:"只读 SELECT 可自动执行；写操作只创建审批单；DDL、多语句和高危维护请求会被阻断。结果、SQL 和决策均会审计留痕。", tone:"blocked" }
+  ] },
+  chat: { eyebrow:"LOCAL DEEPSEEK CHAT", title:"Agent 聊天使用说明", lead:"这是本地 DeepSeek 的多轮讨论入口，适合咨询排障思路、解释系统概念和制定操作建议。", sections:[
+    { title:"会话管理", text:"点击“新建对话”开始；历史对话会保存在本地 SQLite，可重新打开或删除自己的会话。" },
+    { title:"输入方式", text:"Enter 发送，Shift + Enter 换行。模型回复会标识为本地 DeepSeek 或离线提示。" },
+    { title:"重要边界", text:"聊天不会自动执行 SQL、调用工具、创建工单或修改数据。需要业务操作时，请到智能查询、工具中心或审批中心明确发起。", tone:"blocked" }
+  ] },
+  monitoring: { eyebrow:"LIVE OPERATIONS", title:"监控中心使用说明", lead:"监控中心把当前资产状态、未关闭告警和待处理工单汇总在同一页，便于快速发现异常范围。", sections:[
+    { title:"查看内容", text:"资产运行状态展示在线、离线和维护中的设备；告警分布按严重程度汇总；最近告警提供明细。" },
+    { title:"继续分析", text:"点击“用 Agent 分析 P1 告警”会将问题带入智能查询，由安全 SQL 工作流继续检索关联数据。" },
+    { title:"数据范围", text:"当前页面读取项目本地已接入的资产、告警和工单表；刷新仅重新读取数据，不会改变任何业务状态。" }
+  ] },
+  metrics: { eyebrow:"OBSERVABILITY METRICS", title:"指标中心使用说明", lead:"指标中心用于筛选指标、查看时序趋势，并将具体指标带入 Agent 做进一步分析。", sections:[
+    { title:"数据来源", text:"灰色“本地演示”是项目初始化的样例数据；绿色“真实 CSV”来自用户导入的本地 CSV，二者会明确区分。" },
+    { title:"导入 CSV", text:"运维工程师及以上角色可下载模板并导入 UTF-8 CSV。每行必须包含指标名、分类、单位、资源范围、采集时间和数值；最大 5MB、5 万行。", tone:"manual" },
+    { title:"趋势与 Agent", text:"点击“查看趋势”查看最多 24 小时样本；点击“交给 Agent 分析”会跳转智能查询，仍遵守 SQL 白名单与只读约束。" }
+  ] },
+  data: { eyebrow:"READ-ONLY DATA EXPLORER", title:"数据浏览器使用说明", lead:"数据浏览器类似轻量数据库客户端，用于查看本地 SQLite 的授权表、字段结构和分页样例。", sections:[
+    { title:"如何查看", text:"在表目录或下拉框选择表，即可查看字段、主键标记、总行数和每页最多 30 行的只读数据。" },
+    { title:"可查看范围", text:"只能查看后端白名单中的业务表、审计表和指标表，不能访问 sqlite_master 或任意文件。" },
+    { title:"安全边界", text:"此页面没有新增、修改、删除或任意 SQL 输入入口。它只用于核对数据，不是数据库管理工具。", tone:"blocked" }
+  ] },
+  audit: { eyebrow:"AUDITABLE BY DEFAULT", title:"审计中心使用说明", lead:"审计中心记录 Agent 查询、工具调用、审批决定、知识维护、CSV 导入等关键事件，用于追踪与复盘。", sections:[
+    { title:"查看记录", text:"记录按时间倒序分页展示，每页 10 条，并显示总数。刷新只读取最新审计数据。" },
+    { title:"验证完整性", text:"“验证完整性”会校验审计记录的 SHA-256 哈希链，发现断裂时应停止依赖该链进行合规判断。" },
+    { title:"离线评测", text:"“运行评测”执行内置安全查询用例，展示 SQL 首次通过率和高危请求拦截率，不会修改业务表。" }
+  ] },
+  approval: { eyebrow:"HUMAN IN THE LOOP", title:"审批中心使用说明", lead:"审批中心承接 SQL 写操作和 MANUAL 工具请求。它让高风险变更必须经过人工确认，而非由 Agent 自动执行。", sections:[
+    { title:"审批前检查", text:"待审批记录会显示请求 SQL、影响预估、抽样结果和有效期，便于判断是否应放行。" },
+    { title:"状态含义", text:"pending 表示待处理；approved_safe_mode 表示已经同意但安全模式未写库；executed 才表示已执行；rejected 和 expired 分别表示拒绝或过期。" },
+    { title:"默认安全模式", text:"当前默认不会执行写 SQL。批准操作仅记录审批结论和只读影响预估，不会删除表或表中数据。", tone:"blocked" }
+  ] },
+  policy: { eyebrow:"RBAC + RISK POLICY", title:"权限中心使用说明", lead:"权限中心展示角色、可用权限和风险分级策略。角色切换会立即影响后端接口的实际授权判断。", sections:[
+    { title:"角色", text:"观察者可读数据和检索知识；运维工程师可发起变更审批；值班负责人额外拥有审批权限。" },
+    { title:"风险分级", text:"AUTO 为只读操作，MANUAL 为必须审批的变更，BLOCKED 为永远不允许 Agent 执行的高危操作。" },
+    { title:"不是前端装饰", text:"权限同时在后端校验。即使手动构造请求，未授权角色也会收到拒绝并写入审计。", tone:"blocked" }
+  ] },
+  knowledge: { eyebrow:"KNOWLEDGE IN, RAG OUT", title:"知识库使用说明", lead:"知识库用于沉淀 SOP、排障手册和规范文本。当 SQL 工作流无法可靠回答时，Agent 会检索这些内容提供带来源的答复。", sections:[
+    { title:"维护知识", text:"运维工程师及以上可新增、删除文档或重建索引。正文应写清判断条件、步骤、升级规则和验证方式。", tone:"manual" },
+    { title:"验证检索", text:"在右侧输入问题并点击检索，可看到命中文档片段和得分，用于检查知识是否能被正确召回。" },
+    { title:"索引说明", text:"保存文档会纳入本地检索索引；删除后不再参与 RAG。知识维护动作都会记录在审计中心。" }
+  ] },
+  skills: { eyebrow:"REUSABLE EXPERIENCE", title:"Skills 与 SOP 使用说明", lead:"Skill 将重复运维经验封装为可复用的输入、步骤、输出和风险声明，方便 Agent 按标准方式执行或给出建议。", sections:[
+    { title:"阅读 SOP", text:"点击“查看完整 SOP”可以查看 Skill 的原始说明、适用场景、输入要求、步骤和边界。" },
+    { title:"试运行", text:"可运行的 Skill 会要求输入本次业务上下文，并返回结构化结论和下一步建议；运行记录会写入审计。" },
+    { title:"执行范围", text:"当前内置试运行 Skill 为只读诊断与建议能力，不会直接关闭告警、创建工单或修改数据库。", tone:"blocked" }
+  ] },
+  tools: { eyebrow:"TOOL CENTER GUIDE", title:"工具中心使用说明", lead:"工具中心是 Agent 的白名单能力注册表。每张卡片对应一个已经注册、授权并可审计的后端函数，不提供任意命令执行入口。", sections:[
+    { title:"只读工具（AUTO）", text:"点击“试运行工具”会真实调用后端函数、返回结构化结果并写入审计，但不会修改业务数据。", items:["<code>asset_lookup</code>：查询设备资产", "<code>alert_query</code>：查询未关闭告警", "<code>ticket_query</code>：查询运维工单", "<code>work_order_query</code>：查询作业任务", "<code>knowledge_search</code>：检索知识库", "<code>system_health</code>：查看 Agent 服务与数据接入状态"] },
+    { title:"变更工具（MANUAL）", text:"<code>create_work_order</code> 和 <code>close_alert</code> 不会直接改变数据。点击后仅创建审批单；需在审批中心核对影响并处理。", tone:"manual" },
+    { title:"禁止工具（BLOCKED）", text:"<code>database_maintenance</code> 等数据库维护、DDL 和多语句操作会被直接拒绝，不执行也不进入审批。", tone:"blocked" }
+  ], roles:["观察者：仅 AUTO", "运维工程师：可发起 MANUAL 审批", "值班负责人：可审批受控变更"] }
+};
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[character]);
@@ -21,6 +78,23 @@ function escapeHtml(value) {
 function toast(message) {
   const node = $("#toast"); node.textContent = message; node.classList.add("show");
   setTimeout(() => node.classList.remove("show"), 2600);
+}
+
+function setToolHelpVisible(visible) {
+  const modal = $("#tool-help-modal");
+  modal.hidden = !visible;
+  document.body.classList.toggle("modal-open", visible);
+  if (visible) $("#close-tool-help").focus();
+}
+
+function openPageGuide(key) {
+  const guide = pageGuides[key];
+  if (!guide) return;
+  const sections = guide.sections.map((section) => '<div class="tool-help-section ' + (section.tone || "") + '"><h3>' + section.title + '</h3><p>' + section.text + '</p>' + (section.items ? '<ul>' + section.items.map((item) => '<li>' + item + '</li>').join("") + '</ul>' : "") + '</div>').join("");
+  const roles = guide.roles?.length ? '<div class="tool-help-roles"><strong>角色限制</strong>' + guide.roles.map((role) => '<span>' + role + '</span>').join("") + '</div>' : "";
+  $("#guide-modal-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + guide.eyebrow + '</p><h2 id="tool-help-title">' + guide.title + '</h2></div><button id="close-tool-help" class="modal-close" aria-label="关闭使用说明">×</button></div><p class="modal-lead">' + guide.lead + '</p>' + sections + roles;
+  $("#close-tool-help").addEventListener("click", () => setToolHelpVisible(false));
+  setToolHelpVisible(true);
 }
 
 function formatTraceValue(key, value) {
@@ -318,6 +392,10 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
   if (button.dataset.page === "chat") loadChat(); if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
+document.querySelectorAll("[data-guide]").forEach((button) => button.addEventListener("click", () => openPageGuide(button.dataset.guide)));
+$("#tool-help-got-it").addEventListener("click", () => setToolHelpVisible(false));
+$("#tool-help-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) setToolHelpVisible(false); });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("#tool-help-modal").hidden) setToolHelpVisible(false); });
 $("#guard-open-audit").addEventListener("click", () => document.querySelector('.nav-item[data-page="audit"]').click());
 $("#guard-open-approval").addEventListener("click", () => document.querySelector('.nav-item[data-page="approval"]').click());
 $("#new-chat").addEventListener("click", createChat);

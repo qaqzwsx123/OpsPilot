@@ -38,7 +38,7 @@
 
       <section id="agent-page" class="page active-page">
         <section class="hero">
-          <div><span class="pill">SQL WORKFLOW + AGENTIC RAG</span><h2>把运维经验，变成每个人都能安全调用的能力。</h2><p>结构化数据优先查询，知识库按需兜底。每一步都有审查、授权与审计。</p></div>
+          <div><span class="pill">SQL WORKFLOW + AGENTIC RAG</span><button class="page-help-button hero-help" data-guide="agent">使用说明 ?</button><h2>把运维经验，变成每个人都能安全调用的能力。</h2><p>结构化数据优先查询，知识库按需兜底。每一步都有审查、授权与审计。</p></div>
           <div class="hero-orbit"><span class="orbit-core">AI</span><span class="orbit-dot dot-one"></span><span class="orbit-dot dot-two"></span><span class="orbit-dot dot-three"></span></div>
         </section>
 
@@ -91,7 +91,7 @@
       </section>
 
       <section id="chat-page" class="page">
-        <div class="section-intro"><span class="pill">LOCAL DEEPSEEK CHAT</span><h2>Agent 聊天</h2><p>与本地部署的 DeepSeek 对话；聊天记录保存在本地 SQLite。聊天只提供讨论与建议，不会直接执行 SQL、工具或变更。</p></div>
+        <div class="section-intro"><span class="pill">LOCAL DEEPSEEK CHAT</span><button class="page-help-button" data-guide="chat">使用说明 ?</button><h2>Agent 聊天</h2><p>与本地部署的 DeepSeek 对话；聊天记录保存在本地 SQLite。聊天只提供讨论与建议，不会直接执行 SQL、工具或变更。</p></div>
         <div class="chat-layout">
           <aside class="card chat-conversation-panel"><button id="new-chat" class="primary-button">＋ 新建对话</button><div class="chat-panel-heading"><span>历史会话</span><small id="chat-count">—</small></div><div id="chat-conversation-list" class="chat-conversation-list"></div></aside>
           <article class="card chat-main-panel"><div class="card-heading chat-heading"><div><p class="section-label">AGENT CHAT</p><h3 id="chat-title">新对话</h3></div><span id="chat-provider" class="chat-provider">等待模型</span></div><div id="chat-messages" class="chat-messages"><div class="empty-state"><strong>开始一次 Agent 对话</strong><p>例如：如何处理华东 P1 网关离线？</p></div></div><div class="chat-composer"><textarea id="chat-input" rows="3" placeholder="输入你的问题；Enter 发送，Shift + Enter 换行"></textarea><div><small>本地会话持久化 · 受控业务操作仍需在对应页面发起</small><button id="send-chat" class="primary-button">发送 ↗</button></div></div></article>
@@ -99,18 +99,18 @@
       </section>
 
       <section id="audit-page" class="page">
-        <div class="section-intro"><span class="pill">AUDITABLE BY DEFAULT</span><h2>每次决策，都有迹可循。</h2><p>记录用户问题、执行 SQL、风险判断和最终结果，方便故障复盘与合规审计。</p></div>
+        <div class="section-intro"><span class="pill">AUDITABLE BY DEFAULT</span><button class="page-help-button" data-guide="audit">使用说明 ?</button><h2>每次决策，都有迹可循。</h2><p>记录用户问题、执行 SQL、风险判断和最终结果，方便故障复盘与合规审计。</p></div>
         <article class="card audit-card"><div class="card-heading"><div><p class="section-label">RECENT ACTIVITIES</p><h3>审计记录</h3></div><div class="audit-actions"><button id="verify-audit" class="text-button">验证完整性</button><button id="run-evaluation" class="text-button">运行评测</button><button id="refresh-audit" class="text-button">刷新记录</button></div></div><div id="evaluation-result" class="evaluation-result" hidden></div><div id="audit-list" class="audit-list"></div><div class="record-pagination"><button id="prev-audit" class="text-button">← 上一页</button><span id="audit-page-note">第 1 页</span><button id="next-audit" class="text-button">下一页 →</button></div></article>
       </section>
 
       <section id="skills-page" class="page">
-        <div class="section-intro"><span class="pill">REUSABLE EXPERIENCE</span><h2>让 SOP 成为 Agent 的可复用能力。</h2><p>每个 Skill 都声明了业务场景、风险等级、推荐输入与结构化输出；可试运行的 Skill 全程只读并写入审计。</p></div>
+        <div class="section-intro"><span class="pill">REUSABLE EXPERIENCE</span><button class="page-help-button" data-guide="skills">使用说明 ?</button><h2>让 SOP 成为 Agent 的可复用能力。</h2><p>每个 Skill 都声明了业务场景、风险等级、推荐输入与结构化输出；可试运行的 Skill 全程只读并写入审计。</p></div>
         <article id="skill-detail" class="card skill-detail" hidden><button id="close-skill-detail" class="text-button">关闭</button><pre id="skill-content"></pre></article>
         <div id="skills-list" class="skill-grid"></div>
       </section>
 
       <section id="knowledge-page" class="page">
-        <div class="section-intro"><span class="pill">KNOWLEDGE IN, RAG OUT</span><h2>把排障经验沉淀进知识库。</h2><p>保存后立即可被 Agentic RAG 检索，用于回答 SOP、排障步骤和规范类问题。</p></div>
+        <div class="section-intro"><span class="pill">KNOWLEDGE IN, RAG OUT</span><button class="page-help-button" data-guide="knowledge">使用说明 ?</button><h2>把排障经验沉淀进知识库。</h2><p>保存后立即可被 Agentic RAG 检索，用于回答 SOP、排障步骤和规范类问题。</p></div>
         <div class="knowledge-layout">
           <article class="card knowledge-form"><p class="section-label">ADD KNOWLEDGE</p><h3>新增运维知识</h3><label>标题<input id="knowledge-title" placeholder="例如：数据库连接异常排障 SOP" /></label><label>标签<input id="knowledge-tags" placeholder="数据库,连接,排障" /></label><label>正文<textarea id="knowledge-content" rows="9" placeholder="写入操作步骤、判断条件、升级规则与验证方式……"></textarea></label><button id="save-knowledge" class="primary-button">保存并纳入 RAG <span>↗</span></button></article>
           <article class="card knowledge-library"><div class="card-heading"><div><p class="section-label">KNOWLEDGE LIBRARY</p><h3>已沉淀文档</h3></div><div class="knowledge-actions"><button id="reindex-knowledge" class="text-button">重建索引</button><button id="refresh-knowledge" class="text-button">刷新</button></div></div><div class="knowledge-search"><input id="knowledge-query" placeholder="输入问题，验证混合检索效果" /><button id="search-knowledge" class="text-button">检索</button></div><div id="knowledge-search-result" class="knowledge-search-result" hidden></div><div id="knowledge-list" class="knowledge-list"></div></article>
@@ -118,25 +118,25 @@
       </section>
 
       <section id="approval-page" class="page">
-        <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><h2>高风险操作必须由人确认。</h2><p>审批前先做只读影响预估；审批意见、审批人、拒绝结论和执行结果均可追溯。默认安全模式不会执行写 SQL。</p></div>
+        <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><button class="page-help-button" data-guide="approval">使用说明 ?</button><h2>高风险操作必须由人确认。</h2><p>审批前先做只读影响预估；审批意见、审批人、拒绝结论和执行结果均可追溯。默认安全模式不会执行写 SQL。</p></div>
         <article class="card approval-library"><div class="card-heading"><div><p class="section-label">APPROVAL QUEUE</p><h3>审批队列</h3></div><button id="refresh-approvals" class="text-button">刷新</button></div><div id="approval-list" class="approval-list"></div><div class="record-pagination"><button id="prev-approvals" class="text-button">← 上一页</button><span id="approval-page-note">第 1 页</span><button id="next-approvals" class="text-button">下一页 →</button></div></article>
       </section>
 
       <section id="policy-page" class="page">
-        <div class="section-intro"><span class="pill">RBAC + RISK POLICY</span><h2>权限不是提示词，而是运行时护栏。</h2><p>切换角色后，查询、变更发起和审批权限会即时改变；所有拒绝和审批行为均写入审计日志。</p></div>
+        <div class="section-intro"><span class="pill">RBAC + RISK POLICY</span><button class="page-help-button" data-guide="policy">使用说明 ?</button><h2>权限不是提示词，而是运行时护栏。</h2><p>切换角色后，查询、变更发起和审批权限会即时改变；所有拒绝和审批行为均写入审计日志。</p></div>
         <div id="role-cards" class="role-grid"></div>
         <article class="card policy-table-card"><div class="card-heading"><div><p class="section-label">EXECUTION POLICIES</p><h3>风险与权限矩阵</h3></div></div><div id="policy-table" class="policy-table"></div></article>
       </section>
 
       <section id="monitoring-page" class="page">
-        <div class="section-intro"><span class="pill">LIVE OPERATIONS</span><h2>从告警到工单，实时掌握运行状态。</h2><p>监控中心读取当前资产、未关闭告警和待处理工单；所有数据均可回到智能查询继续追问。</p></div>
+        <div class="section-intro"><span class="pill">LIVE OPERATIONS</span><button class="page-help-button" data-guide="monitoring">使用说明 ?</button><h2>从告警到工单，实时掌握运行状态。</h2><p>监控中心读取当前资产、未关闭告警和待处理工单；所有数据均可回到智能查询继续追问。</p></div>
         <div id="monitoring-summary" class="monitor-summary"></div>
         <div class="monitor-layout"><article class="card"><div class="card-heading"><div><p class="section-label">ASSET STATUS</p><h3>资产运行状态</h3></div><button id="refresh-monitoring" class="text-button">刷新</button></div><div id="asset-state-list" class="state-list"></div></article><article class="card"><div class="card-heading"><div><p class="section-label">ALERT SEVERITY</p><h3>未关闭告警分布</h3></div></div><div id="alert-severity-list" class="state-list"></div></article></div>
         <article class="card latest-alert-card"><div class="card-heading"><div><p class="section-label">LATEST ALERTS</p><h3>最近告警</h3></div><button class="text-button monitor-query" data-query="查询最近的 P1 告警">用 Agent 分析 P1 告警</button></div><div id="monitoring-alert-list" class="table-wrap"></div></article>
       </section>
 
       <section id="metrics-page" class="page">
-        <div class="section-intro"><span class="pill">OBSERVABILITY METRICS</span><h2>指标可检索，也可追溯趋势。</h2><p>内置演示指标用于体验流程，也支持导入真实 CSV 时序数据。导入后的指标会标注“真实 CSV”，可筛选、查看趋势并交给 Agent 分析。</p></div>
+        <div class="section-intro"><span class="pill">OBSERVABILITY METRICS</span><button class="page-help-button" data-guide="metrics">使用说明 ?</button><h2>指标可检索，也可追溯趋势。</h2><p>内置演示指标用于体验流程，也支持导入真实 CSV 时序数据。导入后的指标会标注“真实 CSV”，可筛选、查看趋势并交给 Agent 分析。</p></div>
         <div class="metric-catalog-layout">
           <article class="card metric-filter"><p class="section-label">METRIC EXPLORER</p><h3>筛选指标</h3><label>关键字<input id="metric-keyword" placeholder="例如：CPU、延迟、成功率" /></label><label>分类<select id="metric-category"><option value="">全部分类</option><option value="主机">主机</option><option value="网络">网络</option><option value="应用">应用</option><option value="数据库">数据库</option><option value="消息队列">消息队列</option><option value="作业">作业</option></select></label><button id="search-metrics" class="primary-button">查询指标 <span>↗</span></button><div class="metric-filter-note"><strong id="metric-count-note">—</strong><small id="metric-count-description">条指标定义</small></div><div class="metric-import"><div class="metric-import-heading"><strong>导入真实 CSV</strong><button id="download-metric-template" class="text-button">下载模板</button></div><p>必填列：指标名、分类、单位、资源范围、采集时间、数值。相同指标与时间点会更新数值。</p><input id="metric-csv-file" type="file" accept=".csv,text/csv" /><button id="upload-metric-csv" class="secondary-button">校验并导入 CSV</button><div id="metric-import-result" class="metric-import-result" hidden></div><div id="metric-import-history" class="metric-import-history"></div></div></article>
           <article class="card metric-list-card"><div class="card-heading"><div><p class="section-label">CATALOG</p><h3>指标目录</h3></div><button id="refresh-metrics" class="text-button">刷新</button></div><div id="metric-list" class="metric-list"></div></article>
@@ -145,7 +145,7 @@
       </section>
 
       <section id="data-page" class="page">
-        <div class="section-intro"><span class="pill">READ-ONLY DATA EXPLORER</span><h2>像数据库客户端一样查看本地数据。</h2><p>展示经过白名单授权的 SQLite 表、字段结构和分页样例数据。这里没有修改、删除或执行任意 SQL 的入口。</p></div>
+        <div class="section-intro"><span class="pill">READ-ONLY DATA EXPLORER</span><button class="page-help-button" data-guide="data">使用说明 ?</button><h2>像数据库客户端一样查看本地数据。</h2><p>展示经过白名单授权的 SQLite 表、字段结构和分页样例数据。这里没有修改、删除或执行任意 SQL 的入口。</p></div>
         <div class="data-layout">
           <article class="card data-catalog-card"><p class="section-label">AUTHORIZED TABLES</p><h3>表目录</h3><div id="data-catalog" class="data-catalog"></div></article>
           <article class="card data-preview-card"><div class="card-heading"><div><p class="section-label">TABLE PREVIEW</p><h3 id="data-table-title">选择一张表</h3></div><button id="refresh-data" class="text-button">刷新</button></div><div class="data-toolbar"><label>当前表<select id="data-table-select"></select></label><span id="data-summary" class="data-summary">—</span></div><div id="data-schema" class="data-schema"></div><div id="data-table-wrap" class="table-wrap data-table-wrap"><div class="empty-state"><strong>等待加载表数据</strong></div></div><div class="data-pagination"><button id="prev-data" class="text-button">← 上一页</button><span id="data-page-note">—</span><button id="next-data" class="text-button">下一页 →</button></div></article>
@@ -153,13 +153,19 @@
       </section>
 
       <section id="tools-page" class="page">
-        <div class="section-intro"><span class="pill">TOOL / FUNCTION CALLING</span><h2>Agent 只能调用被注册和授权的工具。</h2><p>工具按风险分级。只读工具可直接试运行；变更工具必须进入审批；高危维护工具会被拒绝。</p></div>
+        <div class="section-intro"><div class="tools-intro-actions"><span class="pill">TOOL / FUNCTION CALLING</span><button id="show-tool-help" class="tool-help-button page-help-button" data-guide="tools">使用说明 ?</button></div><h2>Agent 只能调用被注册和授权的工具。</h2><p>工具按风险分级。只读工具可直接试运行；变更工具必须进入审批；高危维护工具会被拒绝。</p></div>
         <div id="tool-result" class="tool-result" hidden></div>
         <div id="tool-list" class="tool-grid"></div>
       </section>
     </main>
   </div>
+  <div id="tool-help-modal" class="modal-backdrop" hidden role="presentation">
+    <section class="tool-help-modal" role="dialog" aria-modal="true" aria-labelledby="tool-help-title">
+      <div id="guide-modal-content"></div>
+      <div class="modal-footer"><button id="tool-help-got-it" class="primary-button">我知道了</button></div>
+    </section>
+  </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-csv-metric-import"></script>
+  <script src="/static/app.js?v=20260919-page-guides"></script>
 </body>
 </html>
