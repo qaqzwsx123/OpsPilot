@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from app.database import approve, audit_integrity, create_approval, data_catalog, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.database import add_chat_message, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, execute_approved, execute_readonly, get_chat_messages, list_approvals, list_audit, list_chat_conversations, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
 from fastapi import HTTPException
@@ -116,6 +116,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(run_skill("incident_triage", "华东 P1 告警")["status"], "completed")
         self.assertEqual(run_skill("metric_diagnosis", "指标 #1")["status"], "completed")
         self.assertEqual(run_skill("change_review", "DELETE FROM alerts WHERE status = 'closed';")["risk"], "manual")
+
+    def test_audit_and_approval_lists_support_bounded_pagination(self) -> None:
+        write_audit("test-pagination", "pagination_test", {"sequence": 1})
+        first_audit_page = list_audit(limit=1, offset=0)
+        second_audit_page = list_audit(limit=1, offset=1)
+        self.assertLessEqual(len(first_audit_page), 1)
+        if second_audit_page:
+            self.assertNotEqual(first_audit_page[0]["id"], second_audit_page[0]["id"])
+        self.assertLessEqual(len(list_approvals(limit=10, offset=0)), 10)
+        self.assertGreaterEqual(audit_count(), len(first_audit_page))
+        self.assertGreaterEqual(approval_count(), len(list_approvals(limit=10, offset=0)))
+
+    def test_agent_chat_conversation_persists_and_isolated_by_requester(self) -> None:
+        conversation = create_chat_conversation("test-chat-user")
+        self.assertIsNotNone(add_chat_message(conversation["id"], "test-chat-user", "user", "你好，帮我解释 P1 告警处理流程"))
+        self.assertIsNotNone(add_chat_message(conversation["id"], "test-chat-user", "assistant", "请先确认影响范围。"))
+        self.assertEqual(len(get_chat_messages(conversation["id"], "test-chat-user") or []), 2)
+        self.assertIsNone(get_chat_messages(conversation["id"], "other-user"))
+        self.assertIn(conversation["id"], [item["id"] for item in list_chat_conversations("test-chat-user")])
+        self.assertFalse(delete_chat_conversation(conversation["id"], "other-user"))
+        self.assertTrue(delete_chat_conversation(conversation["id"], "test-chat-user"))
 
 
 if __name__ == "__main__":

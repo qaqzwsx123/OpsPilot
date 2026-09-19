@@ -27,6 +27,8 @@ EXPLORER_TABLES = {
     "approvals": "审批单",
     "audit_logs": "审计日志",
     "conversation_memory": "会话记忆",
+    "chat_conversations": "Agent 聊天会话",
+    "chat_messages": "Agent 聊天消息",
 }
 
 
@@ -81,6 +83,17 @@ def initialize() -> None:
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
               role TEXT NOT NULL, content TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS chat_conversations (
+              id TEXT PRIMARY KEY, requester TEXT NOT NULL, title TEXT NOT NULL,
+              created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chat_messages (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL,
+              role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              FOREIGN KEY(conversation_id) REFERENCES chat_conversations(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, id);
             CREATE TABLE IF NOT EXISTS metric_definitions (
               id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
               unit TEXT NOT NULL, asset_scope TEXT NOT NULL, description TEXT NOT NULL
@@ -410,6 +423,67 @@ def recent_memory(requester: str, limit: int = 6) -> list[dict[str, str]]:
     return [dict(row) for row in reversed(rows)]
 
 
+def create_chat_conversation(requester: str, title: str = "新对话") -> dict[str, Any]:
+    conversation_id, timestamp = str(uuid4()), utc_now()
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO chat_conversations (id, requester, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (conversation_id, requester, title.strip()[:48] or "新对话", timestamp, timestamp),
+        )
+    return {"id": conversation_id, "requester": requester, "title": title.strip()[:48] or "新对话", "created_at": timestamp, "updated_at": timestamp}
+
+
+def list_chat_conversations(requester: str, limit: int = 100) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, title, created_at, updated_at FROM chat_conversations WHERE requester = ? ORDER BY updated_at DESC LIMIT ?",
+            (requester, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_chat_messages(conversation_id: str, requester: str) -> list[dict[str, str]] | None:
+    with connect() as conn:
+        conversation = conn.execute("SELECT 1 FROM chat_conversations WHERE id = ? AND requester = ?", (conversation_id, requester)).fetchone()
+        if conversation is None:
+            return None
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id", (conversation_id,)
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_chat_message(conversation_id: str, requester: str, role: str, content: str) -> dict[str, str] | None:
+    if role not in {"user", "assistant"}:
+        raise ValueError("unsupported chat role")
+    timestamp = utc_now()
+    with connect() as conn:
+        conversation = conn.execute("SELECT title FROM chat_conversations WHERE id = ? AND requester = ?", (conversation_id, requester)).fetchone()
+        if conversation is None:
+            return None
+        conn.execute(
+            "INSERT INTO chat_messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+            (conversation_id, role, content, timestamp),
+        )
+        title = conversation["title"]
+        if role == "user" and title == "新对话":
+            title = content.replace("\n", " ").strip()[:32] or "新对话"
+            conn.execute("UPDATE chat_conversations SET title = ?, updated_at = ? WHERE id = ?", (title, timestamp, conversation_id))
+        else:
+            conn.execute("UPDATE chat_conversations SET updated_at = ? WHERE id = ?", (timestamp, conversation_id))
+    return {"role": role, "content": content, "created_at": timestamp}
+
+
+def delete_chat_conversation(conversation_id: str, requester: str) -> bool:
+    with connect() as conn:
+        exists = conn.execute("SELECT 1 FROM chat_conversations WHERE id = ? AND requester = ?", (conversation_id, requester)).fetchone()
+        if exists is None:
+            return False
+        conn.execute("DELETE FROM chat_messages WHERE conversation_id = ?", (conversation_id,))
+        conn.execute("DELETE FROM chat_conversations WHERE id = ?", (conversation_id,))
+    return True
+
+
 def system_metrics() -> dict[str, int | bool]:
     with connect() as conn:
         table_count = conn.execute(
@@ -529,13 +603,13 @@ def knowledge_chunks() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def list_approvals(limit: int = 100) -> list[dict[str, Any]]:
+def list_approvals(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     with connect() as conn:
         _expire_pending_approvals(conn)
         rows = conn.execute(
             "SELECT id, created_at, requester, sql, reason, status, risk_level, impact_preview, decision_comment, "
             "decided_by, decided_at, expires_at, executed_at, execution_result "
-            "FROM approvals ORDER BY created_at DESC LIMIT ?", (limit,)
+            "FROM approvals ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
         ).fetchall()
     result = []
     for row in rows:
@@ -568,10 +642,20 @@ def monitoring_overview() -> dict[str, Any]:
     }
 
 
-def list_audit(limit: int = 50) -> list[dict[str, Any]]:
+def list_audit(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
     return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+
+def audit_count() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+
+
+def approval_count() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]
 
 
 def data_catalog() -> list[dict[str, Any]]:

@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_knowledge_document, approve, audit_integrity, create_approval, data_catalog, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import add_chat_message, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, initialize, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.chat_service import AgentChatService
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry, run_skill
 from app.tool_registry import catalog, definition, invoke
@@ -33,6 +34,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="安全可控 SQL Agent", version="0.1.0", lifespan=lifespan)
 workflow = SqlAgentWorkflow()
+chat_service = AgentChatService()
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -64,6 +66,14 @@ class SkillRunRequest(MutationActorRequest):
     user_input: str = Field(default="", max_length=500)
 
 
+class ChatConversationRequest(MutationActorRequest):
+    title: str = Field(default="新对话", max_length=48)
+
+
+class ChatTurnRequest(MutationActorRequest):
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class ApprovalActionRequest(BaseModel):
     role: str = Field(default="approver", min_length=1, max_length=32)
     actor: str = Field(default="Lenovo", min_length=1, max_length=64)
@@ -78,6 +88,57 @@ def health() -> dict[str, str]:
 @app.get("/", include_in_schema=False)
 def console() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
+
+
+@app.post("/api/v1/chat/conversations")
+def create_chat_conversation(request: ChatConversationRequest) -> dict:
+    if not permitted(request.role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
+    conversation = create_chat_conversation_record(request.requester, request.title)
+    write_audit(request.requester, "chat_conversation_created", {"conversation_id": conversation["id"], "role": request.role})
+    return conversation
+
+
+@app.get("/api/v1/chat/conversations")
+def chat_conversations(requester: str = "Lenovo", role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
+    return list_chat_conversations(requester)
+
+
+@app.get("/api/v1/chat/conversations/{conversation_id}/messages")
+def chat_messages(conversation_id: str, requester: str = "Lenovo", role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
+    messages = get_chat_messages(conversation_id, requester)
+    if messages is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+    return messages
+
+
+@app.delete("/api/v1/chat/conversations/{conversation_id}")
+def delete_chat(conversation_id: str, request: MutationActorRequest) -> dict:
+    if not permitted(request.role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
+    if not delete_chat_conversation(conversation_id, request.requester):
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+    write_audit(request.requester, "chat_conversation_deleted", {"conversation_id": conversation_id, "role": request.role})
+    return {"deleted": True}
+
+
+@app.post("/api/v1/chat/conversations/{conversation_id}/messages")
+def chat_turn(conversation_id: str, request: ChatTurnRequest) -> dict:
+    if not permitted(request.role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
+    if add_chat_message(conversation_id, request.requester, "user", request.content) is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+    history = get_chat_messages(conversation_id, request.requester)
+    if history is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+    content, provider = chat_service.reply([{"role": item["role"], "content": item["content"]} for item in history])
+    message = add_chat_message(conversation_id, request.requester, "assistant", content)
+    write_audit(request.requester, "agent_chat_completed", {"conversation_id": conversation_id, "provider": provider, "role": request.role})
+    return {"conversation_id": conversation_id, "message": message, "provider": provider}
 
 
 @app.post("/api/v1/query")
@@ -148,13 +209,18 @@ def reject_request(approval_id: str, request: ApprovalActionRequest = ApprovalAc
 
 
 @app.get("/api/v1/audit")
-def audit(limit: int = 50) -> list[dict]:
-    return list_audit(min(max(limit, 1), 200))
+def audit(limit: int = 50, offset: int = 0) -> list[dict]:
+    return list_audit(min(max(limit, 1), 200), max(offset, 0))
 
 
 @app.get("/api/v1/audit/integrity")
 def verify_audit_integrity() -> dict:
     return audit_integrity()
+
+
+@app.get("/api/v1/audit/summary")
+def audit_summary() -> dict:
+    return {"total": audit_count()}
 
 
 @app.get("/api/v1/data/tables")
@@ -252,8 +318,13 @@ def metrics() -> dict:
 
 
 @app.get("/api/v1/approvals")
-def approvals(limit: int = 100) -> list[dict]:
-    return list_approvals(min(max(limit, 1), 200))
+def approvals(limit: int = 100, offset: int = 0) -> list[dict]:
+    return list_approvals(min(max(limit, 1), 200), max(offset, 0))
+
+
+@app.get("/api/v1/approvals/summary")
+def approval_summary() -> dict:
+    return {"total": approval_count()}
 
 
 @app.get("/api/v1/policies")

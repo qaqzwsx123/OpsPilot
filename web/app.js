@@ -4,6 +4,11 @@ let latestApprovalId = "";
 let selectedMetric = null;
 let explorerCatalog = [];
 let explorerOffset = 0;
+let auditOffset = 0;
+let approvalOffset = 0;
+let chatConversationId = "";
+let chatConversations = [];
+const recordPageSize = 10;
 const currentRole = () => $("#role-selector").value;
 
 const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
@@ -74,8 +79,12 @@ async function runQuery() {
 async function loadAudit() {
   const target = $("#audit-list");
   try {
-    const response = await fetch("/api/v1/audit?limit=30"); const rows = await response.json();
+    const [response, summaryResponse] = await Promise.all([fetch("/api/v1/audit?limit=" + recordPageSize + "&offset=" + auditOffset), fetch("/api/v1/audit/summary")]);
+    const rows = await response.json(); const summary = await summaryResponse.json();
+    if (!response.ok || !summaryResponse.ok) throw new Error("审计记录加载失败");
     target.innerHTML = rows.length ? rows.map((row) => `<div class="audit-row"><span class="audit-action">${escapeHtml(row.action)}</span><span class="audit-payload">${escapeHtml(row.payload.question || row.payload.sql || row.payload.sources?.join("、") || "系统事件")}</span><span class="audit-time">${new Date(row.created_at).toLocaleString("zh-CN", {hour12:false})}</span></div>`).join("") : "<div class='empty-state'><strong>暂无审计记录</strong></div>";
+    $("#audit-page-note").textContent = "第 " + (Math.floor(auditOffset / recordPageSize) + 1) + " 页 · 本页 " + rows.length + " 条 / 共 " + summary.total + " 条";
+    $("#prev-audit").disabled = auditOffset === 0; $("#next-audit").disabled = auditOffset + rows.length >= summary.total;
   } catch { target.innerHTML = "<div class='empty-state'><strong>无法加载审计记录</strong></div>"; }
 }
 
@@ -200,13 +209,18 @@ async function verifyAuditIntegrity() {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", monitoring:"监控中心", metrics:"指标中心", data:"数据浏览器", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
-  if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
+  const titles = { agent:"智能运维查询", chat:"Agent 聊天", monitoring:"监控中心", metrics:"指标中心", data:"数据浏览器", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  if (button.dataset.page === "chat") loadChat(); if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
+$("#new-chat").addEventListener("click", createChat);
+$("#send-chat").addEventListener("click", sendChat);
+$("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendChat(); } });
 document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = button.dataset.query; runQuery(); }));
 $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard.writeText(latestSql); toast("SQL 已复制到剪贴板"); });
-$("#refresh-audit").addEventListener("click", loadAudit);
+$("#refresh-audit").addEventListener("click", () => { auditOffset = 0; loadAudit(); });
+$("#prev-audit").addEventListener("click", () => { auditOffset = Math.max(0, auditOffset - recordPageSize); loadAudit(); });
+$("#next-audit").addEventListener("click", () => { auditOffset += recordPageSize; loadAudit(); });
 $("#refresh-data").addEventListener("click", () => loadDataExplorer());
 $("#data-table-select").addEventListener("change", () => { explorerOffset = 0; loadDataTable(); });
 $("#prev-data").addEventListener("click", () => { explorerOffset = Math.max(0, explorerOffset - 30); loadDataTable(); });
@@ -216,7 +230,9 @@ $("#verify-audit").addEventListener("click", verifyAuditIntegrity);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
 $("#search-knowledge").addEventListener("click", searchKnowledge);
 $("#reindex-knowledge").addEventListener("click", reindexKnowledge);
-$("#refresh-approvals").addEventListener("click", loadApprovals);
+$("#refresh-approvals").addEventListener("click", () => { approvalOffset = 0; loadApprovals(); });
+$("#prev-approvals").addEventListener("click", () => { approvalOffset = Math.max(0, approvalOffset - recordPageSize); loadApprovals(); });
+$("#next-approvals").addEventListener("click", () => { approvalOffset += recordPageSize; loadApprovals(); });
 $("#refresh-monitoring").addEventListener("click", loadMonitoring);
 $("#search-metrics").addEventListener("click", loadMetricCatalog);
 $("#refresh-metrics").addEventListener("click", () => { $("#metric-keyword").value = ""; $("#metric-category").value = ""; loadMetricCatalog(); });
@@ -228,6 +244,73 @@ $("#approve-button").addEventListener("click", () => { if (latestApprovalId) res
 $("#show-system-info").addEventListener("click", async () => { try { const metric = await (await fetch("/api/v1/metrics")).json(); toast("LLM：" + (metric.llm_enabled ? "已配置" : "离线规则模式") + "；审批写库：" + (metric.approved_writes_enabled ? "已开启" : "安全关闭")); } catch { toast("无法读取运行配置"); } });
 $("#show-help").addEventListener("click", () => toast("可查询数据、查看审批与审计、维护知识库，并查看 Skill/SOP。"));
 loadSkills(); loadKnowledge(); loadApprovals(); loadMetrics();
+
+function chatRequestOptions(method, body) {
+  return { method, headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) };
+}
+
+function renderChatMessages(messages) {
+  const target = $("#chat-messages");
+  if (!messages.length) { target.innerHTML = '<div class="empty-state"><strong>开始一次 Agent 对话</strong><p>例如：如何处理华东 P1 网关离线？</p></div>'; return; }
+  target.innerHTML = messages.map((message) => '<article class="chat-bubble ' + escapeHtml(message.role) + '"><span>' + (message.role === "user" ? "你" : "OpsPilot") + '</span><div>' + escapeHtml(message.content).replace(/\n/g, "<br>") + '</div></article>').join("");
+  target.scrollTop = target.scrollHeight;
+}
+
+function renderChatConversations() {
+  const target = $("#chat-conversation-list"); $("#chat-count").textContent = chatConversations.length + " 个";
+  target.innerHTML = chatConversations.length ? chatConversations.map((conversation) => '<div class="chat-conversation-row"><button class="chat-conversation ' + (conversation.id === chatConversationId ? "active" : "") + '" data-chat-conversation="' + escapeHtml(conversation.id) + '"><strong>' + escapeHtml(conversation.title) + '</strong><small>' + new Date(conversation.updated_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</small></button><button class="chat-delete" title="删除对话" data-delete-chat="' + escapeHtml(conversation.id) + '">×</button></div>').join("") : '<div class="empty-state"><strong>暂无历史对话</strong></div>';
+  document.querySelectorAll("[data-chat-conversation]").forEach((button) => button.addEventListener("click", () => openChat(button.dataset.chatConversation)));
+  document.querySelectorAll("[data-delete-chat]").forEach((button) => button.addEventListener("click", () => deleteChat(button.dataset.deleteChat)));
+}
+
+async function loadChat() {
+  try {
+    const response = await fetch("/api/v1/chat/conversations?requester=Lenovo&role=" + encodeURIComponent(currentRole())); const conversations = await response.json();
+    if (!response.ok) throw new Error(conversations.detail || "会话列表加载失败");
+    chatConversations = conversations; renderChatConversations();
+    if (!chatConversationId && conversations.length) await openChat(conversations[0].id);
+    if (!conversations.length) { $("#chat-title").textContent = "新对话"; renderChatMessages([]); }
+  } catch (error) { $("#chat-messages").innerHTML = '<div class="empty-state"><strong>无法加载聊天</strong><p>' + escapeHtml(error.message || "服务请求失败") + '</p></div>'; }
+}
+
+async function createChat() {
+  try {
+    const response = await fetch("/api/v1/chat/conversations", chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", title:"新对话" })); const conversation = await response.json();
+    if (!response.ok) throw new Error(conversation.detail || "创建对话失败");
+    chatConversations = [conversation, ...chatConversations]; chatConversationId = conversation.id; renderChatConversations(); renderChatMessages([]); $("#chat-title").textContent = conversation.title; $("#chat-input").focus();
+  } catch (error) { toast(error.message || "创建对话失败"); }
+}
+
+async function openChat(conversationId) {
+  try {
+    const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(conversationId) + "/messages?requester=Lenovo&role=" + encodeURIComponent(currentRole())); const messages = await response.json();
+    if (!response.ok) throw new Error(messages.detail || "对话加载失败");
+    chatConversationId = conversationId; const conversation = chatConversations.find((item) => item.id === conversationId); $("#chat-title").textContent = conversation?.title || "Agent 对话"; renderChatConversations(); renderChatMessages(messages);
+  } catch (error) { toast(error.message || "对话加载失败"); }
+}
+
+async function deleteChat(conversationId) {
+  if (!confirm("确认删除该 Agent 对话及其历史消息？")) return;
+  try {
+    const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(conversationId), chatRequestOptions("DELETE", { role:currentRole(), requester:"Lenovo" })); const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "删除对话失败");
+    chatConversations = chatConversations.filter((item) => item.id !== conversationId); if (chatConversationId === conversationId) chatConversationId = ""; renderChatConversations();
+    if (chatConversations.length) await openChat(chatConversations[0].id); else { $("#chat-title").textContent = "新对话"; renderChatMessages([]); }
+  } catch (error) { toast(error.message || "删除对话失败"); }
+}
+
+async function sendChat() {
+  const content = $("#chat-input").value.trim(); if (!content) return;
+  if (!chatConversationId) { await createChat(); if (!chatConversationId) return; }
+  const button = $("#send-chat"); button.disabled = true; button.textContent = "思考中…"; $("#chat-input").disabled = true;
+  try {
+    const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(chatConversationId) + "/messages", chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", content })); const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "聊天请求失败");
+    $("#chat-input").value = ""; $("#chat-provider").textContent = result.provider === "local_deepseek" ? "本地 DeepSeek" : "离线提示";
+    await loadChat(); await openChat(chatConversationId); loadAudit();
+  } catch (error) { toast(error.message || "聊天请求失败"); }
+  finally { button.disabled = false; button.textContent = "发送 ↗"; $("#chat-input").disabled = false; $("#chat-input").focus(); }
+}
 
 function renderApprovals(approvals) {
   const target = $("#approval-list");
@@ -249,7 +332,14 @@ function renderApprovals(approvals) {
 }
 
 async function loadApprovals() {
-  try { renderApprovals(await (await fetch("/api/v1/approvals")).json()); } catch { $("#approval-list").innerHTML = '<div class="empty-state"><strong>无法加载审批队列</strong></div>'; }
+  try {
+    const [response, summaryResponse] = await Promise.all([fetch("/api/v1/approvals?limit=" + recordPageSize + "&offset=" + approvalOffset), fetch("/api/v1/approvals/summary")]);
+    const rows = await response.json(); const summary = await summaryResponse.json();
+    if (!response.ok || !summaryResponse.ok) throw new Error("审批队列加载失败");
+    renderApprovals(rows);
+    $("#approval-page-note").textContent = "第 " + (Math.floor(approvalOffset / recordPageSize) + 1) + " 页 · 本页 " + rows.length + " 条 / 共 " + summary.total + " 条";
+    $("#prev-approvals").disabled = approvalOffset === 0; $("#next-approvals").disabled = approvalOffset + rows.length >= summary.total;
+  } catch { $("#approval-list").innerHTML = '<div class="empty-state"><strong>无法加载审批队列</strong></div>'; }
 }
 
 async function resolveApproval(id, button) {
