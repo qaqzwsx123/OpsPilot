@@ -70,6 +70,19 @@ const pageGuides = {
     { title:"禁止工具（BLOCKED）", text:"<code>database_maintenance</code> 等数据库维护、DDL 和多语句操作会被直接拒绝，不执行也不进入审批。", tone:"blocked" }
   ], roles:["观察者：仅 AUTO", "运维工程师：可发起 MANUAL 审批", "值班负责人：可审批受控变更"] }
 };
+const guideExamples = {
+  agent: { title:"示例：查询华东 P1 告警关联设备", steps:["在输入框输入 <code>查询华东 P1 告警关联设备</code>。", "点击“运行查询”，观察 Recall、Writer、Reviewer、Risk Guard、Runner 逐步完成。", "点击 Writer 或 Reviewer 的“详情”核对 SQL 与审查结论；结果区会返回关联设备，护栏显示本次为只读自动执行。"] },
+  chat: { title:"示例：咨询离线排障方案", steps:["点击“新建对话”。", "输入 <code>华东网关离线时，现场工程师应先排查什么？</code>，按 Enter 发送。", "阅读 DeepSeek 的建议；若要查询真实告警或资产，转到“智能查询”明确发起，而不是要求聊天直接执行。"] },
+  monitoring: { title:"示例：从 P1 告警进入根因查询", steps:["点击“刷新”，先查看未关闭告警数量和 P1 分布。", "在“最近告警”卡片点击“用 Agent 分析 P1 告警”。", "系统跳转智能查询并自动带入问题；执行后可查看关联资产、地区和离线状态。"] },
+  metrics: { title:"示例：导入并分析真实 CPU 指标", steps:["切换为“运维工程师”，点击“下载模板”，填写并保存 UTF-8 CSV。", "选择 CSV 后点击“校验并导入 CSV”；成功后目录顶部会显示绿色“真实 CSV”标记。", "点击该指标“查看趋势”，再点击“交给 Agent 分析”查看该指标的安全查询路径。"] },
+  data: { title:"示例：核对告警表数据", steps:["在表目录选择“监控告警（alerts）”。", "查看字段结构、总行数和本页样例；点击“下一页”继续只读浏览。", "如需按条件筛选，例如只看 P1，请转到智能查询输入 <code>查询最近的 P1 告警</code>。"] },
+  audit: { title:"示例：追溯一次查询", steps:["先在智能查询执行 <code>查询最近的 P1 告警</code>。", "进入审计中心点击“刷新记录”，可看到对应的 SQL 执行事件。", "点击“验证完整性”，系统会校验当前审计哈希链；通过时表示已检查的记录未发现链路断裂。"] },
+  approval: { title:"示例：安全处理删除请求", steps:["以“运维工程师”在智能查询输入 <code>删除已关闭告警</code>，系统只创建 pending 审批单。", "进入审批中心，先阅读影响预估、抽样数据和有效期。", "切换为“值班负责人”后批准；默认安全模式会变为 approved_safe_mode，仅留痕和预估，不会删除任何告警。"] },
+  policy: { title:"示例：验证角色权限确实生效", steps:["切换为“观察者”，在智能查询输入 <code>删除已关闭告警</code>。", "系统会拒绝发起变更审批，并将拒绝动作写入审计。", "切换为“运维工程师”再次发起，则可以创建审批单；这说明限制在后端生效，而非页面隐藏按钮。"] },
+  knowledge: { title:"示例：新增 SOP 并验证 RAG", steps:["切换为“运维工程师”，填写标题、标签和至少 10 个字符的 SOP 正文后点击“保存并纳入 RAG”。", "在右侧检索框输入与该 SOP 对应的问题，确认能看到命中文档片段。", "回到智能查询提出规范类问题；当无可靠 SQL 时，系统会使用知识库并展示来源。"] },
+  skills: { title:"示例：运行告警分诊 Skill", steps:["找到 <code>incident_triage</code> 卡片，点击“运行 Skill”。", "输入 <code>华东 P1 网关离线，影响支付链路</code> 作为本次上下文。", "查看结构化结论和下一步建议；该过程只生成诊断建议并写入审计，不会关闭告警。"] },
+  tools: { title:"示例：比较只读工具与变更工具", steps:["点击 <code>alert_query</code> 的“试运行工具”，会立刻返回未关闭告警的结构化结果并写审计。", "点击 <code>close_alert</code> 的“试运行工具”，不会关闭告警，而是创建审批单。", "点击 <code>database_maintenance</code> 会被直接拒绝；系统没有任意数据库命令执行入口。"] }
+};
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[character]);
@@ -92,7 +105,9 @@ function openPageGuide(key) {
   if (!guide) return;
   const sections = guide.sections.map((section) => '<div class="tool-help-section ' + (section.tone || "") + '"><h3>' + section.title + '</h3><p>' + section.text + '</p>' + (section.items ? '<ul>' + section.items.map((item) => '<li>' + item + '</li>').join("") + '</ul>' : "") + '</div>').join("");
   const roles = guide.roles?.length ? '<div class="tool-help-roles"><strong>角色限制</strong>' + guide.roles.map((role) => '<span>' + role + '</span>').join("") + '</div>' : "";
-  $("#guide-modal-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + guide.eyebrow + '</p><h2 id="tool-help-title">' + guide.title + '</h2></div><button id="close-tool-help" class="modal-close" aria-label="关闭使用说明">×</button></div><p class="modal-lead">' + guide.lead + '</p>' + sections + roles;
+  const example = guideExamples[key];
+  const exampleHtml = example ? '<div class="guide-example"><span>操作示例</span><h3>' + example.title + '</h3><ol>' + example.steps.map((step) => '<li>' + step + '</li>').join("") + '</ol></div>' : "";
+  $("#guide-modal-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + guide.eyebrow + '</p><h2 id="tool-help-title">' + guide.title + '</h2></div><button id="close-tool-help" class="modal-close" aria-label="关闭使用说明">×</button></div><p class="modal-lead">' + guide.lead + '</p>' + sections + roles + exampleHtml;
   $("#close-tool-help").addEventListener("click", () => setToolHelpVisible(false));
   setToolHelpVisible(true);
 }
