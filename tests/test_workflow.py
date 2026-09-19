@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 from uuid import uuid4
 
-from app.database import add_chat_message, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, list_approvals, list_audit, list_chat_conversations, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.database import add_chat_message, add_evaluation_case, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, delete_evaluation_case, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, list_approvals, list_audit, list_chat_conversations, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.evaluation import available_evaluation_cases, run_evaluation
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
 from fastapi import HTTPException
@@ -104,6 +105,22 @@ class WorkflowTests(unittest.TestCase):
     def test_audit_hash_chain_is_verifiable(self) -> None:
         write_audit("test-audit", "integrity_test", {"case": "hash_chain"})
         self.assertTrue(audit_integrity()["valid"])
+        recent = audit_integrity(limit=1)
+        self.assertTrue(recent["valid"])
+        self.assertEqual(recent["scope"], "recent")
+        self.assertEqual(recent["checked_events"], 1)
+
+    def test_custom_evaluation_cases_can_be_selected_and_removed(self) -> None:
+        custom = add_evaluation_case("自定义离线设备", "查询华东区离线设备", "completed", "test-evaluation")
+        try:
+            all_cases = available_evaluation_cases()
+            self.assertTrue(any(item["id"] == custom["id"] and item["source"] == "custom" for item in all_cases))
+            report = run_evaluation("selected", [custom["id"]])
+            self.assertEqual(report["dataset_size"], 1)
+            self.assertEqual(report["passed"], 1)
+            self.assertEqual(report["cases"][0]["actual"], "completed")
+        finally:
+            self.assertTrue(delete_evaluation_case(custom["id"]))
 
     def test_data_explorer_uses_allowlisted_tables_and_bounded_rows(self) -> None:
         self.assertIn("assets", [table["name"] for table in data_catalog()])

@@ -13,9 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_chat_message, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, import_metric_csv, initialize, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, import_metric_csv, initialize, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.chat_service import AgentChatService
-from app.evaluation import run_evaluation
+from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
 from app.tool_registry import catalog, definition, invoke
 from app.workflow import SqlAgentWorkflow
@@ -78,6 +78,19 @@ class ApprovalActionRequest(BaseModel):
     role: str = Field(default="approver", min_length=1, max_length=32)
     actor: str = Field(default="Lenovo", min_length=1, max_length=64)
     comment: str = Field(default="", max_length=500)
+
+
+class EvaluationCaseRequest(MutationActorRequest):
+    name: str = Field(min_length=2, max_length=80)
+    question: str = Field(min_length=2, max_length=500)
+    expected_status: str = Field(default="completed", min_length=1, max_length=32)
+
+
+class EvaluationRunRequest(BaseModel):
+    scope: str = Field(default="baseline", regex="^(baseline|all|selected)$")
+    case_ids: list[str] = Field(default_factory=list, max_length=100)
+    role: str = Field(default="viewer", min_length=1, max_length=32)
+    requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
 @app.get("/health")
@@ -214,8 +227,10 @@ def audit(limit: int = 50, offset: int = 0) -> list[dict]:
 
 
 @app.get("/api/v1/audit/integrity")
-def verify_audit_integrity() -> dict:
-    return audit_integrity()
+def verify_audit_integrity(scope: str = "full") -> dict:
+    if scope not in {"full", "recent_100"}:
+        raise HTTPException(status_code=400, detail="校验范围必须是 full 或 recent_100")
+    return audit_integrity(None if scope == "full" else 100)
 
 
 @app.get("/api/v1/audit/summary")
@@ -416,6 +431,42 @@ def memory(requester: str, limit: int = 6) -> list[dict[str, str]]:
     return recent_memory(requester, min(max(limit, 1), 30))
 
 
+@app.get("/api/v1/evaluations/cases")
+def evaluation_cases(role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无评测用例查看权限。")
+    return available_evaluation_cases()
+
+
+@app.post("/api/v1/evaluations/cases", status_code=201)
+def create_evaluation_case(request: EvaluationCaseRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="观察者角色不能新增评测用例。")
+    try:
+        case = add_evaluation_case(request.name, request.question, request.expected_status, request.requester)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    write_audit(request.requester, "evaluation_case_created", {"case_id": case["id"], "name": case["name"], "expected_status": case["expected_status"], "role": request.role})
+    return {**case, "source": "custom"}
+
+
+@app.delete("/api/v1/evaluations/cases/{case_id}")
+def remove_evaluation_case(case_id: str, request: MutationActorRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="观察者角色不能删除评测用例。")
+    if not delete_evaluation_case(case_id):
+        raise HTTPException(status_code=404, detail="自定义评测用例不存在。")
+    write_audit(request.requester, "evaluation_case_deleted", {"case_id": case_id, "role": request.role})
+    return {"deleted": True}
+
+
 @app.post("/api/v1/evaluations/run")
-def evaluate() -> dict:
-    return run_evaluation()
+def evaluate(request: EvaluationRunRequest = EvaluationRunRequest()) -> dict:
+    if not permitted(request.role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无运行评测权限。")
+    try:
+        report = run_evaluation(request.scope, request.case_ids)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    write_audit(request.requester, "evaluation_completed", {"scope": report["scope"], "dataset_size": report["dataset_size"], "passed": report["passed"], "role": request.role})
+    return report

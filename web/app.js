@@ -41,8 +41,8 @@ const pageGuides = {
   ] },
   audit: { eyebrow:"AUDITABLE BY DEFAULT", title:"审计中心使用说明", lead:"审计中心记录 Agent 查询、工具调用、审批决定、知识维护、CSV 导入等关键事件，用于追踪与复盘。", sections:[
     { title:"查看记录", text:"记录按时间倒序分页展示，每页 10 条，并显示总数。刷新只读取最新审计数据。" },
-    { title:"验证完整性", text:"“验证完整性”会校验审计记录的 SHA-256 哈希链，发现断裂时应停止依赖该链进行合规判断。" },
-    { title:"离线评测", text:"“运行评测”执行内置安全查询用例，展示 SQL 首次通过率和高危请求拦截率，不会修改业务表。" }
+    { title:"验证完整性", text:"“验证完整性”会弹出范围选择：可校验全量 SHA-256 哈希链，或快速校验最近 100 条及前序锚点；发现断裂时应停止依赖该链进行合规判断。" },
+    { title:"离线评测", text:"“运行评测”可选择 5 条内置基线、全部用例或勾选的用例。运维工程师可新增自定义“问题 + 预期状态”用例；评测不会修改业务表。" }
   ] },
   approval: { eyebrow:"HUMAN IN THE LOOP", title:"审批中心使用说明", lead:"审批中心承接 SQL 写操作和 MANUAL 工具请求。它让高风险变更必须经过人工确认，而非由 Agent 自动执行。", sections:[
     { title:"审批前检查", text:"待审批记录会显示请求 SQL、影响预估、抽样结果和有效期，便于判断是否应放行。" },
@@ -376,27 +376,119 @@ async function loadMetrics() {
   } catch { /* metrics do not block the console */ }
 }
 
-async function runEvaluation() {
+let activeAuditAction = "";
+
+function setAuditActionVisible(visible) {
+  const modal = $("#audit-action-modal");
+  modal.hidden = !visible;
+  document.body.classList.toggle("modal-open", visible);
+  if (visible) setTimeout(() => $("#cancel-audit-action").focus(), 0);
+}
+
+function renderAuditAction(title, eyebrow, body, confirmText) {
+  $("#audit-action-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + eyebrow + '</p><h2 id="audit-action-title">' + title + '</h2></div><button id="close-audit-action" class="modal-close" aria-label="关闭">×</button></div>' + body;
+  $("#confirm-audit-action").textContent = confirmText;
+  $("#close-audit-action").addEventListener("click", () => setAuditActionVisible(false));
+}
+
+function openIntegrityDialog() {
+  activeAuditAction = "integrity";
+  renderAuditAction("验证审计完整性", "AUDIT HASH CHAIN", '<p class="modal-lead">选择要校验的审计范围。校验会重新计算记录的 SHA-256 哈希链，只读执行，不会修改审计或业务数据。</p><label class="action-field">校验范围<select id="integrity-scope"><option value="full">全量哈希链（推荐）</option><option value="recent_100">最近 100 条审计记录</option></select></label><div id="integrity-scope-note" class="action-callout"><strong>全量校验</strong><span>从第一条记录遍历至今，适合提交前或故障复盘时确认完整审计链。</span></div><p class="action-footnote">说明：这是本地演示环境的哈希链校验，不等同于外部不可篡改存证。</p>', "开始校验");
+  $("#integrity-scope").addEventListener("change", (event) => {
+    const recent = event.target.value === "recent_100";
+    $("#integrity-scope-note").innerHTML = recent
+      ? "<strong>最近 100 条</strong><span>仅校验最近一段记录及其前序锚点，速度更快；它不能证明更早历史记录的完整性。</span>"
+      : "<strong>全量校验</strong><span>从第一条记录遍历至今，适合提交前或故障复盘时确认完整审计链。</span>";
+  });
+  setAuditActionVisible(true);
+}
+
+function expectedStatusLabel(status) {
+  return ({ completed:"完成只读查询", answered_by_rag:"知识库回答", approval_required:"创建审批单", blocked:"策略阻断" })[status] || status;
+}
+
+function evaluationCasesMarkup(cases) {
+  return cases.map((item) => '<label class="evaluation-case"><input type="checkbox" data-evaluation-case value="' + escapeHtml(item.id) + '" checked /><span><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.question) + '</small></span><em class="evaluation-source ' + escapeHtml(item.source) + '">' + (item.source === "baseline" ? "内置基线" : "自定义") + '</em><b>期望：' + escapeHtml(expectedStatusLabel(item.expected_status)) + '</b>' + (item.source === "custom" ? '<button type="button" class="evaluation-delete" data-delete-evaluation-case="' + escapeHtml(item.id) + '">删除</button>' : "") + '</label>').join("");
+}
+
+async function openEvaluationDialog() {
+  activeAuditAction = "evaluation";
+  try {
+    const response = await fetch("/api/v1/evaluations/cases?role=" + encodeURIComponent(currentRole()));
+    const cases = await response.json();
+    if (!response.ok) throw new Error(cases.detail || "无法读取评测用例");
+    const canManage = currentRole() !== "viewer";
+    const customForm = canManage
+      ? '<div class="evaluation-case-form"><h3>新增自定义用例</h3><div class="evaluation-form-grid"><label>用例名称<input id="evaluation-case-name" maxlength="80" placeholder="例如：华东离线资产查询" /></label><label>期望结果<select id="evaluation-case-expected"><option value="completed">完成只读查询</option><option value="answered_by_rag">知识库回答</option><option value="approval_required">创建审批单</option><option value="blocked">策略阻断</option></select></label></div><label>用户问题<textarea id="evaluation-case-question" maxlength="500" placeholder="例如：查询华东区离线设备"></textarea></label><button id="create-evaluation-case" type="button" class="secondary-button">保存到用例库</button></div>'
+      : '<div class="action-callout"><strong>观察者为只读模式</strong><span>可运行内置或已有自定义用例；切换为运维工程师后，可新增或删除自定义评测用例。</span></div>';
+    renderAuditAction("运行评测", "EVALUATION CONSOLE", '<p class="modal-lead">评测会实际走一遍当前安全工作流，结果与预期状态逐条比较。写操作类用例只会创建审批单，默认安全模式不会改动业务表。</p><label class="action-field">运行范围<select id="evaluation-scope"><option value="baseline">只运行内置安全基线（5 条）</option><option value="all">运行全部用例（含自定义）</option><option value="selected">运行我勾选的用例</option></select></label><div id="evaluation-scope-note" class="action-callout"><strong>内置基线</strong><span>覆盖结构化查询、RAG 回答与危险写请求拦截，用于每次改动后的基础回归。</span></div><div class="evaluation-case-heading"><strong>用例库（' + cases.length + ' 条）</strong><small>仅“运行我勾选的用例”会采用下方勾选项。</small></div><div class="evaluation-case-list">' + evaluationCasesMarkup(cases) + '</div>' + customForm + '<p class="action-footnote">每次运行都会新增审计事件；期望为“创建审批单”的用例还会留下待处理审批单，便于验证人工介入链路。</p>', "运行评测");
+    $("#evaluation-scope").addEventListener("change", (event) => {
+      const selected = event.target.value === "selected";
+      $("#evaluation-scope-note").innerHTML = selected
+        ? "<strong>指定用例</strong><span>只运行当前勾选的用例，适合针对某一条新规则或一次回归失败进行复测。</span>"
+        : event.target.value === "all"
+          ? "<strong>全部用例</strong><span>运行内置基线和全部自定义用例，适合功能版本验收。</span>"
+          : "<strong>内置基线</strong><span>覆盖结构化查询、RAG 回答与危险写请求拦截，用于每次改动后的基础回归。</span>";
+    });
+    $("#create-evaluation-case")?.addEventListener("click", createEvaluationCase);
+    document.querySelectorAll("[data-delete-evaluation-case]").forEach((button) => button.addEventListener("click", () => deleteEvaluationCase(button.dataset.deleteEvaluationCase)));
+    setAuditActionVisible(true);
+  } catch (error) {
+    toast(error.message || "无法打开评测配置");
+  }
+}
+
+async function createEvaluationCase() {
+  const name = $("#evaluation-case-name").value.trim();
+  const question = $("#evaluation-case-question").value.trim();
+  const expected_status = $("#evaluation-case-expected").value;
+  if (name.length < 2 || question.length < 2) return toast("请填写至少 2 个字符的用例名称和问题");
+  const response = await fetch("/api/v1/evaluations/cases", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ name, question, expected_status, role:currentRole(), requester:"Lenovo" }) });
+  const result = await response.json();
+  if (!response.ok) return toast(result.detail || "保存用例失败");
+  toast("自定义用例已保存");
+  openEvaluationDialog();
+}
+
+async function deleteEvaluationCase(caseId) {
+  if (!confirm("确认删除这条自定义评测用例？不会影响历史审计和评测记录。")) return;
+  const response = await fetch("/api/v1/evaluations/cases/" + encodeURIComponent(caseId), { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) });
+  const result = await response.json();
+  if (!response.ok) return toast(result.detail || "删除用例失败");
+  toast("自定义用例已删除");
+  openEvaluationDialog();
+}
+
+async function runEvaluation(scope, caseIds) {
   const button = $("#run-evaluation"); button.disabled = true; button.textContent = "评测中…";
   try {
-    const report = await (await fetch("/api/v1/evaluations/run", { method:"POST" })).json();
-    $("#metric-eval").textContent = `${report.success_rate}%`;
-    const target = $("#evaluation-result"); target.hidden = false;
-    target.textContent = `评测完成：${report.passed}/${report.dataset_size} 通过；SQL 首次通过率 ${report.first_pass_sql_rate}%；高危拦截率 ${report.high_risk_interception_rate}%。`;
-    toast("离线评测已完成"); loadAudit(); loadMetrics();
-  } catch { toast("评测执行失败"); }
+    const response = await fetch("/api/v1/evaluations/run", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ scope, case_ids:caseIds, role:currentRole(), requester:"Lenovo" }) });
+    const report = await response.json();
+    if (!response.ok) throw new Error(report.detail || "评测执行失败");
+    $("#metric-eval").textContent = report.success_rate + "%";
+    const structuredRate = report.structured_query_pass_rate === null ? "不适用" : report.structured_query_pass_rate + "%";
+    const safetyRate = report.high_risk_interception_rate === null ? "不适用" : report.high_risk_interception_rate + "%";
+    const target = $("#evaluation-result"); target.hidden = false; target.className = "evaluation-result";
+    target.innerHTML = '<strong>评测完成：' + report.passed + '/' + report.dataset_size + ' 通过（' + report.success_rate + '%）</strong><span>结构化查询用例通过率 ' + structuredRate + ' · 高风险拦截率 ' + safetyRate + '</span><div class="eval-case-results">' + report.cases.map((item) => '<div class="' + (item.passed ? "passed" : "failed") + '"><b>' + (item.passed ? "✓" : "×") + '</b><span>' + escapeHtml(item.name) + '：期望 ' + escapeHtml(expectedStatusLabel(item.expected)) + '，实际 ' + escapeHtml(expectedStatusLabel(item.actual)) + '</span></div>').join("") + '</div>';
+    toast("评测已完成"); loadAudit(); loadMetrics();
+  } catch (error) { toast(error.message || "评测执行失败"); }
   finally { button.disabled = false; button.textContent = "运行评测"; }
 }
 
-async function verifyAuditIntegrity() {
+async function verifyAuditIntegrity(scope) {
   const button = $("#verify-audit"); button.disabled = true; button.textContent = "校验中…";
   try {
-    const result = await (await fetch("/api/v1/audit/integrity")).json();
+    const response = await fetch("/api/v1/audit/integrity?scope=" + encodeURIComponent(scope));
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "审计完整性校验失败");
+    const full = result.scope === "full";
     const target = $("#evaluation-result"); target.hidden = false;
-    target.textContent = result.valid ? `审计链完整：已校验 ${result.checked_events} 条事件，未发现链路断裂。` : `审计链异常：第 ${result.checked_events + 1} 条附近存在断裂，请停止写入并核查数据库。`;
     target.className = "evaluation-result " + (result.valid ? "integrity-ok" : "integrity-broken");
+    target.innerHTML = result.valid
+      ? '<strong>审计校验通过：已校验 ' + result.checked_events + '/' + result.total_events + ' 条记录。</strong><span>' + (full ? "全量哈希链未发现断裂。" : "已校验最近 100 条及前序锚点；更早历史未在本次范围内。") + '</span>'
+      : '<strong>审计链异常：校验范围内存在哈希断裂。</strong><span>请停止依赖该链进行合规判断，并核查数据库与运行日志。</span>';
     toast(result.valid ? "审计完整性校验通过" : "发现审计链异常");
-  } catch { toast("审计完整性校验失败"); }
+  } catch (error) { toast(error.message || "审计完整性校验失败"); }
   finally { button.disabled = false; button.textContent = "验证完整性"; }
 }
 
@@ -410,7 +502,11 @@ $("#run-query").addEventListener("click", runQuery);
 document.querySelectorAll("[data-guide]").forEach((button) => button.addEventListener("click", () => openPageGuide(button.dataset.guide)));
 $("#tool-help-got-it").addEventListener("click", () => setToolHelpVisible(false));
 $("#tool-help-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) setToolHelpVisible(false); });
-document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("#tool-help-modal").hidden) setToolHelpVisible(false); });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!$("#tool-help-modal").hidden) setToolHelpVisible(false);
+  if (!$("#audit-action-modal").hidden) setAuditActionVisible(false);
+});
 $("#guard-open-audit").addEventListener("click", () => document.querySelector('.nav-item[data-page="audit"]').click());
 $("#guard-open-approval").addEventListener("click", () => document.querySelector('.nav-item[data-page="approval"]').click());
 $("#new-chat").addEventListener("click", createChat);
@@ -418,6 +514,22 @@ $("#send-chat").addEventListener("click", sendChat);
 $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendChat(); } });
 document.querySelectorAll("[data-query]").forEach((button) => button.addEventListener("click", () => { document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = button.dataset.query; runQuery(); }));
 $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard.writeText(latestSql); toast("SQL 已复制到剪贴板"); });
+$("#cancel-audit-action").addEventListener("click", () => setAuditActionVisible(false));
+$("#audit-action-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) setAuditActionVisible(false); });
+$("#confirm-audit-action").addEventListener("click", async () => {
+  if (activeAuditAction === "integrity") {
+    const scope = $("#integrity-scope").value;
+    setAuditActionVisible(false);
+    verifyAuditIntegrity(scope);
+  }
+  if (activeAuditAction === "evaluation") {
+    const scope = $("#evaluation-scope").value;
+    const caseIds = Array.from(document.querySelectorAll("[data-evaluation-case]:checked")).map((node) => node.value);
+    if (scope === "selected" && !caseIds.length) return toast("请至少勾选一条评测用例");
+    setAuditActionVisible(false);
+    runEvaluation(scope, caseIds);
+  }
+});
 $("#refresh-audit").addEventListener("click", () => { auditOffset = 0; loadAudit(); });
 $("#prev-audit").addEventListener("click", () => { auditOffset = Math.max(0, auditOffset - recordPageSize); loadAudit(); });
 $("#next-audit").addEventListener("click", () => { auditOffset += recordPageSize; loadAudit(); });
@@ -425,8 +537,8 @@ $("#refresh-data").addEventListener("click", () => loadDataExplorer());
 $("#data-table-select").addEventListener("change", () => { explorerOffset = 0; loadDataTable(); });
 $("#prev-data").addEventListener("click", () => { explorerOffset = Math.max(0, explorerOffset - 30); loadDataTable(); });
 $("#next-data").addEventListener("click", () => { explorerOffset += 30; loadDataTable(); });
-$("#run-evaluation").addEventListener("click", runEvaluation);
-$("#verify-audit").addEventListener("click", verifyAuditIntegrity);
+$("#run-evaluation").addEventListener("click", openEvaluationDialog);
+$("#verify-audit").addEventListener("click", openIntegrityDialog);
 $("#refresh-knowledge").addEventListener("click", loadKnowledge);
 $("#search-knowledge").addEventListener("click", searchKnowledge);
 $("#reindex-knowledge").addEventListener("click", reindexKnowledge);

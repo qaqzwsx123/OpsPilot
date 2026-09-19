@@ -26,6 +26,7 @@ EXPLORER_TABLES = {
     "metric_definitions": "指标定义",
     "metric_samples": "指标样本",
     "metric_imports": "指标导入记录",
+    "evaluation_cases": "自定义评测用例",
     "knowledge_documents": "知识库文档",
     "knowledge_chunks": "知识库分块",
     "approvals": "审批单",
@@ -112,6 +113,10 @@ def initialize() -> None:
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
               filename TEXT NOT NULL, total_rows INTEGER NOT NULL, sample_count INTEGER NOT NULL,
               created_metrics INTEGER NOT NULL, updated_metrics INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS evaluation_cases (
+              id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
+              name TEXT NOT NULL, question TEXT NOT NULL, expected_status TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS knowledge_chunks (
               id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL,
@@ -339,6 +344,36 @@ def import_metric_csv(content: str, filename: str, requester: str) -> dict[str, 
             (import_id, utc_now(), requester, Path(filename).name[:180] or "metrics.csv", len(parsed_rows), len(parsed_rows), created_metrics, len(metric_ids) - created_metrics),
         )
     return {"import_id": import_id, "total_rows": len(parsed_rows), "sample_count": len(parsed_rows), "created_metrics": created_metrics, "updated_metrics": len(metric_ids) - created_metrics}
+
+
+EVALUATION_STATUSES = {"completed", "answered_by_rag", "approval_required", "blocked"}
+
+
+def list_evaluation_cases() -> list[dict[str, str]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, created_at, requester, name, question, expected_status FROM evaluation_cases ORDER BY created_at DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def add_evaluation_case(name: str, question: str, expected_status: str, requester: str) -> dict[str, str]:
+    if expected_status not in EVALUATION_STATUSES:
+        raise ValueError("预期结果必须是 completed、answered_by_rag、approval_required 或 blocked")
+    case = {"id": str(uuid4()), "created_at": utc_now(), "requester": requester, "name": name.strip(), "question": question.strip(), "expected_status": expected_status}
+    if not (2 <= len(case["name"]) <= 80 and 2 <= len(case["question"]) <= 500):
+        raise ValueError("用例名称需为 2-80 个字符，问题需为 2-500 个字符")
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO evaluation_cases (id, created_at, requester, name, question, expected_status) VALUES (?, ?, ?, ?, ?, ?)",
+            (case["id"], case["created_at"], case["requester"], case["name"], case["question"], case["expected_status"]),
+        )
+    return case
+
+
+def delete_evaluation_case(case_id: str) -> bool:
+    with connect() as conn:
+        return conn.execute("DELETE FROM evaluation_cases WHERE id = ?", (case_id,)).rowcount > 0
 
 
 def execute_readonly(sql: str) -> list[dict[str, Any]]:
@@ -820,15 +855,22 @@ def table_snapshot(table_name: str, limit: int = 30, offset: int = 0) -> dict[st
     }
 
 
-def audit_integrity() -> dict[str, Any]:
-    """Verify the append-only hash chain. It detects accidental/unauthorized local edits."""
+def audit_integrity(limit: int | None = None) -> dict[str, Any]:
+    """Verify all or a bounded tail of the local audit hash chain."""
     with connect() as conn:
-        rows = conn.execute("SELECT id, created_at, requester, action, payload, prev_hash, entry_hash FROM audit_logs ORDER BY rowid").fetchall()
-    previous = ""
+        total = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
+        checked = min(max(limit or total, 1), total) if total else 0
+        offset = total - checked
+        anchor = conn.execute("SELECT entry_hash FROM audit_logs ORDER BY rowid LIMIT 1 OFFSET ?", (offset - 1,)).fetchone() if offset else None
+        rows = conn.execute(
+            "SELECT id, created_at, requester, action, payload, prev_hash, entry_hash FROM audit_logs ORDER BY rowid LIMIT ? OFFSET ?",
+            (checked, offset),
+        ).fetchall()
+    previous = anchor["entry_hash"] if anchor else ""
     for index, row in enumerate(rows, start=1):
         payload = _canonical_payload(json.loads(row["payload"]))
         expected = _audit_digest(previous, row["id"], row["created_at"], row["requester"], row["action"], payload)
         if row["prev_hash"] != previous or row["entry_hash"] != expected:
-            return {"valid": False, "checked_events": index - 1, "broken_at": row["id"]}
+            return {"valid": False, "checked_events": index - 1, "total_events": total, "scope": "full" if checked == total else "recent", "broken_at": row["id"]}
         previous = expected
-    return {"valid": True, "checked_events": len(rows), "latest_hash": previous or None}
+    return {"valid": True, "checked_events": len(rows), "total_events": total, "scope": "full" if checked == total else "recent", "latest_hash": previous or None}
