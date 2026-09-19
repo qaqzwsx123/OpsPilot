@@ -29,6 +29,7 @@ EXPLORER_TABLES = {
     "evaluation_cases": "自定义评测用例",
     "knowledge_documents": "知识库文档",
     "knowledge_chunks": "知识库分块",
+    "knowledge_eval_feedback": "RAG 人工评分",
     "approvals": "审批单",
     "audit_logs": "审计日志",
     "conversation_memory": "会话记忆",
@@ -128,6 +129,11 @@ def initialize() -> None:
               id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL,
               chunk_index INTEGER NOT NULL, content TEXT NOT NULL, token_count INTEGER NOT NULL,
               FOREIGN KEY(document_id) REFERENCES knowledge_documents(id)
+            );
+            CREATE TABLE IF NOT EXISTS knowledge_eval_feedback (
+              id INTEGER PRIMARY KEY AUTOINCREMENT, evaluation_id TEXT NOT NULL,
+              question TEXT NOT NULL, score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5),
+              comment TEXT NOT NULL DEFAULT '', requester TEXT NOT NULL, created_at TEXT NOT NULL
             );
             """
         )
@@ -892,6 +898,25 @@ def knowledge_chunks() -> list[dict[str, Any]]:
             "ORDER BY c.document_id, c.chunk_index"
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def save_knowledge_evaluation_feedback(evaluation_id: str, question: str, score: int, comment: str, requester: str) -> dict[str, Any]:
+    created_at = utc_now()
+    with connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO knowledge_eval_feedback (evaluation_id, question, score, comment, requester, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (evaluation_id, question.strip(), score, comment.strip(), requester, created_at),
+        )
+    return {"id": cursor.lastrowid, "evaluation_id": evaluation_id, "question": question.strip(), "score": score, "comment": comment.strip(), "requester": requester, "created_at": created_at}
+
+
+def knowledge_evaluation_feedback_summary(evaluation_id: str) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS count, AVG(score) AS average_score FROM knowledge_eval_feedback WHERE evaluation_id = ?",
+            (evaluation_id,),
+        ).fetchone()
+    return {"count": row["count"], "average_score": round(row["average_score"], 2) if row["average_score"] is not None else None}
 
 
 APPROVAL_STATUSES = {"pending", "approved", "approved_safe_mode", "executed", "rejected", "expired"}

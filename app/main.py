@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_knowledge_versions, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, rollback_knowledge_document, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, update_knowledge_document, write_audit
+from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_evaluation_feedback_summary, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_knowledge_versions, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, rollback_knowledge_document, save_knowledge_evaluation_feedback, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, update_knowledge_document, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
@@ -98,6 +98,13 @@ class EvaluationRunRequest(BaseModel):
     case_ids: list[str] = Field(default_factory=list, max_length=100)
     role: str = Field(default="viewer", min_length=1, max_length=32)
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
+
+
+class KnowledgeEvaluationFeedbackRequest(MutationActorRequest):
+    evaluation_id: str = Field(min_length=1, max_length=64)
+    question: str = Field(min_length=2, max_length=500)
+    score: int = Field(ge=1, le=5)
+    comment: str = Field(default="", max_length=1000)
 
 
 @app.get("/health")
@@ -405,6 +412,16 @@ def evaluate_knowledge(request: MutationActorRequest) -> dict:
     report = run_knowledge_evaluation()
     write_audit(request.requester, "knowledge_evaluation_completed", {"total": report["total"], "passed": report["passed"], "hit_at_3": report["hit_at_3"], "role": request.role})
     return report
+
+
+@app.post("/api/v1/knowledge/evaluation/feedback")
+def evaluate_knowledge_feedback(request: KnowledgeEvaluationFeedbackRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="当前角色无提交知识库人工评分权限。")
+    feedback = save_knowledge_evaluation_feedback(request.evaluation_id, request.question, request.score, request.comment, request.requester)
+    summary = knowledge_evaluation_feedback_summary(request.evaluation_id)
+    write_audit(request.requester, "knowledge_evaluation_feedback", {"evaluation_id": request.evaluation_id, "question": request.question, "score": request.score, "role": request.role})
+    return {"feedback": feedback, "summary": summary}
 
 
 @app.post("/api/v1/knowledge/reindex")
