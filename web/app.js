@@ -828,15 +828,43 @@ function renderStateRows(target, rows, colors) {
   target.innerHTML = rows.map((row, index) => '<div class="state-row"><span>' + escapeHtml(row.status || row.severity) + '</span><i><b style="width:' + Math.round(row.count / maximum * 100) + '%;background:' + (colors[index % colors.length]) + '"></b></i><em>' + row.count + '</em></div>').join("");
 }
 
+function renderMonitorMetricTrends(series) {
+  const target = $("#monitoring-metric-trends");
+  if (!series?.length) { target.innerHTML = '<div class="empty-state"><strong>暂无指标样本</strong><p>可在指标中心导入真实 CSV 后刷新。</p></div>'; return; }
+  target.innerHTML = series.map((item) => {
+    const values = item.points.map((point) => Number(point.value)).filter(Number.isFinite); const min = Math.min(...values); const max = Math.max(...values); const span = max - min || 1;
+    const points = item.points.map((point, index) => `${(index / Math.max(item.points.length - 1, 1) * 100).toFixed(2)},${(92 - ((Number(point.value) - min) / span) * 76).toFixed(2)}`).join(" ");
+    const latest = values[values.length - 1];
+    return `<div class="monitor-trend-item"><div class="monitor-trend-heading"><strong>${escapeHtml(item.name)}</strong><span>${Number.isFinite(latest) ? latest.toFixed(2) : "—"} ${escapeHtml(item.unit)}</span></div><svg viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="${escapeHtml(item.name)}趋势"><polyline points="${points}"></polyline></svg><small>${item.points.length} 个采样点 · ${escapeHtml(item.source === "csv" ? "真实 CSV" : "本地样本")}</small></div>`;
+  }).join("");
+}
+
+function renderMonitorAlertTrend(rows) {
+  const target = $("#monitoring-alert-trend");
+  if (!rows?.length) { target.innerHTML = '<div class="empty-state"><strong>暂无告警趋势样本</strong></div>'; return; }
+  const maximum = Math.max(...rows.map((row) => Number(row.count)), 1);
+  target.innerHTML = rows.map((row) => `<div class="alert-trend-row"><span>${escapeHtml(row.day)}</span><i><b style="height:${Math.round(Number(row.count) / maximum * 100)}%"></b></i><em>${row.count}</em></div>`).join("");
+}
+
+function renderMonitorHealth(checks) {
+  const target = $("#monitoring-health");
+  const labels = { healthy:"正常", degraded:"降级", down:"异常" };
+  target.innerHTML = (checks || []).map((check) => `<div class="health-probe ${escapeHtml(check.status)}"><span>${check.status === "healthy" ? "✓" : "!"}</span><div><strong>${escapeHtml(check.name)}</strong><small>${escapeHtml(labels[check.status] || check.status)} · ${escapeHtml(check.detail || "")}</small></div></div>`).join("");
+}
+
 async function loadMonitoring() {
   try {
-    const data = await (await fetch("/api/v1/monitoring/overview")).json();
+    const response = await fetch("/api/v1/monitoring/overview"); const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || "监控数据加载失败");
     const assetTotal = data.asset_states.reduce((sum, item) => sum + item.count, 0);
     const alertTotal = data.alert_severity.reduce((sum, item) => sum + item.count, 0);
     $("#monitoring-summary").innerHTML = '<article><strong>' + assetTotal + '</strong><small>纳管设备资产</small></article><article><strong>' + alertTotal + '</strong><small>未关闭告警</small></article><article><strong>' + data.open_tickets + '</strong><small>待处理工单</small></article>';
     renderStateRows($("#asset-state-list"), data.asset_states, ["#26ad75", "#e88b42", "#7668ed"]);
     renderStateRows($("#alert-severity-list"), data.alert_severity, ["#ed6d61", "#e99b47", "#796dec"]);
     $("#monitoring-alert-list").innerHTML = renderRows(data.latest_alerts);
+    renderMonitorMetricTrends(data.metric_series); renderMonitorAlertTrend(data.alert_trend); renderMonitorHealth(data.health_checks);
+    $("#monitoring-source-note").textContent = "来源：" + (data.sample_source || "本地指标样本");
+    $("#monitoring-checked-at").textContent = "最近探测：" + new Date().toLocaleTimeString("zh-CN", {hour12:false});
   } catch { $("#monitoring-summary").innerHTML = '<div class="empty-state"><strong>无法加载监控数据</strong></div>'; }
 }
 

@@ -135,6 +135,8 @@
         <div id="monitoring-summary" class="monitor-summary"></div>
         <div class="monitor-layout"><article class="card"><div class="card-heading"><div><p class="section-label">ASSET STATUS</p><h3>资产运行状态</h3></div><button id="refresh-monitoring" class="text-button">刷新</button></div><div id="asset-state-list" class="state-list"></div></article><article class="card"><div class="card-heading"><div><p class="section-label">ALERT SEVERITY</p><h3>未关闭告警分布</h3></div></div><div id="alert-severity-list" class="state-list"></div></article></div>
         <article class="card latest-alert-card"><div class="card-heading"><div><p class="section-label">LATEST ALERTS</p><h3>最近告警</h3></div><button class="text-button monitor-query" data-query="查询最近的 P1 告警">用 Agent 分析 P1 告警</button></div><div id="monitoring-alert-list" class="table-wrap"></div></article>
+        <div class="monitor-detail-grid"><article class="card"><div class="card-heading"><div><p class="section-label">REAL TIME SERIES</p><h3>核心指标趋势</h3></div><small id="monitoring-source-note" class="monitor-source-note">等待采样</small></div><div id="monitoring-metric-trends" class="monitor-trends"></div></article><article class="card"><div class="card-heading"><div><p class="section-label">ALERT TREND</p><h3>告警趋势</h3></div></div><div id="monitoring-alert-trend" class="monitor-alert-trend"></div></article></div>
+        <article class="card monitor-health-card"><div class="card-heading"><div><p class="section-label">HEALTH PROBES</p><h3>服务健康探针</h3></div><small id="monitoring-checked-at" class="monitor-source-note">等待探测</small></div><div id="monitoring-health" class="monitor-health-grid"></div></article>
       </section>
 
       <section id="metrics-page" class="page">
@@ -177,6 +179,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-chat-stream"></script>
+  <script src="/static/app.js?v=20260919-monitoring-observability"></script>
 </body>
 </html>

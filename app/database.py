@@ -894,9 +894,45 @@ def monitoring_overview() -> dict[str, Any]:
             "ORDER BY a.created_at DESC LIMIT 10"
         ).fetchall()]
         open_tickets = conn.execute("SELECT COUNT(*) FROM tickets WHERE status != 'closed'").fetchone()[0]
+        metric_patterns = [
+            ("CPU 使用率", "主机"), ("内存使用率", "主机"), ("磁盘使用率", "主机"),
+            ("网络入站流量", "网络"), ("请求延迟 P95", "应用"),
+        ]
+        metric_series = []
+        for name, category in metric_patterns:
+            definition = conn.execute(
+                "SELECT id, name, unit, asset_scope, source FROM metric_definitions WHERE name LIKE ? AND category = ? ORDER BY CASE WHEN source = 'csv' THEN 0 ELSE 1 END, id LIMIT 1",
+                (name + "%", category),
+            ).fetchone()
+            if definition is None:
+                continue
+            points = conn.execute(
+                "SELECT observed_at, value FROM metric_samples WHERE metric_id = ? ORDER BY observed_at DESC LIMIT 24",
+                (definition["id"],),
+            ).fetchall()
+            metric_series.append({**dict(definition), "points": list(reversed([dict(point) for point in points]))})
+        alert_dates = conn.execute(
+            "SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS count FROM alerts GROUP BY day ORDER BY day DESC LIMIT 7"
+        ).fetchall()
+    alert_trend = list(reversed([dict(row) for row in alert_dates]))
+    try:
+        with connect() as conn:
+            conn.execute("SELECT 1").fetchone()
+            knowledge_count = conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
+            chunk_count = conn.execute("SELECT COUNT(*) FROM knowledge_chunks").fetchone()[0]
+        health_checks = [
+            {"name": "API 服务", "status": "healthy", "detail": "当前进程正常响应"},
+            {"name": "SQLite 数据库", "status": "healthy", "detail": "连接与只读探针正常"},
+            {"name": "知识库索引", "status": "healthy" if chunk_count else "degraded", "detail": f"{knowledge_count} 份文档 · {chunk_count} 个分块"},
+            {"name": "本地 DeepSeek", "status": "healthy" if settings.chat_enabled else "degraded", "detail": "模型配置已加载" if settings.chat_enabled else "未配置，使用离线兜底"},
+        ]
+    except sqlite3.Error as exc:
+        health_checks = [{"name": "SQLite 数据库", "status": "down", "detail": f"探针失败：{exc}"}]
     return {
         "asset_states": asset_states, "alert_severity": alert_severity,
         "latest_alerts": latest_alerts, "open_tickets": open_tickets,
+        "metric_series": metric_series, "alert_trend": alert_trend,
+        "health_checks": health_checks, "sample_source": "SQLite metric_samples / alerts",
     }
 
 
