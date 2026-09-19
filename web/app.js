@@ -343,8 +343,10 @@ $("#next-approvals").addEventListener("click", () => { approvalOffset += recordP
 $("#refresh-monitoring").addEventListener("click", loadMonitoring);
 $("#search-metrics").addEventListener("click", loadMetricCatalog);
 $("#refresh-metrics").addEventListener("click", () => { $("#metric-keyword").value = ""; $("#metric-category").value = ""; loadMetricCatalog(); });
+$("#download-metric-template").addEventListener("click", () => { window.location.href = "/api/v1/metrics/import-template"; });
+$("#upload-metric-csv").addEventListener("click", importMetricCsv);
 $("#analyze-metric").addEventListener("click", () => { if (!selectedMetric) return; document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = "查询指标 #" + selectedMetric.id + " 近24小时趋势"; runQuery(); });
-$("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); if ($("#data-page").classList.contains("active-page")) loadDataExplorer(); });
+$("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); updateMetricImportAccess(); if ($("#data-page").classList.contains("active-page")) loadDataExplorer(); if ($("#metrics-page").classList.contains("active-page")) loadMetricCatalog(); });
 $("#save-knowledge").addEventListener("click", saveKnowledge);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
@@ -562,8 +564,45 @@ async function invokeTool(name, button) {
 
 function renderMetricCatalog(metrics) {
   const target = $("#metric-list");
-  target.innerHTML = metrics.length ? metrics.map((metric) => '<article class="metric-item"><div><strong>' + escapeHtml(metric.name) + '</strong><small>' + escapeHtml(metric.category) + ' · ' + escapeHtml(metric.asset_scope) + ' · ' + escapeHtml(metric.unit) + '</small></div><button class="text-button" data-metric="' + metric.id + '">查看趋势</button></article>').join("") : '<div class="empty-state"><strong>没有匹配指标</strong><p>尝试切换分类或关键词。</p></div>';
+  target.innerHTML = metrics.length ? metrics.map((metric) => '<article class="metric-item"><div><strong>' + escapeHtml(metric.name) + '</strong><small>' + escapeHtml(metric.category) + ' · ' + escapeHtml(metric.asset_scope) + ' · ' + escapeHtml(metric.unit) + '</small><span class="metric-source ' + escapeHtml(metric.source || "demo") + '">' + (metric.source === "csv" ? "真实 CSV" : "本地演示") + '</span></div><button class="text-button" data-metric="' + metric.id + '">查看趋势</button></article>').join("") : '<div class="empty-state"><strong>没有匹配指标</strong><p>尝试切换分类或关键词。</p></div>';
   document.querySelectorAll("[data-metric]").forEach((button) => button.addEventListener("click", () => loadMetricTrend(button.dataset.metric)));
+}
+
+function updateMetricImportAccess() {
+  const permitted = currentRole() !== "viewer";
+  const button = $("#upload-metric-csv"); button.disabled = !permitted;
+  button.title = permitted ? "" : "观察者角色只能查看指标，不能导入数据";
+}
+
+function renderMetricImportHistory(rows) {
+  const target = $("#metric-import-history");
+  target.innerHTML = rows.length ? '<strong>最近导入</strong>' + rows.slice(0, 3).map((row) => '<div><span>' + escapeHtml(row.filename) + '</span><small>' + row.sample_count + ' 条样本 · 新增 ' + row.created_metrics + ' 个指标 · ' + new Date(row.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</small></div>').join("") : '<small>尚未导入真实 CSV。</small>';
+}
+
+async function loadMetricImports() {
+  try {
+    const response = await fetch("/api/v1/metrics/imports?role=" + encodeURIComponent(currentRole())); const rows = await response.json();
+    if (!response.ok) throw new Error(rows.detail || "导入记录加载失败");
+    renderMetricImportHistory(rows);
+  } catch { $("#metric-import-history").innerHTML = '<small>无法加载导入记录。</small>'; }
+}
+
+async function importMetricCsv() {
+  const file = $("#metric-csv-file").files?.[0];
+  if (!file) return toast("请先选择一个 CSV 文件");
+  if (!file.name.toLowerCase().endsWith(".csv")) return toast("仅支持 .csv 文件");
+  if (file.size > 5 * 1024 * 1024) return toast("CSV 文件不能超过 5 MB");
+  const button = $("#upload-metric-csv"); button.disabled = true; button.textContent = "校验并导入中…";
+  try {
+    const url = "/api/v1/metrics/import?filename=" + encodeURIComponent(file.name) + "&role=" + encodeURIComponent(currentRole()) + "&requester=Lenovo";
+    const response = await fetch(url, { method:"POST", headers:{"Content-Type":"text/csv; charset=utf-8"}, body:file }); const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "CSV 导入失败");
+    const target = $("#metric-import-result"); target.hidden = false;
+    target.textContent = "导入完成：校验 " + result.total_rows + " 行，写入 " + result.sample_count + " 个样本，新增 " + result.created_metrics + " 个指标，匹配已有 " + result.updated_metrics + " 个指标。";
+    $("#metric-csv-file").value = ""; toast("真实 CSV 指标已导入");
+    await Promise.all([loadMetricCatalog(), loadMetricImports(), loadMetrics()]);
+  } catch (error) { toast(error.message || "CSV 导入失败"); }
+  finally { button.disabled = currentRole() === "viewer"; button.textContent = "校验并导入 CSV"; }
 }
 
 async function loadMetricCatalog() {
@@ -573,6 +612,8 @@ async function loadMetricCatalog() {
     const metrics = await response.json(); renderMetricCatalog(metrics);
     const system = await (await fetch("/api/v1/metrics")).json();
     $("#metric-count-note").textContent = system.metric_definitions || metrics.length;
+    $("#metric-count-description").textContent = "条指标定义，其中 " + (system.imported_metric_definitions || 0) + " 条来自真实 CSV";
+    updateMetricImportAccess(); loadMetricImports();
   } catch { $("#metric-list").innerHTML = '<div class="empty-state"><strong>无法加载指标目录</strong></div>'; }
 }
 

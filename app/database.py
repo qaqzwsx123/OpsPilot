@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
+import math
 import sqlite3
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
@@ -22,6 +25,7 @@ EXPLORER_TABLES = {
     "work_orders": "作业任务",
     "metric_definitions": "指标定义",
     "metric_samples": "指标样本",
+    "metric_imports": "指标导入记录",
     "knowledge_documents": "知识库文档",
     "knowledge_chunks": "知识库分块",
     "approvals": "审批单",
@@ -96,12 +100,18 @@ def initialize() -> None:
             CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, id);
             CREATE TABLE IF NOT EXISTS metric_definitions (
               id INTEGER PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL,
-              unit TEXT NOT NULL, asset_scope TEXT NOT NULL, description TEXT NOT NULL
+              unit TEXT NOT NULL, asset_scope TEXT NOT NULL, description TEXT NOT NULL,
+              source TEXT NOT NULL DEFAULT 'demo'
             );
             CREATE TABLE IF NOT EXISTS metric_samples (
               id INTEGER PRIMARY KEY AUTOINCREMENT, metric_id INTEGER NOT NULL,
               observed_at TEXT NOT NULL, value REAL NOT NULL,
               FOREIGN KEY(metric_id) REFERENCES metric_definitions(id)
+            );
+            CREATE TABLE IF NOT EXISTS metric_imports (
+              id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
+              filename TEXT NOT NULL, total_rows INTEGER NOT NULL, sample_count INTEGER NOT NULL,
+              created_metrics INTEGER NOT NULL, updated_metrics INTEGER NOT NULL
             );
             CREATE TABLE IF NOT EXISTS knowledge_chunks (
               id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL,
@@ -133,6 +143,10 @@ def initialize() -> None:
             conn.execute("ALTER TABLE audit_logs ADD COLUMN prev_hash TEXT")
         if "entry_hash" not in audit_columns:
             conn.execute("ALTER TABLE audit_logs ADD COLUMN entry_hash TEXT")
+        metric_columns = {row["name"] for row in conn.execute("PRAGMA table_info(metric_definitions)").fetchall()}
+        if "source" not in metric_columns:
+            conn.execute("ALTER TABLE metric_definitions ADD COLUMN source TEXT NOT NULL DEFAULT 'demo'")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_metric_samples_metric_time ON metric_samples(metric_id, observed_at)")
         _backfill_audit_hashes(conn)
 
 
@@ -221,6 +235,110 @@ def seed_metric_demo_data() -> None:
             "INSERT INTO metric_samples (metric_id, observed_at, value) VALUES (?, ?, ?)",
             samples,
         )
+
+
+CSV_HEADER_ALIASES = {
+    "metric_name": ("metric_name", "name", "指标名称", "指标名"),
+    "category": ("category", "分类"),
+    "unit": ("unit", "单位"),
+    "asset_scope": ("asset_scope", "scope", "资源范围", "资产范围", "资源", "资产"),
+    "observed_at": ("observed_at", "timestamp", "time", "采集时间", "时间", "时间戳"),
+    "value": ("value", "指标值", "数值", "值"),
+    "description": ("description", "描述", "说明"),
+}
+MAX_METRIC_IMPORT_ROWS = 50_000
+
+
+def metric_csv_template() -> str:
+    return (
+        "metric_name,category,unit,asset_scope,observed_at,value,description\n"
+        "CPU 使用率,主机,%,edge-gateway-sh-01,2026-09-19T09:00:00+08:00,68.5,生产网关 CPU 使用率\n"
+        "CPU 使用率,主机,%,edge-gateway-sh-01,2026-09-19T10:00:00+08:00,72.1,生产网关 CPU 使用率\n"
+    )
+
+
+def _resolve_csv_headers(fieldnames: list[str] | None) -> dict[str, str]:
+    normalized = {str(name).strip().lower(): str(name) for name in fieldnames or [] if name and str(name).strip()}
+    resolved: dict[str, str] = {}
+    for canonical, aliases in CSV_HEADER_ALIASES.items():
+        for alias in aliases:
+            matched = normalized.get(alias.lower())
+            if matched:
+                resolved[canonical] = matched
+                break
+    required = ("metric_name", "category", "unit", "asset_scope", "observed_at", "value")
+    missing = [name for name in required if name not in resolved]
+    if missing:
+        raise ValueError("CSV 缺少必填列：" + "、".join(missing))
+    return resolved
+
+
+def _parse_observed_at(value: str) -> str:
+    normalized = value.strip().replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized).isoformat()
+    except ValueError as exc:
+        raise ValueError("采集时间必须是 ISO 8601 格式，例如 2026-09-19T09:00:00+08:00") from exc
+
+
+def import_metric_csv(content: str, filename: str, requester: str) -> dict[str, int | str]:
+    """Validate and upsert real metric CSV rows without overwriting unrelated metrics."""
+    reader = csv.DictReader(io.StringIO(content))
+    headers = _resolve_csv_headers(reader.fieldnames)
+    parsed_rows: list[tuple[str, str, str, str, str, float, str]] = []
+    for line_number, row in enumerate(reader, start=2):
+        if len(parsed_rows) >= MAX_METRIC_IMPORT_ROWS:
+            raise ValueError(f"CSV 最多允许 {MAX_METRIC_IMPORT_ROWS} 条数据行")
+        values = {key: str(row.get(column) or "").strip() for key, column in headers.items()}
+        if not any(values.values()):
+            continue
+        required = ("metric_name", "category", "unit", "asset_scope", "observed_at", "value")
+        if any(not values[name] for name in required):
+            raise ValueError(f"第 {line_number} 行存在空的必填字段")
+        if any(len(values[name]) > 160 for name in ("metric_name", "category", "unit", "asset_scope")):
+            raise ValueError(f"第 {line_number} 行的指标元数据超过长度限制")
+        try:
+            numeric_value = float(values["value"])
+        except ValueError as exc:
+            raise ValueError(f"第 {line_number} 行的 value 必须是数值") from exc
+        if not math.isfinite(numeric_value):
+            raise ValueError(f"第 {line_number} 行的 value 必须是有限数值")
+        observed_at = _parse_observed_at(values["observed_at"])
+        parsed_rows.append((values["metric_name"], values["category"], values["unit"], values["asset_scope"], observed_at, numeric_value, values.get("description", "")))
+    if not parsed_rows:
+        raise ValueError("CSV 没有可导入的数据行")
+
+    created_metrics = 0
+    metric_ids: dict[tuple[str, str, str, str], int] = {}
+    with connect() as conn:
+        for name, category, unit, scope, _, _, description in parsed_rows:
+            key = (name, category, unit, scope)
+            if key in metric_ids:
+                continue
+            existing = conn.execute(
+                "SELECT id FROM metric_definitions WHERE name = ? AND category = ? AND unit = ? AND asset_scope = ?",
+                key,
+            ).fetchone()
+            if existing is None:
+                cursor = conn.execute(
+                    "INSERT INTO metric_definitions (name, category, unit, asset_scope, description, source) VALUES (?, ?, ?, ?, ?, 'csv')",
+                    (name, category, unit, scope, description or "从真实 CSV 导入的时序指标"),
+                )
+                metric_ids[key] = int(cursor.lastrowid)
+                created_metrics += 1
+            else:
+                metric_ids[key] = int(existing["id"])
+        conn.executemany(
+            "INSERT INTO metric_samples (metric_id, observed_at, value) VALUES (?, ?, ?) "
+            "ON CONFLICT(metric_id, observed_at) DO UPDATE SET value = excluded.value",
+            [(metric_ids[(name, category, unit, scope)], observed_at, value) for name, category, unit, scope, observed_at, value, _ in parsed_rows],
+        )
+        import_id = str(uuid4())
+        conn.execute(
+            "INSERT INTO metric_imports (id, created_at, requester, filename, total_rows, sample_count, created_metrics, updated_metrics) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (import_id, utc_now(), requester, Path(filename).name[:180] or "metrics.csv", len(parsed_rows), len(parsed_rows), created_metrics, len(metric_ids) - created_metrics),
+        )
+    return {"import_id": import_id, "total_rows": len(parsed_rows), "sample_count": len(parsed_rows), "created_metrics": created_metrics, "updated_metrics": len(metric_ids) - created_metrics}
 
 
 def execute_readonly(sql: str) -> list[dict[str, Any]]:
@@ -493,7 +611,9 @@ def system_metrics() -> dict[str, int | bool]:
         audit_count = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
         approval_count = conn.execute("SELECT COUNT(*) FROM approvals WHERE status IN ('approved', 'approved_safe_mode', 'executed')").fetchone()[0]
         metric_count = conn.execute("SELECT COUNT(*) FROM metric_definitions").fetchone()[0]
-    return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "metric_definitions": metric_count, "audit_events": audit_count, "approved_actions": approval_count}
+        imported_metric_count = conn.execute("SELECT COUNT(*) FROM metric_definitions WHERE source = 'csv'").fetchone()[0]
+        import_count = conn.execute("SELECT COUNT(*) FROM metric_imports").fetchone()[0]
+    return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "metric_definitions": metric_count, "imported_metric_definitions": imported_metric_count, "metric_imports": import_count, "audit_events": audit_count, "approved_actions": approval_count}
 
 
 def list_metric_definitions(keyword: str = "", category: str = "", limit: int = 60) -> list[dict[str, Any]]:
@@ -507,7 +627,7 @@ def list_metric_definitions(keyword: str = "", category: str = "", limit: int = 
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, category, unit, asset_scope, description FROM metric_definitions" + where + " ORDER BY id LIMIT ?",
+            "SELECT id, name, category, unit, asset_scope, description, source FROM metric_definitions" + where + " ORDER BY CASE WHEN source = 'csv' THEN 0 ELSE 1 END, id ASC LIMIT ?",
             (*params, limit),
         ).fetchall()
     return [dict(row) for row in rows]
@@ -516,7 +636,7 @@ def list_metric_definitions(keyword: str = "", category: str = "", limit: int = 
 def metric_trend(metric_id: int, points: int = 24) -> dict[str, Any] | None:
     with connect() as conn:
         definition = conn.execute(
-            "SELECT id, name, category, unit, asset_scope, description FROM metric_definitions WHERE id = ?", (metric_id,)
+            "SELECT id, name, category, unit, asset_scope, description, source FROM metric_definitions WHERE id = ?", (metric_id,)
         ).fetchone()
         if definition is None:
             return None
@@ -525,6 +645,15 @@ def metric_trend(metric_id: int, points: int = 24) -> dict[str, Any] | None:
             (metric_id, points),
         ).fetchall()
     return {**dict(definition), "points": list(reversed([dict(row) for row in rows]))}
+
+
+def list_metric_imports(limit: int = 8) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, created_at, requester, filename, total_rows, sample_count, created_metrics, updated_metrics FROM metric_imports ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def list_knowledge_documents(limit: int = 100) -> list[dict[str, Any]]:

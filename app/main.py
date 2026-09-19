@@ -7,13 +7,13 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_chat_message, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, initialize, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import add_chat_message, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, import_metric_csv, initialize, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import run_evaluation
 from app.skills import SkillRegistry, run_skill
@@ -348,6 +348,44 @@ def metric_definition_trend(metric_id: int, points: int = 24) -> dict:
     if trend is None:
         raise HTTPException(status_code=404, detail="指标不存在")
     return trend
+
+
+@app.get("/api/v1/metrics/import-template")
+def metric_import_template() -> PlainTextResponse:
+    return PlainTextResponse(
+        metric_csv_template(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="metric-import-template.csv"'},
+    )
+
+
+@app.get("/api/v1/metrics/imports")
+def metric_imports(role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无指标导入记录查看权限。")
+    return list_metric_imports()
+
+
+@app.post("/api/v1/metrics/import", status_code=201)
+async def import_metrics_csv(request: Request, filename: str = "metrics.csv", role: str = "operator", requester: str = "Lenovo") -> dict:
+    if not permitted(role, "request_change"):
+        write_audit(requester, "metric_import_denied", {"filename": filename[:180], "role": role})
+        raise HTTPException(status_code=403, detail="观察者角色不能导入真实指标 CSV。请切换到运维工程师或值班负责人。")
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="请选择包含指标数据的 CSV 文件。")
+    if len(body) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CSV 文件不能超过 5 MB。")
+    try:
+        content = body.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="CSV 必须使用 UTF-8 或 UTF-8 BOM 编码保存。") from exc
+    try:
+        result = import_metric_csv(content, filename, requester)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    write_audit(requester, "metric_csv_imported", {"filename": filename[:180], "role": role, **result})
+    return result
 
 
 @app.get("/api/v1/tools")

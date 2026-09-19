@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from uuid import uuid4
 
-from app.database import add_chat_message, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, execute_approved, execute_readonly, get_chat_messages, list_approvals, list_audit, list_chat_conversations, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.database import add_chat_message, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, list_approvals, list_audit, list_chat_conversations, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
 from fastapi import HTTPException
@@ -58,6 +59,25 @@ class WorkflowTests(unittest.TestCase):
         result = SqlAgentWorkflow().run("查询指标 #1 近24小时趋势", "test-user")
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(result.rows), 24)
+
+    def test_real_metric_csv_import_validates_and_upserts_samples(self) -> None:
+        metric_name = "CSV 导入测试 " + uuid4().hex[:8]
+        content = (
+            "metric_name,category,unit,asset_scope,observed_at,value,description\n"
+            f"{metric_name},主机,%,test-gateway,2026-09-19T09:00:00+08:00,68.5,真实采集样本\n"
+            f"{metric_name},主机,%,test-gateway,2026-09-19T10:00:00+08:00,72.1,真实采集样本\n"
+        )
+        report = import_metric_csv(content, "real-metrics.csv", "test-importer")
+        self.assertEqual(report["sample_count"], 2)
+        metric = next(item for item in list_metric_definitions(metric_name, limit=10) if item["name"] == metric_name)
+        self.assertEqual(metric["source"], "csv")
+        trend = metric_trend(metric["id"])
+        self.assertIsNotNone(trend)
+        self.assertEqual([point["value"] for point in trend["points"]], [68.5, 72.1])
+        updated = import_metric_csv(content.replace("72.1", "75.0"), "real-metrics.csv", "test-importer")
+        self.assertEqual(updated["created_metrics"], 0)
+        self.assertTrue(any(item["id"] == updated["import_id"] for item in list_metric_imports()))
+        self.assertEqual(metric_trend(metric["id"])["points"][-1]["value"], 75.0)
 
     def test_viewer_cannot_request_write_approval(self) -> None:
         result = SqlAgentWorkflow().run("删除已关闭告警", "test-viewer", role="viewer")

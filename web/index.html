@@ -136,9 +136,9 @@
       </section>
 
       <section id="metrics-page" class="page">
-        <div class="section-intro"><span class="pill">OBSERVABILITY METRICS</span><h2>指标可检索，也可追溯趋势。</h2><p>本地演示环境已初始化 700 条指标定义和 24 小时时序样本。可筛选、查看趋势，并把指定指标交给 Agent。</p></div>
+        <div class="section-intro"><span class="pill">OBSERVABILITY METRICS</span><h2>指标可检索，也可追溯趋势。</h2><p>内置演示指标用于体验流程，也支持导入真实 CSV 时序数据。导入后的指标会标注“真实 CSV”，可筛选、查看趋势并交给 Agent 分析。</p></div>
         <div class="metric-catalog-layout">
-          <article class="card metric-filter"><p class="section-label">METRIC EXPLORER</p><h3>筛选指标</h3><label>关键字<input id="metric-keyword" placeholder="例如：CPU、延迟、成功率" /></label><label>分类<select id="metric-category"><option value="">全部分类</option><option value="主机">主机</option><option value="网络">网络</option><option value="应用">应用</option><option value="数据库">数据库</option><option value="消息队列">消息队列</option><option value="作业">作业</option></select></label><button id="search-metrics" class="primary-button">查询指标 <span>↗</span></button><div class="metric-filter-note"><strong id="metric-count-note">—</strong><small>条本地演示指标定义</small></div></article>
+          <article class="card metric-filter"><p class="section-label">METRIC EXPLORER</p><h3>筛选指标</h3><label>关键字<input id="metric-keyword" placeholder="例如：CPU、延迟、成功率" /></label><label>分类<select id="metric-category"><option value="">全部分类</option><option value="主机">主机</option><option value="网络">网络</option><option value="应用">应用</option><option value="数据库">数据库</option><option value="消息队列">消息队列</option><option value="作业">作业</option></select></label><button id="search-metrics" class="primary-button">查询指标 <span>↗</span></button><div class="metric-filter-note"><strong id="metric-count-note">—</strong><small id="metric-count-description">条指标定义</small></div><div class="metric-import"><div class="metric-import-heading"><strong>导入真实 CSV</strong><button id="download-metric-template" class="text-button">下载模板</button></div><p>必填列：指标名、分类、单位、资源范围、采集时间、数值。相同指标与时间点会更新数值。</p><input id="metric-csv-file" type="file" accept=".csv,text/csv" /><button id="upload-metric-csv" class="secondary-button">校验并导入 CSV</button><div id="metric-import-result" class="metric-import-result" hidden></div><div id="metric-import-history" class="metric-import-history"></div></div></article>
           <article class="card metric-list-card"><div class="card-heading"><div><p class="section-label">CATALOG</p><h3>指标目录</h3></div><button id="refresh-metrics" class="text-button">刷新</button></div><div id="metric-list" class="metric-list"></div></article>
         </div>
         <article id="trend-card" class="card trend-card" hidden><div class="card-heading"><div><p class="section-label">24H TREND</p><h3 id="trend-title">指标趋势</h3></div><button id="analyze-metric" class="text-button">交给 Agent 分析</button></div><div id="trend-summary" class="trend-summary"></div><svg id="trend-chart" viewBox="0 0 600 160" preserveAspectRatio="none"></svg><div id="trend-axis" class="trend-axis"></div></article>
@@ -160,6 +160,6 @@
     </main>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-context-metrics"></script>
+  <script src="/static/app.js?v=20260919-csv-metric-import"></script>
 </body>
 </html>
