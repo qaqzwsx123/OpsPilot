@@ -7,6 +7,7 @@ from app.database import add_chat_message, add_evaluation_case, approve, approva
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
+from app.tool_registry import invoke as invoke_registered_tool
 from fastapi import HTTPException
 from pathlib import Path
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
@@ -161,7 +162,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(loaded["incident_triage"].runnable)
         self.assertEqual(run_skill("incident_triage", "华东 P1 告警")["status"], "completed")
         self.assertEqual(run_skill("metric_diagnosis", "指标 #1")["status"], "completed")
+        self.assertEqual(run_skill("oncall_briefing", "当前值班简报")["status"], "completed")
+        self.assertEqual(run_skill("capacity_review", "早间容量巡检")["status"], "completed")
         self.assertEqual(run_skill("change_review", "DELETE FROM alerts WHERE status = 'closed';")["risk"], "manual")
+
+    def test_extended_readonly_tools_return_structured_operational_data(self) -> None:
+        self.assertEqual(invoke_registered_tool("approval_queue")["status"], "completed")
+        self.assertEqual(invoke_registered_tool("audit_recent")["status"], "completed")
+        catalog = invoke_registered_tool("metric_catalog")
+        self.assertEqual(catalog["status"], "completed")
+        self.assertTrue(catalog["metrics"])
 
     def test_audit_and_approval_lists_support_bounded_pagination(self) -> None:
         write_audit("test-pagination", "pagination_test", {"sequence": 1})

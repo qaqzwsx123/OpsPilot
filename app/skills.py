@@ -6,7 +6,7 @@ import re
 from statistics import mean
 from typing import Any
 
-from app.database import execute_readonly, metric_trend
+from app.database import execute_readonly, list_approvals, metric_trend
 from app.sql_agent import RiskAssessor
 
 
@@ -99,6 +99,32 @@ def run_skill(name: str, user_input: str = "") -> dict[str, Any]:
             "skill": name, "status": "completed", "summary": f"当前有 {len(rows)} 个未关闭工单，其中高优 {high_count} 个。交接时应优先处理高优和无人认领工单。",
             "data": rows,
             "next_steps": ["逐单确认负责人、当前进展和阻塞项", "高优工单补齐最近动作与下次更新时间", "交接后在工单中记录接手人和验证计划"],
+            "risk": "auto",
+        }
+    if name == "oncall_briefing":
+        alerts = execute_readonly("SELECT severity, title, status, created_at FROM alerts WHERE status != 'closed' ORDER BY CASE severity WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END, created_at DESC LIMIT 20")
+        tickets = execute_readonly("SELECT priority, title, status, assignee, created_at FROM tickets WHERE status != 'closed' ORDER BY CASE priority WHEN 'high' THEN 1 ELSE 2 END, created_at ASC LIMIT 20")
+        work_orders = execute_readonly("SELECT action, status, created_at FROM work_orders WHERE status != 'completed' ORDER BY created_at ASC LIMIT 20")
+        approvals = [item for item in list_approvals(limit=20) if item["status"] == "pending"]
+        p1_count = sum(item["severity"] == "P1" for item in alerts)
+        return {
+            "skill": name, "status": "completed",
+            "summary": f"已生成值班简报：{len(alerts)} 条未关闭告警（P1 {p1_count} 条）、{len(tickets)} 个未关闭工单、{len(work_orders)} 个待执行作业、{len(approvals)} 张待审批单。",
+            "data": {"alerts": alerts, "tickets": tickets, "work_orders": work_orders, "pending_approvals": approvals},
+            "next_steps": ["优先确认 P1 告警与其负责人", "补齐高优工单的下一次更新时间", "明确待审批变更的窗口、影响和审批人", "将本简报同步给下一值班人员"],
+            "risk": "auto",
+        }
+    if name == "capacity_review":
+        rows = execute_readonly("SELECT id, name, region, status, updated_at FROM assets WHERE status != 'online' ORDER BY updated_at DESC LIMIT 20")
+        trend = metric_trend(1)
+        values = [point["value"] for point in (trend or {}).get("points", [])]
+        latest = values[-1] if values else None
+        average = round(mean(values), 2) if values else None
+        return {
+            "skill": name, "status": "completed",
+            "summary": f"容量巡检发现 {len(rows)} 台非在线资产；CPU 指标当前值为 {latest if latest is not None else '—'}%，24 小时均值为 {average if average is not None else '—'}%。",
+            "data": {"non_online_assets": rows, "cpu_latest": latest, "cpu_average": average, "cpu_peak": max(values) if values else None},
+            "next_steps": ["核对离线或维护资产是否处于计划窗口", "观察 CPU 高点是否与流量或发布记录重合", "容量持续紧张时创建扩容评估工单", "记录本次巡检结论和下一复核时间"],
             "risk": "auto",
         }
     if name == "change_review":

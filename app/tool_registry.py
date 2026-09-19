@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from app.database import execute_readonly, list_knowledge_documents, system_metrics
+from app.database import execute_readonly, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, system_metrics
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,6 +21,9 @@ TOOLS = (
     ToolDefinition("work_order_query", "查询待执行运维作业", "auto", "作业"),
     ToolDefinition("knowledge_search", "查看当前知识库文档索引", "auto", "知识库"),
     ToolDefinition("system_health", "读取 Agent 服务与数据接入状态", "auto", "系统"),
+    ToolDefinition("approval_queue", "查看待处理和最近审批单状态", "auto", "审批"),
+    ToolDefinition("audit_recent", "查看最近关键操作的审计轨迹", "auto", "审计"),
+    ToolDefinition("metric_catalog", "检索已接入的指标定义与数据来源", "auto", "可观测性"),
     ToolDefinition("create_work_order", "创建运维作业单", "manual", "变更"),
     ToolDefinition("close_alert", "关闭指定告警", "manual", "告警"),
     ToolDefinition("database_maintenance", "执行数据库维护指令", "blocked", "数据库"),
@@ -48,6 +51,13 @@ def invoke(name: str) -> dict[str, Any]:
         return {"status": "completed", "tool": name, "documents": list_knowledge_documents(20)}
     if name == "system_health":
         return {"status": "completed", "tool": name, "metrics": system_metrics()}
+    if name == "approval_queue":
+        rows = list_approvals(limit=20)
+        return {"status": "completed", "tool": name, "pending_count": sum(row["status"] == "pending" for row in rows), "approvals": rows}
+    if name == "audit_recent":
+        return {"status": "completed", "tool": name, "events": list_audit(limit=20)}
+    if name == "metric_catalog":
+        return {"status": "completed", "tool": name, "metrics": list_metric_definitions(limit=20)}
     if name in {"create_work_order", "close_alert"}:
         return {"status": "approval_required", "tool": name, "message": "该工具会改变生产状态，需在审批中心创建并确认操作。"}
     if name == "database_maintenance":

@@ -262,6 +262,13 @@ def skills() -> list[dict]:
     return [{"name": item.name, "description": item.description, "category": item.category, "risk": item.risk, "suggestions": list(item.suggestions), "runnable": item.runnable} for item in registry.load()]
 
 
+@app.get("/api/v1/skills/history")
+def skills_history(role: str = "viewer", limit: int = 8) -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Skill 运行记录查看权限。")
+    return [event for event in list_audit(limit=200) if event["action"] == "skill_run"][:min(max(limit, 1), 30)]
+
+
 @app.get("/api/v1/skills/{skill_name}")
 def skill_detail(skill_name: str) -> dict[str, str]:
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
@@ -413,6 +420,14 @@ async def import_metrics_csv(request: Request, filename: str = "metrics.csv", ro
 @app.get("/api/v1/tools")
 def tools_catalog() -> list[dict[str, str]]:
     return catalog()
+
+
+@app.get("/api/v1/tools/history")
+def tools_history(role: str = "viewer", limit: int = 8) -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无工具调用记录查看权限。")
+    actions = {"tool_invoked", "tool_approval_requested", "tool_access_denied"}
+    return [event for event in list_audit(limit=200) if event["action"] in actions][:min(max(limit, 1), 30)]
 
 
 @app.post("/api/v1/tools/{tool_name}/invoke")

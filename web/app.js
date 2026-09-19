@@ -9,6 +9,8 @@ let approvalOffset = 0;
 let knowledgeOffset = 0;
 let chatConversationId = "";
 let chatConversations = [];
+let allSkills = [];
+let allTools = [];
 const recordPageSize = 10;
 const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
@@ -284,18 +286,37 @@ async function loadAudit() {
   } catch { target.innerHTML = "<div class='empty-state'><strong>无法加载审计记录</strong></div>"; }
 }
 
-async function loadSkills() {
+function renderSkills() {
   const target = $("#skills-list");
-  try {
-    const skills = await (await fetch("/api/v1/skills")).json();
-    target.innerHTML = skills.map((skill, index) => {
+  const kind = $("#skill-filter").value;
+  const risk = $("#skill-risk-filter").value;
+  const skills = allSkills.filter((skill) => (!kind || (kind === "runnable" ? skill.runnable : !skill.runnable)) && (!risk || skill.risk === risk));
+  $("#skill-count-note").textContent = "显示 " + skills.length + " / " + allSkills.length + " 个能力";
+  target.innerHTML = skills.length ? skills.map((skill, index) => {
       const suggestions = (skill.suggestions || []).map((item) => '<button class="skill-suggestion" data-run-skill="' + escapeHtml(skill.name) + '" data-skill-input="' + escapeHtml(item) + '">' + escapeHtml(item) + '</button>').join("");
       const run = skill.runnable ? '<button class="primary-button skill-run" data-run-skill="' + escapeHtml(skill.name) + '">运行 Skill ↗</button>' : '<span class="skill-tag">规范型能力</span>';
       return `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><span class="skill-risk ${escapeHtml(skill.risk || "auto")}">${escapeHtml((skill.category || "通用") + " · " + (skill.risk || "auto").toUpperCase())}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维领域能力")}</p><div class="skill-suggestions">${suggestions}</div><div class="skill-actions"><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看完整 SOP</button>${run}</div></article>`;
-    }).join("");
-    document.querySelectorAll("[data-skill]").forEach((button) => button.addEventListener("click", () => viewSkill(button.dataset.skill)));
-    document.querySelectorAll("[data-run-skill]").forEach((button) => button.addEventListener("click", () => runSkill(button.dataset.runSkill, button.dataset.skillInput || "")));
-  } catch { target.innerHTML = "<p>加载 Skills 失败。</p>"; }
+  }).join("") : "<div class='empty-state'><strong>没有符合筛选条件的 Skill</strong><p>调整类型或风险筛选后重试。</p></div>";
+  document.querySelectorAll("[data-skill]").forEach((button) => button.addEventListener("click", () => viewSkill(button.dataset.skill)));
+  document.querySelectorAll("[data-run-skill]").forEach((button) => button.addEventListener("click", () => runSkill(button.dataset.runSkill, button.dataset.skillInput || "")));
+}
+
+function renderSkillHistory(rows) {
+  $("#skill-history-list").innerHTML = rows.length ? rows.map((row) => '<div><strong>' + escapeHtml(row.payload.skill || "未知 Skill") + '</strong><span>' + escapeHtml(row.payload.input || "未填写业务上下文") + '</span><em>' + escapeHtml(row.payload.status || "—") + ' · ' + new Date(row.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</em></div>').join("") : "<div class='empty-state'><strong>暂未运行过 Skill</strong><p>选择一个可运行 Skill 后，记录会显示在这里。</p></div>";
+}
+
+async function loadSkillHistory() {
+  try {
+    const response = await fetch("/api/v1/skills/history?role=" + encodeURIComponent(currentRole())); const rows = await response.json();
+    if (!response.ok) throw new Error(rows.detail || "加载失败"); renderSkillHistory(rows);
+  } catch { $("#skill-history-list").innerHTML = "<div class='empty-state'><strong>无法加载 Skill 运行记录</strong></div>"; }
+}
+
+async function loadSkills() {
+  try {
+    const response = await fetch("/api/v1/skills"); allSkills = await response.json();
+    if (!response.ok) throw new Error("加载失败"); renderSkills(); loadSkillHistory();
+  } catch { $("#skills-list").innerHTML = "<p>加载 Skills 失败。</p>"; }
 }
 
 async function viewSkill(name) {
@@ -306,15 +327,21 @@ async function viewSkill(name) {
   } catch { toast("无法读取 Skill 内容"); }
 }
 
-async function runSkill(name, suggestedInput) {
-  const input = prompt("输入本次 Skill 的业务上下文", suggestedInput || "") ?? "";
+function runSkill(name, suggestedInput) {
+  activeAuditAction = "skill";
+  activeSkillRun = { name, suggestedInput: suggestedInput || "" };
+  renderAuditAction("运行 " + name, "SKILL RUNTIME", '<p class="modal-lead">填写本次业务上下文后，Skill 会执行其注册的只读诊断流程，并将输入摘要、结果状态写入审计记录。</p><label class="action-field">业务上下文<textarea id="skill-run-input" maxlength="500" placeholder="例如：华东 P1 网关离线，影响支付链路">' + escapeHtml(suggestedInput || "") + '</textarea></label><div class="action-callout"><strong>安全边界</strong><span>Skill 只读取授权数据并输出建议，不会关闭告警、创建工单、修改数据库或直接执行命令。</span></div>', "运行 Skill");
+  setAuditActionVisible(true);
+}
+
+async function executeSkill(name, input) {
   try {
     const response = await fetch("/api/v1/skills/" + encodeURIComponent(name) + "/run", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", user_input:input }) });
     const result = await response.json(); if (!response.ok) throw new Error(result.detail || "Skill 运行失败");
     const steps = (result.next_steps || []).map((item) => "- " + item).join("\n");
     $("#skill-content").textContent = "# " + name + " 运行结果\n\n状态：" + result.status + "\n风险：" + result.risk + "\n\n## 结论\n" + result.summary + "\n\n## 下一步\n" + (steps || "无") + "\n\n## 结构化数据\n" + JSON.stringify(result.data, null, 2);
     $("#skill-detail").hidden = false; $("#skill-detail").scrollIntoView({ behavior:"smooth", block:"start" });
-    toast(name + " 运行完成"); loadAudit();
+    toast(name + " 运行完成"); loadAudit(); loadSkillHistory();
   } catch (error) { toast(error.message || "Skill 运行失败"); }
 }
 
@@ -392,6 +419,7 @@ async function loadMetrics() {
 }
 
 let activeAuditAction = "";
+let activeSkillRun = null;
 
 function setAuditActionVisible(visible) {
   const modal = $("#audit-action-modal");
@@ -544,6 +572,12 @@ $("#confirm-audit-action").addEventListener("click", async () => {
     setAuditActionVisible(false);
     runEvaluation(scope, caseIds);
   }
+  if (activeAuditAction === "skill" && activeSkillRun) {
+    const skill = activeSkillRun;
+    const input = $("#skill-run-input").value.trim();
+    setAuditActionVisible(false);
+    executeSkill(skill.name, input);
+  }
 });
 $("#refresh-audit").addEventListener("click", () => { auditOffset = 0; loadAudit(); });
 $("#prev-audit").addEventListener("click", () => { auditOffset = Math.max(0, auditOffset - recordPageSize); loadAudit(); });
@@ -559,6 +593,12 @@ $("#prev-knowledge").addEventListener("click", () => { knowledgeOffset = Math.ma
 $("#next-knowledge").addEventListener("click", () => { knowledgeOffset += knowledgePageSize; loadKnowledge(); });
 $("#search-knowledge").addEventListener("click", searchKnowledge);
 $("#reindex-knowledge").addEventListener("click", reindexKnowledge);
+$("#skill-filter").addEventListener("change", renderSkills);
+$("#skill-risk-filter").addEventListener("change", renderSkills);
+$("#refresh-skill-history").addEventListener("click", loadSkillHistory);
+$("#tool-category-filter").addEventListener("change", renderTools);
+$("#tool-risk-filter").addEventListener("change", renderTools);
+$("#refresh-tool-history").addEventListener("click", loadToolHistory);
 $("#refresh-approvals").addEventListener("click", () => { approvalOffset = 0; loadApprovals(); });
 $("#prev-approvals").addEventListener("click", () => { approvalOffset = Math.max(0, approvalOffset - recordPageSize); loadApprovals(); });
 $("#next-approvals").addEventListener("click", () => { approvalOffset += recordPageSize; loadApprovals(); });
@@ -568,7 +608,7 @@ $("#refresh-metrics").addEventListener("click", () => { $("#metric-keyword").val
 $("#download-metric-template").addEventListener("click", () => { window.location.href = "/api/v1/metrics/import-template"; });
 $("#upload-metric-csv").addEventListener("click", importMetricCsv);
 $("#analyze-metric").addEventListener("click", () => { if (!selectedMetric) return; document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = "查询指标 #" + selectedMetric.id + " 近24小时趋势"; runQuery(); });
-$("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); updateMetricImportAccess(); if ($("#data-page").classList.contains("active-page")) loadDataExplorer(); if ($("#metrics-page").classList.contains("active-page")) loadMetricCatalog(); });
+$("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); updateMetricImportAccess(); if ($("#data-page").classList.contains("active-page")) loadDataExplorer(); if ($("#metrics-page").classList.contains("active-page")) loadMetricCatalog(); if ($("#skills-page").classList.contains("active-page")) loadSkills(); if ($("#tools-page").classList.contains("active-page")) loadTools(); });
 $("#save-knowledge").addEventListener("click", saveKnowledge);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
@@ -752,14 +792,40 @@ async function loadDataTable() {
   } catch (error) { $("#data-table-wrap").innerHTML = '<div class="empty-state"><strong>无法加载表数据</strong><p>' + escapeHtml(error.message || "请求失败") + '</p></div>'; }
 }
 
-function renderTools(tools) {
+function renderTools() {
   const target = $("#tool-list");
+  const category = $("#tool-category-filter").value;
+  const risk = $("#tool-risk-filter").value;
+  const tools = allTools.filter((tool) => (!category || tool.category === category) && (!risk || tool.risk === risk));
+  $("#tool-count-note").textContent = "显示 " + tools.length + " / " + allTools.length + " 个工具";
   target.innerHTML = tools.map((tool) => '<article class="card tool-card"><span class="risk ' + escapeHtml(tool.risk) + '">' + escapeHtml(tool.risk.toUpperCase()) + '</span><p class="section-label">' + escapeHtml(tool.category) + '</p><h3>' + escapeHtml(tool.name) + '</h3><p>' + escapeHtml(tool.description) + '</p><button class="text-button" data-tool="' + escapeHtml(tool.name) + '">试运行工具</button></article>').join("");
   document.querySelectorAll("[data-tool]").forEach((button) => button.addEventListener("click", () => invokeTool(button.dataset.tool, button)));
 }
 
+function renderToolSummary() {
+  const count = (risk) => allTools.filter((tool) => tool.risk === risk).length;
+  $("#tool-summary").innerHTML = '<article><strong>' + allTools.length + '</strong><span>已注册能力</span></article><article><strong>' + count("auto") + '</strong><span>AUTO 只读工具</span></article><article><strong>' + count("manual") + '</strong><span>MANUAL 审批工具</span></article><article><strong>' + count("blocked") + '</strong><span>BLOCKED 防护规则</span></article>';
+}
+
+function renderToolHistory(rows) {
+  $("#tool-history-list").innerHTML = rows.length ? rows.map((row) => '<div><strong>' + escapeHtml(row.payload.tool || "未知工具") + '</strong><span>' + escapeHtml(row.action === "tool_invoked" ? "已完成只读调用" : row.action === "tool_approval_requested" ? "已创建人工审批" : "调用被权限策略拒绝") + '</span><em>' + new Date(row.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</em></div>').join("") : "<div class='empty-state'><strong>暂未调用过工具</strong><p>从上方选择白名单能力进行试运行。</p></div>";
+}
+
+async function loadToolHistory() {
+  try {
+    const response = await fetch("/api/v1/tools/history?role=" + encodeURIComponent(currentRole())); const rows = await response.json();
+    if (!response.ok) throw new Error(rows.detail || "加载失败"); renderToolHistory(rows);
+  } catch { $("#tool-history-list").innerHTML = "<div class='empty-state'><strong>无法加载工具调用记录</strong></div>"; }
+}
+
 async function loadTools() {
-  try { renderTools(await (await fetch("/api/v1/tools")).json()); } catch { $("#tool-list").innerHTML = '<div class="empty-state"><strong>工具中心加载失败</strong></div>'; }
+  try {
+    const response = await fetch("/api/v1/tools"); allTools = await response.json();
+    if (!response.ok) throw new Error("加载失败");
+    const categories = [...new Set(allTools.map((tool) => tool.category))];
+    $("#tool-category-filter").innerHTML = '<option value="">全部分类</option>' + categories.map((item) => '<option value="' + escapeHtml(item) + '">' + escapeHtml(item) + '</option>').join("");
+    renderToolSummary(); renderTools(); loadToolHistory();
+  } catch { $("#tool-list").innerHTML = '<div class="empty-state"><strong>工具中心加载失败</strong></div>'; }
 }
 
 async function invokeTool(name, button) {
@@ -775,7 +841,7 @@ async function invokeTool(name, button) {
     } else {
       toast("工具调用状态：" + result.status);
     }
-    loadAudit();
+    loadAudit(); loadToolHistory();
   } catch (error) {
     const box = $("#tool-result"); box.hidden = false;
     box.textContent = "工具调用失败：" + (error.message || "未知错误");

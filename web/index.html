@@ -106,7 +106,9 @@
       <section id="skills-page" class="page">
         <div class="section-intro"><span class="pill">REUSABLE EXPERIENCE</span><button class="page-help-button" data-guide="skills">使用说明 ?</button><h2>让 SOP 成为 Agent 的可复用能力。</h2><p>每个 Skill 都声明了业务场景、风险等级、推荐输入与结构化输出；可试运行的 Skill 全程只读并写入审计。</p></div>
         <article id="skill-detail" class="card skill-detail" hidden><button id="close-skill-detail" class="text-button">关闭</button><pre id="skill-content"></pre></article>
+        <div class="capability-toolbar"><label>筛选类型<select id="skill-filter"><option value="">全部 Skill</option><option value="runnable">可运行</option><option value="sop">规范型 SOP</option></select></label><label>风险等级<select id="skill-risk-filter"><option value="">全部风险</option><option value="auto">AUTO 只读</option><option value="manual">MANUAL 审查</option></select></label><span id="skill-count-note">—</span></div>
         <div id="skills-list" class="skill-grid"></div>
+        <article class="card capability-history"><div class="card-heading"><div><p class="section-label">SKILL RUN HISTORY</p><h3>最近运行记录</h3></div><button id="refresh-skill-history" class="text-button">刷新</button></div><div id="skill-history-list" class="capability-history-list"></div></article>
       </section>
 
       <section id="knowledge-page" class="page">
@@ -154,8 +156,11 @@
 
       <section id="tools-page" class="page">
         <div class="section-intro"><div class="tools-intro-actions"><span class="pill">TOOL / FUNCTION CALLING</span><button id="show-tool-help" class="tool-help-button page-help-button" data-guide="tools">使用说明 ?</button></div><h2>Agent 只能调用被注册和授权的工具。</h2><p>工具按风险分级。只读工具可直接试运行；变更工具必须进入审批；高危维护工具会被拒绝。</p></div>
+        <div id="tool-summary" class="capability-summary"></div>
+        <div class="capability-toolbar"><label>工具分类<select id="tool-category-filter"><option value="">全部分类</option></select></label><label>风险等级<select id="tool-risk-filter"><option value="">全部风险</option><option value="auto">AUTO 只读</option><option value="manual">MANUAL 审批</option><option value="blocked">BLOCKED 拦截</option></select></label><span id="tool-count-note">—</span></div>
         <div id="tool-result" class="tool-result" hidden></div>
         <div id="tool-list" class="tool-grid"></div>
+        <article class="card capability-history"><div class="card-heading"><div><p class="section-label">TOOL ACTIVITY</p><h3>最近工具调用</h3></div><button id="refresh-tool-history" class="text-button">刷新</button></div><div id="tool-history-list" class="capability-history-list"></div></article>
       </section>
     </main>
   </div>
@@ -172,6 +177,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-knowledge-pagination"></script>
+  <script src="/static/app.js?v=20260919-capability-center-v2"></script>
 </body>
 </html>
