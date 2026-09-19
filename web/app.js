@@ -8,6 +8,8 @@ let auditOffset = 0;
 let approvalOffset = 0;
 let approvalStatus = "";
 let knowledgeOffset = 0;
+let editingKnowledgeId = null;
+let knowledgeRecordCache = new Map();
 let chatConversationId = "";
 let chatConversations = [];
 let allSkills = [];
@@ -354,9 +356,12 @@ async function executeSkill(name, input) {
 
 function renderKnowledge(documents, total) {
   const target = $("#knowledge-list");
-  target.innerHTML = documents.length ? documents.map((document) => `<article class="knowledge-item"><button class="text-button knowledge-delete" data-delete-knowledge="${document.id}">删除</button><button class="text-button knowledge-chunks" data-knowledge-chunks="${document.id}">分块</button><strong>${escapeHtml(document.title)} <em class="knowledge-status ${document.status}">${document.status === "expired" ? "已过期" : "有效"}</em></strong><small>版本 v${document.version} · 更新于 ${new Date(document.updated_at).toLocaleDateString("zh-CN")}${document.expires_at ? " · 有效至 " + document.expires_at : ""}</small><p class="knowledge-content-preview">${escapeHtml(document.content)}</p>${document.content.length > 180 ? '<button class="text-button knowledge-expand" data-knowledge-expand>展开全文 ↓</button>' : ""}<div>${String(document.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
+  knowledgeRecordCache = new Map(documents.map((item) => [String(item.id), item]));
+  target.innerHTML = documents.length ? documents.map((item) => { const statusLabel = item.status === "expired" ? "已过期" : item.status === "expiring" ? "7天内过期" : "有效"; const expiryHint = item.expires_in_days !== null && item.expires_in_days !== undefined && item.status !== "expired" ? " · " + (item.status === "expiring" ? "即将过期" : "剩余 " + item.expires_in_days + " 天") : ""; return `<article class="knowledge-item"><div class="knowledge-item-actions"><button class="text-button" data-edit-knowledge="${item.id}">编辑</button><button class="text-button knowledge-versions" data-knowledge-versions="${item.id}">版本</button><button class="text-button knowledge-chunks" data-knowledge-chunks="${item.id}">分块</button><button class="text-button knowledge-delete" data-delete-knowledge="${item.id}">删除</button></div><strong>${escapeHtml(item.title)} <em class="knowledge-status ${item.status}">${statusLabel}</em></strong><small>版本 v${item.version} · 更新于 ${new Date(item.updated_at).toLocaleDateString("zh-CN")}${item.expires_at ? " · 有效至 " + item.expires_at + expiryHint : ""}</small>${item.status === "expiring" ? '<div class="knowledge-expiry-warning">⚠ 文档即将过期，建议编辑后延长有效期。</div>' : item.status === "expired" ? '<div class="knowledge-expiry-warning expired">⚠ 文档已过期，不会参与 RAG 检索。</div>' : ""}<p class="knowledge-content-preview">${escapeHtml(item.content)}</p>${item.content.length > 180 ? '<button class="text-button knowledge-expand" data-knowledge-expand>展开全文 ↓</button>' : ""}<div>${String(item.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`; }).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
   document.querySelectorAll("[data-delete-knowledge]").forEach((button) => button.addEventListener("click", () => deleteKnowledge(button.dataset.deleteKnowledge)));
   document.querySelectorAll("[data-knowledge-chunks]").forEach((button) => button.addEventListener("click", () => showKnowledgeChunks(button.dataset.knowledgeChunks)));
+  document.querySelectorAll("[data-edit-knowledge]").forEach((button) => button.addEventListener("click", () => startKnowledgeEdit(button.dataset.editKnowledge)));
+  document.querySelectorAll("[data-knowledge-versions]").forEach((button) => button.addEventListener("click", () => showKnowledgeVersions(button.dataset.knowledgeVersions)));
   document.querySelectorAll("[data-knowledge-expand]").forEach((button) => button.addEventListener("click", () => { const preview = button.previousElementSibling; const expanded = preview.classList.toggle("expanded"); button.textContent = expanded ? "收起全文 ↑" : "展开全文 ↓"; }));
   const page = total ? Math.floor(knowledgeOffset / knowledgePageSize) + 1 : 1;
   const pages = Math.max(1, Math.ceil(total / knowledgePageSize));
@@ -397,15 +402,51 @@ async function showKnowledgeChunks(documentId) {
   } catch (error) { toast(error.message || "无法加载文档分块"); }
 }
 
+async function showKnowledgeVersions(documentId) {
+  try {
+    const response = await fetch("/api/v1/knowledge/" + documentId + "/versions?role=" + encodeURIComponent(currentRole())); const versions = await response.json();
+    if (!response.ok) throw new Error(versions.detail || "版本加载失败");
+    const versionMap = new Map(versions.map((item) => [String(item.version), item]));
+    const options = versions.map((item) => `<option value="${item.version}">v${item.version} · ${new Date(item.created_at).toLocaleString("zh-CN", {hour12:false})}</option>`).join("");
+    const compareFrom = versions[1]?.version || versions[0]?.version || ""; const compareTo = versions[0]?.version || "";
+    renderAuditAction("文档版本历史", "VERSION CONTROL", `<p class="modal-lead">共 ${versions.length} 个版本。编辑和回滚都会生成新版本，历史内容不会被覆盖。</p><label class="action-field">对比基准版本<select id="knowledge-version-from">${options}</select></label><label class="action-field">对比目标版本<select id="knowledge-version-to">${options}</select></label><div id="knowledge-version-diff" class="knowledge-version-diff"></div><label class="action-field">回滚目标版本<select id="knowledge-rollback-target">${options}</select></label>`, versions.length ? "回滚到选中版本" : "关闭");
+    $("#knowledge-version-from").value = String(compareFrom); $("#knowledge-version-to").value = String(compareTo); $("#knowledge-rollback-target").value = String(compareTo);
+    const renderDiff = () => { const from = versionMap.get($("#knowledge-version-from").value); const to = versionMap.get($("#knowledge-version-to").value); if (!from || !to) return; const oldLines = from.content.split(/\r?\n/); const newLines = to.content.split(/\r?\n/); const same = from.title === to.title && from.tags === to.tags && from.content === to.content; $("#knowledge-version-diff").innerHTML = same ? "<strong>两个版本内容一致。</strong>" : '<strong>版本差异预览</strong><pre>' + (from.title !== to.title ? "- 标题：" + escapeHtml(from.title) + "\n+ 标题：" + escapeHtml(to.title) + "\n" : "") + (from.tags !== to.tags ? "- 标签：" + escapeHtml(from.tags) + "\n+ 标签：" + escapeHtml(to.tags) + "\n" : "") + oldLines.map((line) => "- " + escapeHtml(line)).join("\n") + "\n" + newLines.map((line) => "+ " + escapeHtml(line)).join("\n") + "</pre>"; };
+    $("#knowledge-version-from").addEventListener("change", renderDiff); $("#knowledge-version-to").addEventListener("change", renderDiff); renderDiff();
+    $("#confirm-audit-action").onclick = () => rollbackKnowledge(documentId, Number($("#knowledge-rollback-target").value)); setAuditActionVisible(true);
+  } catch (error) { toast(error.message || "无法加载文档版本"); }
+}
+
+async function rollbackKnowledge(documentId, version) {
+  if (!confirm("确认回滚到 v" + version + "？系统会创建一条新的版本记录，当前版本仍会保留。")) return;
+  try { const response = await fetch("/api/v1/knowledge/" + documentId + "/rollback/" + version, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({role:currentRole(), requester:"Lenovo"})}); const result = await response.json(); if (!response.ok) throw new Error(result.detail || "回滚失败"); setAuditActionVisible(false); toast("已回滚，并生成 v" + result.version); loadKnowledge(); loadAudit(); } catch (error) { toast(error.message || "回滚失败"); }
+}
+
+function startKnowledgeEdit(documentId) {
+  const item = knowledgeRecordCache.get(String(documentId)); if (!item) return toast("当前文档不在页面缓存中，请刷新后重试");
+  editingKnowledgeId = Number(documentId); $("#knowledge-form-title").textContent = "编辑运维知识 · 当前 v" + item.version; $("#knowledge-title").value = item.title; $("#knowledge-tags").value = item.tags; $("#knowledge-expires-at").value = item.expires_at || ""; $("#knowledge-content").value = item.content; $("#save-knowledge").innerHTML = "保存新版本 <span>↗</span>"; $("#cancel-edit-knowledge").hidden = false; $("#knowledge-title").scrollIntoView({behavior:"smooth", block:"center"});
+}
+
+function cancelKnowledgeEdit() {
+  editingKnowledgeId = null; $("#knowledge-form-title").textContent = "新增运维知识"; $("#knowledge-title").value = ""; $("#knowledge-tags").value = ""; $("#knowledge-expires-at").value = ""; $("#knowledge-content").value = ""; $("#knowledge-file").value = ""; $("#save-knowledge").innerHTML = "保存并纳入 RAG <span>↗</span>"; $("#cancel-edit-knowledge").hidden = true;
+}
+
+async function uploadKnowledge() {
+  const file = $("#knowledge-file").files[0]; if (!file) return toast("请先选择 .txt 或 .md 文件");
+  const suffix = file.name.toLowerCase().slice(file.name.lastIndexOf(".")); if (![".txt", ".md"].includes(suffix)) return toast("目前仅支持 .txt 或 .md 文档");
+  const content = await file.text(); const title = $("#knowledge-title").value.trim() || file.name.replace(/\.(txt|md)$/i, ""); const button = $("#upload-knowledge"); button.disabled = true; button.textContent = "上传中…";
+  try { const response = await fetch("/api/v1/knowledge/upload", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({filename:file.name, title, tags:$("#knowledge-tags").value.trim() || "未分类", expires_at:$("#knowledge-expires-at").value, content, role:currentRole(), requester:"Lenovo"})}); const result = await response.json(); if (!response.ok) throw new Error(result.detail || "上传失败"); cancelKnowledgeEdit(); knowledgeOffset = 0; toast("文档已上传为 v" + result.version + "，并完成 RAG 索引"); loadKnowledge(); loadAudit(); loadMetrics(); } catch (error) { toast(error.message || "上传失败"); } finally { button.disabled = false; button.textContent = "读取并上传文档"; }
+}
+
 async function saveKnowledge() {
   const title = $("#knowledge-title").value.trim(); const tags = $("#knowledge-tags").value.trim() || "未分类"; const content = $("#knowledge-content").value.trim(); const expires_at = $("#knowledge-expires-at").value;
   if (title.length < 2 || content.length < 10) return toast("标题至少 2 个字符，正文至少 10 个字符");
   const button = $("#save-knowledge"); button.disabled = true; button.textContent = "保存中…";
   try {
-    const response = await fetch("/api/v1/knowledge", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content, expires_at, role:currentRole(), requester:"Lenovo" }) });
+    const editingId = editingKnowledgeId; const url = editingId ? "/api/v1/knowledge/" + editingId : "/api/v1/knowledge"; const method = editingId ? "PUT" : "POST";
+    const response = await fetch(url, { method, headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content, expires_at, role:currentRole(), requester:"Lenovo" }) });
     const document = await response.json(); if (!response.ok) throw new Error(document.detail || "保存失败");
-    $("#knowledge-title").value = ""; $("#knowledge-tags").value = ""; $("#knowledge-expires-at").value = ""; $("#knowledge-content").value = "";
-    knowledgeOffset = 0; toast(`“${document.title}” 已纳入 RAG`); loadKnowledge(); loadMetrics();
+    cancelKnowledgeEdit(); knowledgeOffset = 0; toast(editingId ? `“${document.title}” 已保存为 v${document.version}` : `“${document.title}” 已纳入 RAG`); loadKnowledge(); loadAudit(); loadMetrics();
   } catch (error) { toast(error.message || "保存失败"); }
   finally { button.disabled = false; button.innerHTML = "保存并纳入 RAG <span>↗</span>"; }
 }
@@ -643,6 +684,8 @@ $("#upload-metric-csv").addEventListener("click", importMetricCsv);
 $("#analyze-metric").addEventListener("click", () => { if (!selectedMetric) return; document.querySelector('.nav-item[data-page="agent"]').click(); $("#question").value = "查询指标 #" + selectedMetric.id + " 近24小时趋势"; runQuery(); });
 $("#role-selector").addEventListener("change", () => { const label = $("#role-selector").selectedOptions[0].textContent; $("#role-label").textContent = label; toast("当前角色已切换为：" + label); loadPolicies(); updateMetricImportAccess(); if ($("#data-page").classList.contains("active-page")) loadDataExplorer(); if ($("#metrics-page").classList.contains("active-page")) loadMetricCatalog(); if ($("#skills-page").classList.contains("active-page")) loadSkills(); if ($("#tools-page").classList.contains("active-page")) loadTools(); });
 $("#save-knowledge").addEventListener("click", saveKnowledge);
+$("#upload-knowledge").addEventListener("click", uploadKnowledge);
+$("#cancel-edit-knowledge").addEventListener("click", cancelKnowledgeEdit);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
 $("#show-system-info").addEventListener("click", async () => { try { const metric = await (await fetch("/api/v1/metrics")).json(); toast("LLM：" + (metric.llm_enabled ? "已配置" : "离线规则模式") + "；审批写库：" + (metric.approved_writes_enabled ? "已开启" : "安全关闭")); } catch { toast("无法读取运行配置"); } });

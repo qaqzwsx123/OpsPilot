@@ -754,6 +754,7 @@ def _knowledge_where(tag: str = "", status: str = "") -> tuple[str, list[str]]:
         clauses.append("tags LIKE ?"); params.append("%" + tag + "%")
     if status == "active": clauses.append("(expires_at IS NULL OR expires_at >= date('now'))")
     if status == "expired": clauses.append("expires_at IS NOT NULL AND expires_at < date('now')")
+    if status == "expiring": clauses.append("expires_at IS NOT NULL AND expires_at >= date('now') AND expires_at <= date('now', '+7 day')")
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
@@ -761,7 +762,11 @@ def list_knowledge_documents(limit: int = 100, offset: int = 0, tag: str = "", s
     with connect() as conn:
         where, params = _knowledge_where(tag, status)
         rows = conn.execute(
-            "SELECT id, title, content, tags, version, updated_at, expires_at, CASE WHEN expires_at IS NOT NULL AND expires_at < date('now') THEN 'expired' ELSE 'active' END AS status FROM knowledge_documents" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", (*params, limit, offset)
+            "SELECT id, title, content, tags, version, updated_at, expires_at, "
+            "CASE WHEN expires_at IS NOT NULL AND expires_at < date('now') THEN 'expired' "
+            "WHEN expires_at IS NOT NULL AND expires_at <= date('now', '+7 day') THEN 'expiring' ELSE 'active' END AS status, "
+            "CASE WHEN expires_at IS NULL THEN NULL ELSE CAST(julianday(expires_at) - julianday('now') AS INTEGER) END AS expires_in_days "
+            "FROM knowledge_documents" + where + " ORDER BY id DESC LIMIT ? OFFSET ?", (*params, limit, offset)
         ).fetchall()
     return [dict(row) for row in rows]
 
@@ -779,6 +784,47 @@ def add_knowledge_document(title: str, content: str, tags: str, expires_at: str 
     document = dict(row)
     index_knowledge_document(document["id"])
     return document
+
+
+def update_knowledge_document(document_id: int, title: str, content: str, tags: str, expires_at: str | None = None) -> dict[str, Any] | None:
+    now = utc_now()
+    with connect() as conn:
+        current = conn.execute("SELECT * FROM knowledge_documents WHERE id = ?", (document_id,)).fetchone()
+        if current is None:
+            return None
+        next_version = int(current["version"]) + 1
+        conn.execute(
+            "UPDATE knowledge_documents SET title = ?, content = ?, tags = ?, version = ?, updated_at = ?, expires_at = ? WHERE id = ?",
+            (title.strip(), content, tags.strip() or "未分类", next_version, now, expires_at or None, document_id),
+        )
+        conn.execute(
+            "INSERT INTO knowledge_versions (document_id, version, title, content, tags, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (document_id, next_version, title.strip(), content, tags.strip() or "未分类", now),
+        )
+        row = conn.execute(
+            "SELECT id, title, content, tags, version, updated_at, expires_at, 'active' AS status FROM knowledge_documents WHERE id = ?", (document_id,)
+        ).fetchone()
+    document = dict(row)
+    index_knowledge_document(document_id)
+    return document
+
+
+def list_knowledge_versions(document_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, document_id, version, title, content, tags, created_at FROM knowledge_versions WHERE document_id = ? ORDER BY version DESC",
+            (document_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def rollback_knowledge_document(document_id: int, version: int) -> dict[str, Any] | None:
+    with connect() as conn:
+        selected = conn.execute("SELECT title, content, tags FROM knowledge_versions WHERE document_id = ? AND version = ?", (document_id, version)).fetchone()
+        current = conn.execute("SELECT expires_at FROM knowledge_documents WHERE id = ?", (document_id,)).fetchone()
+    if selected is None or current is None:
+        return None
+    return update_knowledge_document(document_id, selected["title"], selected["content"], selected["tags"], current["expires_at"])
 
 
 def delete_knowledge_document(document_id: int) -> bool:

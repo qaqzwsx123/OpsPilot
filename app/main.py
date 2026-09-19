@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_knowledge_versions, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, rollback_knowledge_document, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, update_knowledge_document, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
@@ -53,6 +53,11 @@ class KnowledgeDocumentRequest(BaseModel):
     expires_at: str = Field(default="", max_length=10)
     role: str = Field(default="operator", min_length=1, max_length=32)
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
+
+
+class KnowledgeUploadRequest(KnowledgeDocumentRequest):
+    content: str = Field(min_length=10, max_length=100000)
+    filename: str = Field(min_length=1, max_length=180)
 
 
 class MutationActorRequest(BaseModel):
@@ -379,6 +384,13 @@ def knowledge_document_chunks(document_id: int, role: str = "viewer") -> list[di
     return document_chunks(document_id)
 
 
+@app.get("/api/v1/knowledge/{document_id}/versions")
+def knowledge_document_versions(document_id: int, role: str = "viewer") -> list[dict]:
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库版本查看权限。")
+    return list_knowledge_versions(document_id)
+
+
 @app.get("/api/v1/knowledge/search")
 def search_knowledge(query: str, limit: int = 3, role: str = "viewer") -> list[dict]:
     if not permitted(role, "rag"):
@@ -410,6 +422,40 @@ def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     document = add_knowledge_document(request.title, request.content, request.tags, request.expires_at)
     write_audit(request.requester, "knowledge_created", {"document_id": document["id"], "title": document["title"], "role": request.role})
+    return document
+
+
+@app.post("/api/v1/knowledge/upload", status_code=201)
+def upload_knowledge(request: KnowledgeUploadRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
+    suffix = Path(request.filename).suffix.lower()
+    if suffix not in {".txt", ".md"}:
+        raise HTTPException(status_code=400, detail="目前仅支持上传 .txt 或 .md 文档。")
+    document = add_knowledge_document(request.title, request.content, request.tags, request.expires_at)
+    write_audit(request.requester, "knowledge_uploaded", {"document_id": document["id"], "filename": request.filename, "role": request.role})
+    return document
+
+
+@app.put("/api/v1/knowledge/{document_id}")
+def edit_knowledge(document_id: int, request: KnowledgeDocumentRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
+    document = update_knowledge_document(document_id, request.title, request.content, request.tags, request.expires_at)
+    if document is None:
+        raise HTTPException(status_code=404, detail="知识文档不存在")
+    write_audit(request.requester, "knowledge_updated", {"document_id": document_id, "version": document["version"], "role": request.role})
+    return document
+
+
+@app.post("/api/v1/knowledge/{document_id}/rollback/{version}")
+def rollback_knowledge(document_id: int, version: int, request: MutationActorRequest) -> dict:
+    if not permitted(request.role, "request_change"):
+        raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
+    document = rollback_knowledge_document(document_id, version)
+    if document is None:
+        raise HTTPException(status_code=404, detail="目标版本或知识文档不存在")
+    write_audit(request.requester, "knowledge_rolled_back", {"document_id": document_id, "source_version": version, "new_version": document["version"], "role": request.role})
     return document
 
 
