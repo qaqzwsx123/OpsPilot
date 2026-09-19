@@ -156,6 +156,46 @@ def chat_turn(conversation_id: str, request: ChatTurnRequest) -> dict:
     return {"conversation_id": conversation_id, "message": message, "provider": provider}
 
 
+@app.post("/api/v1/chat/conversations/{conversation_id}/messages/stream")
+def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> StreamingResponse:
+    """Stream planning stages and model deltas, then persist the completed assistant turn."""
+    if not permitted(request.role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
+    if add_chat_message(conversation_id, request.requester, "user", request.content) is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+    history = get_chat_messages(conversation_id, request.requester)
+    if history is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+    messages = [{"role": item["role"], "content": item["content"]} for item in history]
+    plan = chat_service.plan_turn(request.content, messages)
+
+    def event_stream() -> Iterator[str]:
+        def emit(name: str, payload: dict) -> str:
+            return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        yield emit("stage", {"stage": "context", "message": f"已加载最近 {plan['context_messages']} 条会话消息"})
+        yield emit("stage", {"stage": "plan", "message": plan["route"], "steps": plan["steps"]})
+        chunks: list[str] = []
+        provider = "fallback"
+        try:
+            for item in chat_service.stream_reply(messages, plan):
+                provider = item.get("provider", provider)
+                if item.get("type") == "token":
+                    chunks.append(item["content"])
+                    yield emit("token", {"content": item["content"], "provider": provider})
+            content = "".join(chunks)
+            message = add_chat_message(conversation_id, request.requester, "assistant", content)
+            write_audit(request.requester, "agent_chat_stream_completed", {
+                "conversation_id": conversation_id, "provider": provider, "role": request.role,
+                "context_messages": plan["context_messages"], "route": plan["route"],
+            })
+            yield emit("done", {"conversation_id": conversation_id, "provider": provider, "message": message, "plan": plan})
+        except Exception as exc:  # keep the browser informed if the stream fails after it starts
+            yield emit("error", {"message": "流式聊天失败：" + str(exc)[:180]})
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.post("/api/v1/query")
 def query(request: QueryRequest) -> dict:
     return workflow.run(request.question, request.requester, request.role).to_dict()

@@ -94,7 +94,7 @@
         <div class="section-intro"><span class="pill">LOCAL DEEPSEEK CHAT</span><button class="page-help-button" data-guide="chat">使用说明 ?</button><h2>Agent 聊天</h2><p>与本地部署的 DeepSeek 对话；聊天记录保存在本地 SQLite。聊天只提供讨论与建议，不会直接执行 SQL、工具或变更。</p></div>
         <div class="chat-layout">
           <aside class="card chat-conversation-panel"><button id="new-chat" class="primary-button">＋ 新建对话</button><div class="chat-panel-heading"><span>历史会话</span><small id="chat-count">—</small></div><div id="chat-conversation-list" class="chat-conversation-list"></div></aside>
-          <article class="card chat-main-panel"><div class="card-heading chat-heading"><div><p class="section-label">AGENT CHAT</p><h3 id="chat-title">新对话</h3></div><span id="chat-provider" class="chat-provider">等待模型</span></div><div id="chat-messages" class="chat-messages"><div class="empty-state"><strong>开始一次 Agent 对话</strong><p>例如：如何处理华东 P1 网关离线？</p></div></div><div class="chat-composer"><textarea id="chat-input" rows="3" placeholder="输入你的问题；Enter 发送，Shift + Enter 换行"></textarea><div><small>本地会话持久化 · 受控业务操作仍需在对应页面发起</small><button id="send-chat" class="primary-button">发送 ↗</button></div></div></article>
+          <article class="card chat-main-panel"><div class="card-heading chat-heading"><div><p class="section-label">AGENT CHAT</p><h3 id="chat-title">新对话</h3><small id="chat-task-plan" class="chat-task-plan">多轮上下文待加载</small></div><span id="chat-provider" class="chat-provider">等待模型</span></div><div id="chat-messages" class="chat-messages"><div class="empty-state"><strong>开始一次 Agent 对话</strong><p>例如：如何处理华东 P1 网关离线？</p></div></div><div class="chat-composer"><textarea id="chat-input" rows="3" placeholder="输入你的问题；Enter 发送，Shift + Enter 换行"></textarea><div><small>本地会话持久化 · 支持流式回复与多轮任务规划</small><button id="send-chat" class="primary-button">发送 ↗</button></div></div></article>
         </div>
       </section>
 
@@ -177,6 +177,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-knowledge-preview"></script>
+  <script src="/static/app.js?v=20260919-chat-stream"></script>
 </body>
 </html>

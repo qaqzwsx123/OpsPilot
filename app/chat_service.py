@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -44,6 +45,74 @@ class AgentChatService:
             return self._fallback(f"本地模型返回 HTTP {exc.code}：{detail}"), "fallback"
         except (URLError, TimeoutError, ValueError, KeyError, RuntimeError) as exc:
             return self._fallback(f"本地模型暂时不可用：{exc}"), "fallback"
+
+    @staticmethod
+    def plan_turn(content: str, history: list[dict[str, str]]) -> dict[str, Any]:
+        """Create an explicit, explainable plan before each conversational turn."""
+        text = content.lower()
+        if any(word in text for word in ("删除", "修改", "关闭告警", "创建工单", "执行sql", "写库")):
+            route = "受控变更建议"
+            steps = ["理解目标与对象", "检查风险和影响范围", "需要变更时转审批中心", "由受控流程执行并写入审计"]
+        elif any(word in text for word in ("告警", "设备", "资产", "工单", "查询", "指标")):
+            route = "智能查询建议"
+            steps = ["理解问题与筛选条件", "建议调用只读工具或智能查询", "返回结果并解释关键字段", "保留查询轨迹供审计"]
+        elif any(word in text for word in ("sop", "排障", "规范", "怎么处理", "故障")):
+            route = "知识库检索建议"
+            steps = ["识别故障主题", "检索有效 SOP 和历史证据", "整理处置步骤与升级条件", "标注需要人工确认的动作"]
+        else:
+            route = "多轮对话规划"
+            steps = ["加载当前会话上下文", "理解本轮目标", "结合历史消息补全指代", "给出下一步可执行建议"]
+        return {"route": route, "steps": steps, "context_messages": min(len(history), 16)}
+
+    def stream_reply(self, messages: list[dict[str, str]], plan: dict[str, Any]) -> Iterator[dict[str, str]]:
+        """Stream OpenAI-compatible deltas and keep an honest fallback path."""
+        context_instruction = (
+            "当前任务规划：" + str(plan["route"]) + "；步骤：" + " → ".join(plan["steps"]) +
+            "。请遵守安全边界，不要声称已经执行受控操作。"
+        )
+        if not settings.chat_enabled:
+            fallback = self._fallback("未检测到本地模型配置。请检查 .env 中的 MODEL_BASE_URL 和 MODEL_NAME。")
+            for part in self._split_stream(fallback):
+                yield {"type": "token", "content": part, "provider": "offline"}
+            return
+        payload = {
+            "model": settings.chat_model,
+            "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": context_instruction}, *messages[-16:]],
+            "temperature": 0.3,
+            "stream": True,
+        }
+        headers = {"Content-Type": "application/json"}
+        if settings.chat_api_key:
+            headers["Authorization"] = f"Bearer {settings.chat_api_key}"
+        request = Request(
+            f"{settings.chat_base_url}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers, method="POST",
+        )
+        try:
+            with urlopen(request, timeout=settings.chat_timeout_seconds) as response:
+                for raw_line in response:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_line = line[5:].strip()
+                    if data_line == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_line)
+                    except json.JSONDecodeError:
+                        continue
+                    delta = data.get("choices", [{}])[0].get("delta", {}).get("content")
+                    if delta:
+                        yield {"type": "token", "content": str(delta), "provider": "local_deepseek"}
+        except (HTTPError, URLError, TimeoutError, ValueError, KeyError, RuntimeError) as exc:
+            message = self._fallback(f"本地模型暂时不可用：{exc}")
+            for part in self._split_stream(message):
+                yield {"type": "token", "content": part, "provider": "fallback"}
+
+    @staticmethod
+    def _split_stream(text: str) -> Iterator[str]:
+        for index in range(0, len(text), 18):
+            yield text[index:index + 18]
 
     @staticmethod
     def _fallback(reason: str) -> str:

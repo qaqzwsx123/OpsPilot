@@ -655,9 +655,19 @@ function chatRequestOptions(method, body) {
 
 function renderChatMessages(messages) {
   const target = $("#chat-messages");
+  $("#chat-task-plan").textContent = messages.length ? "已加载 " + messages.length + " 条上下文" : "多轮上下文待加载";
   if (!messages.length) { target.innerHTML = '<div class="empty-state"><strong>开始一次 Agent 对话</strong><p>例如：如何处理华东 P1 网关离线？</p></div>'; return; }
   target.innerHTML = messages.map((message) => '<article class="chat-bubble ' + escapeHtml(message.role) + '"><span>' + (message.role === "user" ? "你" : "OpsPilot") + '</span><div>' + escapeHtml(message.content).replace(/\n/g, "<br>") + '</div></article>').join("");
   target.scrollTop = target.scrollHeight;
+}
+
+function appendChatBubble(role, content) {
+  const target = $("#chat-messages");
+  target.querySelector(".empty-state")?.remove();
+  const article = document.createElement("article"); article.className = "chat-bubble " + role;
+  article.innerHTML = '<span>' + (role === "user" ? "你" : "OpsPilot") + '</span><div>' + escapeHtml(content || "") + '</div>';
+  target.appendChild(article); target.scrollTop = target.scrollHeight;
+  return article.querySelector("div");
 }
 
 function renderChatConversations() {
@@ -707,10 +717,30 @@ async function sendChat() {
   const content = $("#chat-input").value.trim(); if (!content) return;
   if (!chatConversationId) { await createChat(); if (!chatConversationId) return; }
   const button = $("#send-chat"); button.disabled = true; button.textContent = "思考中…"; $("#chat-input").disabled = true;
+  $("#chat-input").value = "";
+  appendChatBubble("user", content);
+  const assistantTarget = appendChatBubble("assistant", "");
+  let assistantText = "";
   try {
-    const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(chatConversationId) + "/messages", chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", content })); const result = await response.json();
-    if (!response.ok) throw new Error(result.detail || "聊天请求失败");
-    $("#chat-input").value = ""; $("#chat-provider").textContent = result.provider === "local_deepseek" ? "本地 DeepSeek" : "离线提示";
+    const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(chatConversationId) + "/messages/stream", chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", content }));
+    if (!response.ok) { const result = await response.json(); throw new Error(result.detail || "聊天请求失败"); }
+    const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let finished = false;
+    const consume = (block) => {
+      const eventName = (block.match(/^event: ([^\n]+)/m) || ["", "message"])[1];
+      const dataLine = block.split("\n").find((line) => line.startsWith("data:")); if (!dataLine) return;
+      const data = JSON.parse(dataLine.slice(5).trim());
+      if (eventName === "stage") {
+        $("#chat-provider").textContent = data.stage === "context" ? "加载上下文" : "任务规划中";
+        $("#chat-task-plan").textContent = data.stage === "plan" ? "任务规划：" + data.message + " · " + (data.steps || []).join(" → ") : data.message;
+      } else if (eventName === "token") {
+        assistantText += data.content || ""; assistantTarget.innerHTML = escapeHtml(assistantText).replace(/\n/g, "<br>"); $("#chat-provider").textContent = data.provider === "local_deepseek" ? "本地 DeepSeek · 流式" : "离线流式";
+        $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
+      } else if (eventName === "done") {
+        finished = true; $("#chat-task-plan").textContent = "已完成：" + data.plan.route + " · 已保留上下文";
+      } else if (eventName === "error") throw new Error(data.message || "流式聊天失败");
+    };
+    while (true) { const {value, done} = await reader.read(); if (done) break; buffer += decoder.decode(value, {stream:true}); const blocks = buffer.split("\n\n"); buffer = blocks.pop(); blocks.forEach(consume); }
+    if (buffer.trim()) consume(buffer); if (!finished) throw new Error("流式响应未正常结束");
     await loadChat(); await openChat(chatConversationId); loadAudit();
   } catch (error) { toast(error.message || "聊天请求失败"); }
   finally { button.disabled = false; button.textContent = "发送 ↗"; $("#chat-input").disabled = false; $("#chat-input").focus(); }
