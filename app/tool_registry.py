@@ -38,7 +38,7 @@ def definition(name: str) -> ToolDefinition | None:
     return next((tool for tool in TOOLS if tool.name == name), None)
 
 
-def invoke(name: str) -> dict[str, Any]:
+def invoke(name: str, query: str = "") -> dict[str, Any]:
     readonly_queries = {
         "asset_lookup": "SELECT id, name, region, status, owner, updated_at FROM assets WHERE status != 'online' ORDER BY updated_at DESC LIMIT 20;",
         "alert_query": "SELECT id, severity, title, status, created_at FROM alerts WHERE status != 'closed' ORDER BY created_at DESC LIMIT 20;",
@@ -48,6 +48,11 @@ def invoke(name: str) -> dict[str, Any]:
     if name in readonly_queries:
         return {"status": "completed", "tool": name, "rows": execute_readonly(readonly_queries[name])}
     if name == "knowledge_search":
+        if query.strip():
+            from app.rag import KnowledgeRag
+
+            evidence = KnowledgeRag().search(query, top_k=5)
+            return {"status": "completed", "tool": name, "documents": evidence, "query": query[:160]}
         return {"status": "completed", "tool": name, "documents": list_knowledge_documents(20)}
     if name == "system_health":
         return {"status": "completed", "tool": name, "metrics": system_metrics()}

@@ -8,6 +8,7 @@ from app.evaluation import available_evaluation_cases, run_evaluation
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
 from app.tool_registry import invoke as invoke_registered_tool
+from app.tool_planner import ToolPlanner
 from fastapi import HTTPException
 from pathlib import Path
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
@@ -32,6 +33,19 @@ class WorkflowTests(unittest.TestCase):
         result = SqlAgentWorkflow().run("查询华东区离线设备", "test-user")
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.rows[0]["region"], "华东")
+
+    def test_agent_automatically_plans_and_executes_readonly_tools(self) -> None:
+        result = SqlAgentWorkflow().run("查询华东 P1 告警关联设备", "test-tool-planner")
+        plan = next(event for event in result.events if event.stage == "tool_plan")
+        selected = {item["name"] for item in plan.details["tools"]}
+        self.assertTrue({"alert_query", "asset_lookup"}.issubset(selected))
+        tool_events = [event for event in result.events if event.stage == "tool"]
+        self.assertTrue(tool_events)
+        self.assertTrue(all(event.details["status"] == "completed" for event in tool_events))
+
+    def test_tool_planner_never_selects_manual_or_blocked_tools(self) -> None:
+        selected = ToolPlanner().plan("删除已关闭告警并维护数据库")
+        self.assertTrue(all(item.name not in {"create_work_order", "close_alert", "database_maintenance"} for item in selected))
 
     def test_sop_question_uses_rag(self) -> None:
         result = SqlAgentWorkflow().run("P1 告警应该如何处理", "test-user")

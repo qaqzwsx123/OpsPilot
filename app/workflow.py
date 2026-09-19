@@ -10,6 +10,7 @@ from app.providers import ResilientSqlWriter
 from app.policy import permitted
 from app.rag import KnowledgeRag
 from app.sql_agent import MetadataRetriever, RiskAssessor, SqlFixer, SqlReviewer
+from app.tool_planner import ToolPlanner
 
 
 EventHandler = Callable[[WorkflowEvent], None]
@@ -23,6 +24,7 @@ class SqlAgentWorkflow:
         self.fixer = SqlFixer()
         self.risk_assessor = RiskAssessor()
         self.rag = KnowledgeRag()
+        self.tool_planner = ToolPlanner()
         self.compressor = ContextCompressor(Path(__file__).resolve().parent.parent / "data" / "context")
 
     def run(self, question: str, requester: str, role: str = "operator", on_event: EventHandler | None = None) -> QueryResult:
@@ -46,10 +48,18 @@ class SqlAgentWorkflow:
         if memory:
             emit("context", "已加载用户近期会话记忆", message_count=len(memory))
         save_memory(requester, "user", question)
+        selections, tool_context = self.tool_planner.execute(question)
+        if selections:
+            emit("tool_plan", "已根据问题选择只读白名单工具", tools=[{"name": item.name, "reason": item.reason} for item in selections], selection_mode="rule_based_allowlist")
+            for evidence in tool_context:
+                emit("tool", f"工具 {evidence['tool']} 执行完成", **evidence)
+                write_audit(requester, "agent_tool_invoked", {"tool": evidence["tool"], "status": evidence["status"], "result_count": evidence["result_count"], "reason": evidence["reason"], "role": role})
+        else:
+            emit("tool_plan", "未命中适用的自动工具，继续结构化召回", tools=[], selection_mode="rule_based_allowlist")
         emit("recall", "开始三路元数据召回")
         candidates = self.retriever.retrieve(question)
         emit("recall", "元数据召回完成", tables=[candidate.name for candidate in candidates])
-        generated = self.writer.generate(question, candidates)
+        generated = self.writer.generate(question, candidates, tool_context)
         if generated is None:
             emit("rag", "无法生成可靠 SQL，切换到运维知识库")
             answer, sources = self.rag.answer(question)

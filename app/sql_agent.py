@@ -85,7 +85,7 @@ class MetadataRetriever:
 class RuleBasedSqlWriter:
     """Offline provider. Replace it with an LLM provider in production."""
 
-    def generate(self, question: str, tables: list[CandidateTable]) -> GeneratedSql | None:
+    def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
         q = question.lower()
         # Knowledge-seeking questions should not be forced into a database query merely
         # because they mention a severity such as P1. They are handled by the RAG route.

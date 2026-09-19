@@ -13,12 +13,14 @@ from app.sql_agent import RuleBasedSqlWriter
 class OpenAICompatibleSqlWriter:
     """Calls an OpenAI-compatible /chat/completions endpoint with strict JSON output."""
 
-    def generate(self, question: str, tables: list[CandidateTable]) -> GeneratedSql | None:
+    def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
         schema = [{"table": item.name, "columns": item.columns} for item in tables]
         prompt = (
             "你是受控 SQL 规划器。只根据给定表生成单条 SQL；若问题属于 SOP/解释类或信息不足，返回 null。"
             "绝不编造表字段。输出 JSON：{\"sql\": string|null, \"intent\": string, \"confidence\": 0-1, \"tables\": [string]}。"
-            f"\n可用 schema: {json.dumps(schema, ensure_ascii=False)}\n用户问题: {question}"
+            f"\n可用 schema: {json.dumps(schema, ensure_ascii=False)}"
+            f"\n已执行的只读工具证据（仅供理解问题，不能据此编造字段）: {json.dumps(tool_context or [], ensure_ascii=False)}"
+            f"\n用户问题: {question}"
         )
         payload = json.dumps(
             {
@@ -59,11 +61,11 @@ class ResilientSqlWriter:
         self.fallback = RuleBasedSqlWriter()
         self.last_provider = "rule_based"
 
-    def generate(self, question: str, tables: list[CandidateTable]) -> GeneratedSql | None:
+    def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
         if self.llm:
-            generated = self.llm.generate(question, tables)
+            generated = self.llm.generate(question, tables, tool_context)
             if generated:
                 self.last_provider = "openai_compatible"
                 return generated
         self.last_provider = "rule_based"
-        return self.fallback.generate(question, tables)
+        return self.fallback.generate(question, tables, tool_context)

@@ -15,12 +15,12 @@ const recordPageSize = 10;
 const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
 
-const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
+const stageNames = { context: "Context Memory", tool_plan: "Tool Planner", tool: "Tool Runner", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
 let selectedTraceIndex = -1;
 const pageGuides = {
   agent: { eyebrow:"SAFE SQL WORKFLOW", title:"智能查询使用说明", lead:"这里把自然语言运维问题转换为受控查询。系统优先查询授权的结构化数据，无法生成可靠 SQL 时才使用知识库回答。", sections:[
     { title:"如何使用", text:"输入问题后点击“运行查询”。可直接使用示例问题，例如查询 P1 告警、离线设备或未关闭工单。" },
-    { title:"执行过程", text:"工作流会依次召回授权表、生成 SQL、审查 SQL、评估风险并执行只读查询。点击工作流节点可查看每一步的实际证据。" },
+    { title:"执行过程", text:"工作流会先由 Tool Planner 从 AUTO 白名单中选择相关只读工具，再召回授权表、生成 SQL、审查 SQL、评估风险并执行只读查询。点击工作流节点可查看选择理由、工具返回摘要与后续证据。" },
     { title:"安全边界", text:"只读 SELECT 可自动执行；写操作只创建审批单；DDL、多语句和高危维护请求会被阻断。结果、SQL 和决策均会审计留痕。", tone:"blocked" }
   ] },
   chat: { eyebrow:"LOCAL DEEPSEEK CHAT", title:"Agent 聊天使用说明", lead:"这是本地 DeepSeek 的多轮讨论入口，适合咨询排障思路、解释系统概念和制定操作建议。", sections:[
@@ -118,6 +118,7 @@ function openPageGuide(key) {
 
 function formatTraceValue(key, value) {
   if (value === undefined || value === null || value === "") return "—";
+  if (key === "tools" && Array.isArray(value)) return value.map((item) => item.name + "（" + item.reason + "）").join("；") || "未选择工具";
   if (key === "confidence" && typeof value === "number") return Math.round(value * 100) + "%";
   if (key === "context" && typeof value === "object") {
     const parts = [];
@@ -127,7 +128,7 @@ function formatTraceValue(key, value) {
     if (value.strategy) parts.push(value.strategy === "not_needed" ? "无需压缩" : "已归档压缩");
     return parts.join(" · ") || JSON.stringify(value);
   }
-  if (Array.isArray(value)) return value.join("、") || "无";
+  if (Array.isArray(value)) return value.map((item) => typeof item === "object" ? JSON.stringify(item) : item).join("、") || "无";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
@@ -135,7 +136,7 @@ function formatTraceValue(key, value) {
 function traceSummary(event) {
   const entries = Object.entries(event.details || {});
   if (!entries.length) return event.message;
-  const preferred = entries.find(([key]) => ["reason", "tables", "sql", "issues", "row_count", "mode", "error"].includes(key)) || entries[0];
+  const preferred = entries.find(([key]) => ["tools", "tool", "reason", "tables", "sql", "issues", "row_count", "result_count", "mode", "error"].includes(key)) || entries[0];
   return formatTraceValue(preferred[0], preferred[1]);
 }
 
@@ -201,7 +202,12 @@ function updateGuard(result) {
   const inProgress = result.status === "running";
   const findStage = (stage) => events.filter((event) => event.stage === stage).at(-1);
   const recall = findStage("recall"); const writer = findStage("writer"); const reviewer = findStage("reviewer"); const risk = findStage("risk"); const runner = findStage("runner"); const rag = findStage("rag");
+  const toolPlan = findStage("tool_plan"); const toolEvents = events.filter((event) => event.stage === "tool");
   const tables = recall?.details?.tables;
+  const toolDetail = toolEvents.length ? toolEvents.map((event) => event.details.tool + "（" + event.details.result_count + " 条）").join("、") : (toolPlan ? "未命中适用 AUTO 工具，未调用任何工具" : "正在分析可用工具");
+  const toolState = toolEvents.length ? "pass" : (inProgress ? "waiting" : "hold");
+  const toolVerdict = toolEvents.length ? "已调用白名单" : (inProgress ? "规划中" : "未调用");
+  const toolGuard = guardItem("工具白名单编排", toolDetail, toolState, toolVerdict);
   const metadata = tables?.length ? guardItem("元数据范围约束", "仅允许访问：" + tables.join("、"), "pass", "已收敛") : guardItem("元数据范围约束", rag ? "无可靠结构化表命中，已转知识库" : (inProgress ? "正在召回授权表" : "未产生可执行表范围"), rag ? "hold" : (inProgress ? "waiting" : "block"), rag ? "已兜底" : (inProgress ? "分析中" : "未通过"));
   const reviewOk = reviewer?.message?.includes("通过");
   const reviewDetail = reviewOk ? "单条只读 SQL 已通过表范围与语法审查" : (reviewer?.details?.issues?.join("；") || (writer ? "候选 SQL 未获得审查放行" : "未生成候选 SQL"));
@@ -212,7 +218,7 @@ function updateGuard(result) {
   const riskState = riskMode === "auto" || result.status === "completed" ? "pass" : inProgress ? "waiting" : result.status === "approval_required" ? "hold" : result.status === "answered_by_rag" ? "hold" : "block";
   const riskLabel = riskMode === "auto" || result.status === "completed" ? "自动执行" : inProgress ? "分析中" : result.status === "approval_required" ? "待审批" : result.status === "answered_by_rag" ? "已兜底" : "已阻断";
   const auditDetail = result.status === "completed" ? "问题、SQL、行数与每个阶段已写入审计链" : result.status === "approval_required" ? "审批申请及风险原因已写入审计链" : result.status === "answered_by_rag" ? "RAG 兜底路径与知识来源已写入审计链" : "拦截原因已写入审计链";
-  $("#guard-list").innerHTML = metadata + guardItem("SQL 审查", reviewDetail, reviewState, reviewLabel) + guardItem("风险分级", riskReason, riskState, riskLabel) + guardItem("全链路审计", inProgress ? "将在本次工作流结束后写入防篡改审计链" : auditDetail, inProgress ? "waiting" : "pass", inProgress ? "等待结束" : "已留痕");
+  $("#guard-list").innerHTML = toolGuard + metadata + guardItem("SQL 审查", reviewDetail, reviewState, reviewLabel) + guardItem("风险分级", riskReason, riskState, riskLabel) + guardItem("全链路审计", inProgress ? "将在本次工作流结束后写入防篡改审计链" : auditDetail, inProgress ? "waiting" : "pass", inProgress ? "等待结束" : "已留痕");
   const stateMap = { completed:["pass", "✓", "本次查询已安全执行", (runner?.details?.row_count ?? result.rows?.length ?? 0) + " 条记录已在只读范围内返回"], answered_by_rag:["hold", "⌁", "未执行 SQL，已由知识库回答", "结构化查询未被放行，因此没有访问业务表"], approval_required:["hold", "!", "已暂停，等待人工审批", "写操作不会自动执行；请先核对影响预估"], blocked:["block", "×", "请求已被安全策略阻断", riskReason] };
   const state = stateMap[result.status] || ["waiting", "…", "正在判定执行护栏", "正在收集元数据与审查证据"];
   $("#guard-status").textContent = state[2]; $("#guard-status").className = "guard-status " + state[0];
