@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
@@ -221,6 +221,22 @@ def reject_request(approval_id: str, request: ApprovalActionRequest = ApprovalAc
         return {"status": approval["status"], "approval_id": approval_id, "message": "审批单当前已不是待处理状态。"}
     write_audit(approval["requester"], "approval_rejected", {"approval_id": approval_id, "approver_role": request.role, "approver": request.actor, "comment": approval["decision_comment"]})
     return {"status": "rejected", "approval_id": approval_id, "message": "审批已拒绝；没有执行任何 SQL，也没有修改业务数据。"}
+
+
+@app.delete("/api/v1/approvals/{approval_id}")
+def remove_approval(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
+    if not permitted(request.role, "approve_change"):
+        raise HTTPException(status_code=403, detail="当前角色无删除审批记录权限。请切换到值班负责人。")
+    approval = delete_approval(approval_id)
+    if approval is None:
+        raise HTTPException(status_code=404, detail="审批单不存在")
+    if not approval["deletable"]:
+        raise HTTPException(status_code=409, detail="待审批单不能直接删除，请先拒绝或完成审批。")
+    write_audit(approval["requester"], "approval_deleted", {
+        "approval_id": approval_id, "status": approval["status"], "reason": approval["reason"],
+        "deleted_by": request.actor, "approver_role": request.role,
+    })
+    return {"deleted": True, "message": "审批记录已删除；删除操作已保留在审计中心。"}
 
 
 @app.get("/api/v1/audit")

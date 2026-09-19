@@ -551,6 +551,18 @@ def reject_approval(approval_id: str, decided_by: str, comment: str = "") -> dic
     return dict(row)
 
 
+def delete_approval(approval_id: str) -> dict[str, Any] | None:
+    """Delete a completed approval record while leaving its audit trail intact."""
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+        if row is None:
+            return None
+        if row["status"] == "pending":
+            return {**dict(row), "deletable": False}
+        conn.execute("DELETE FROM approvals WHERE id = ?", (approval_id,))
+    return {**dict(row), "deletable": True}
+
+
 def _create_pre_execution_backup(conn: sqlite3.Connection, approval_id: str) -> str:
     """Make a restorable local SQLite snapshot immediately before an enabled demo write."""
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)

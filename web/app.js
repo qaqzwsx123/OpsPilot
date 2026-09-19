@@ -726,12 +726,13 @@ function renderApprovals(approvals) {
     const decision = approval.decided_by ? '<div class="approval-decision"><b>审批结论</b><span>' + escapeHtml(approval.decided_by) + (approval.decision_comment ? "：" + approval.decision_comment : "：未填写意见") + '</span></div>' : "";
     const result = approval.execution_result ? '<div class="approval-result">执行结果：' + escapeHtml(approval.execution_result.message || approval.execution_result.mode || JSON.stringify(approval.execution_result)) + '</div>' : "";
     const expiry = approval.expires_at && approval.status === "pending" ? '<div class="approval-expiry">审批有效期至：' + new Date(approval.expires_at).toLocaleString("zh-CN", {hour12:false}) + '</div>' : "";
-    const action = approval.status === "pending" ? '<div class="approval-action"><button class="warning-button" data-approval="' + approval.id + '">批准并进入安全执行</button><button class="secondary-button" data-reject="' + approval.id + '">拒绝</button></div>' : "";
+    const action = approval.status === "pending" ? '<div class="approval-action"><button class="warning-button" data-approval="' + approval.id + '">批准并进入安全执行</button><button class="secondary-button" data-reject="' + approval.id + '">拒绝</button></div>' : '<div class="approval-action"><button class="secondary-button approval-delete-button" data-delete-approval="' + approval.id + '">删除记录</button></div>';
     const labels = { pending:"待审批", approved:"已批准", approved_safe_mode:"安全模式已批准", executed:"已执行", rejected:"已拒绝", expired:"已过期" };
     return '<article class="approval-item"><div><strong>' + escapeHtml(approval.reason) + '</strong><code>' + escapeHtml(approval.sql) + '</code>' + impact + decision + result + expiry + '<div class="approval-meta">申请人：' + escapeHtml(approval.requester) + ' · ' + new Date(approval.created_at).toLocaleString("zh-CN", {hour12:false}) + '</div>' + action + '</div><span class="approval-status ' + escapeHtml(approval.status) + '">' + (labels[approval.status] || escapeHtml(approval.status)) + '</span></article>';
   }).join("");
   document.querySelectorAll("[data-approval]").forEach((button) => button.addEventListener("click", () => resolveApproval(button.dataset.approval, button)));
   document.querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => rejectApproval(button.dataset.reject, button)));
+  document.querySelectorAll("[data-delete-approval]").forEach((button) => button.addEventListener("click", () => deleteApproval(button.dataset.deleteApproval, button)));
 }
 
 async function loadApprovals() {
@@ -770,6 +771,17 @@ async function rejectApproval(id, button) {
     toast(result.message); loadApprovals(); loadAudit();
   } catch (error) { toast(error.message || "拒绝失败"); }
   finally { if (button) { button.disabled = false; button.textContent = "拒绝"; } }
+}
+
+async function deleteApproval(id, button) {
+  if (!confirm("确认删除这条已完成的审批记录？审批卡片会移除，但删除行为会永久保留在审计中心。")) return;
+  if (button) { button.disabled = true; button.textContent = "删除中…"; }
+  try {
+    const response = await fetch("/api/v1/approvals/" + id, { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), actor:"Lenovo" }) }); const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "删除失败");
+    toast(result.message); loadApprovals(); loadAudit(); loadMetrics();
+  } catch (error) { toast(error.message || "删除失败"); }
+  finally { if (button) { button.disabled = false; button.textContent = "删除记录"; } }
 }
 
 async function loadPolicies() {

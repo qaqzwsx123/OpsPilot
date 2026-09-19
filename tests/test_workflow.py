@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from uuid import uuid4
 
-from app.database import add_chat_message, add_evaluation_case, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, delete_evaluation_case, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, knowledge_document_count, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.database import add_chat_message, add_evaluation_case, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_approval, delete_chat_conversation, delete_evaluation_case, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, knowledge_document_count, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
@@ -116,6 +116,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(rejected)
         self.assertEqual(rejected["status"], "rejected")
         self.assertEqual(rejected["decision_comment"], "维护窗口不满足要求")
+
+    def test_only_completed_approval_records_can_be_deleted(self) -> None:
+        pending_id = create_approval("test-delete", "DELETE FROM alerts WHERE status = 'closed';", "测试待审批删除")
+        self.assertFalse(delete_approval(pending_id)["deletable"])
+        rejected = reject_approval(pending_id, "test-approver", "测试完成后删除")
+        deleted = delete_approval(pending_id)
+        self.assertTrue(deleted["deletable"])
+        self.assertEqual(rejected["status"], "rejected")
+        self.assertFalse(any(item["id"] == pending_id for item in list_approvals()))
 
     def test_audit_hash_chain_is_verifiable(self) -> None:
         write_audit("test-audit", "integrity_test", {"case": "hash_chain"})
