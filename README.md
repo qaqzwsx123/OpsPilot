@@ -22,7 +22,7 @@ Recall → Writer → Reviewer → Fix → Runner
 - 权限闭环：知识库新增、删除、索引重建需要 `operator` 及以上角色；自动工具要求 `read`，手工风险工具要求 `request_change` 并会创建真正的审批单。
 - Agentic RAG：无法生成可执行查询时，以运维知识库生成带来源的回答。
 - Context Engineering：超预算上下文先落盘、再保留摘要，减少后续提示词负担。
-- Skill 加载：读取 `skills/*/SKILL.md`，将 SOP 作为可复用运行时能力。
+- Skill 能力库：读取 `skills/*/SKILL.md`，内置告警分诊、指标诊断、工单交接、变更评审等可试运行 SOP；每次运行都有结构化输出和审计记录。
 - FastAPI、真正逐阶段推送的 SSE 事件流、SQLite 示例数据、持久化会话记忆、审批执行开关、单元测试和离线评测集。
 
 ## 快速开始

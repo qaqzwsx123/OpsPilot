@@ -4,7 +4,9 @@ import unittest
 
 from app.database import approve, audit_integrity, create_approval, data_catalog, execute_approved, execute_readonly, list_approvals, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
+from app.skills import SkillRegistry, run_skill
 from fastapi import HTTPException
+from pathlib import Path
 from app.sql_agent import MetadataRetriever, SqlFixer, SqlReviewer
 from app.workflow import SqlAgentWorkflow
 
@@ -102,6 +104,14 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as denied:
             create_knowledge(KnowledgeDocumentRequest(title="无权写入", content="这条文档不应该被观察者写入知识库。", role="viewer"))
         self.assertEqual(denied.exception.status_code, 403)
+
+    def test_operational_skills_have_metadata_and_structured_runtime_output(self) -> None:
+        registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
+        loaded = {skill.name: skill for skill in registry.load()}
+        self.assertTrue(loaded["incident_triage"].runnable)
+        self.assertEqual(run_skill("incident_triage", "华东 P1 告警")["status"], "completed")
+        self.assertEqual(run_skill("metric_diagnosis", "指标 #1")["status"], "completed")
+        self.assertEqual(run_skill("change_review", "DELETE FROM alerts WHERE status = 'closed';")["risk"], "manual")
 
 
 if __name__ == "__main__":

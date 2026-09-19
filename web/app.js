@@ -83,8 +83,13 @@ async function loadSkills() {
   const target = $("#skills-list");
   try {
     const skills = await (await fetch("/api/v1/skills")).json();
-    target.innerHTML = skills.map((skill, index) => `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维领域能力")}</p><span class="skill-tag">SKILL.md 已加载</span><br><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看完整 SOP</button></article>`).join("");
+    target.innerHTML = skills.map((skill, index) => {
+      const suggestions = (skill.suggestions || []).map((item) => '<button class="skill-suggestion" data-run-skill="' + escapeHtml(skill.name) + '" data-skill-input="' + escapeHtml(item) + '">' + escapeHtml(item) + '</button>').join("");
+      const run = skill.runnable ? '<button class="primary-button skill-run" data-run-skill="' + escapeHtml(skill.name) + '">运行 Skill ↗</button>' : '<span class="skill-tag">规范型能力</span>';
+      return `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><span class="skill-risk ${escapeHtml(skill.risk || "auto")}">${escapeHtml((skill.category || "通用") + " · " + (skill.risk || "auto").toUpperCase())}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维领域能力")}</p><div class="skill-suggestions">${suggestions}</div><div class="skill-actions"><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看完整 SOP</button>${run}</div></article>`;
+    }).join("");
     document.querySelectorAll("[data-skill]").forEach((button) => button.addEventListener("click", () => viewSkill(button.dataset.skill)));
+    document.querySelectorAll("[data-run-skill]").forEach((button) => button.addEventListener("click", () => runSkill(button.dataset.runSkill, button.dataset.skillInput || "")));
   } catch { target.innerHTML = "<p>加载 Skills 失败。</p>"; }
 }
 
@@ -94,6 +99,18 @@ async function viewSkill(name) {
     $("#skill-content").textContent = skill.content; $("#skill-detail").hidden = false;
     $("#skill-detail").scrollIntoView({ behavior:"smooth", block:"start" });
   } catch { toast("无法读取 Skill 内容"); }
+}
+
+async function runSkill(name, suggestedInput) {
+  const input = prompt("输入本次 Skill 的业务上下文", suggestedInput || "") ?? "";
+  try {
+    const response = await fetch("/api/v1/skills/" + encodeURIComponent(name) + "/run", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", user_input:input }) });
+    const result = await response.json(); if (!response.ok) throw new Error(result.detail || "Skill 运行失败");
+    const steps = (result.next_steps || []).map((item) => "- " + item).join("\n");
+    $("#skill-content").textContent = "# " + name + " 运行结果\n\n状态：" + result.status + "\n风险：" + result.risk + "\n\n## 结论\n" + result.summary + "\n\n## 下一步\n" + (steps || "无") + "\n\n## 结构化数据\n" + JSON.stringify(result.data, null, 2);
+    $("#skill-detail").hidden = false; $("#skill-detail").scrollIntoView({ behavior:"smooth", block:"start" });
+    toast(name + " 运行完成"); loadAudit();
+  } catch (error) { toast(error.message || "Skill 运行失败"); }
 }
 
 function renderKnowledge(documents) {

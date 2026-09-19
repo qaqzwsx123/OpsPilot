@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.database import add_knowledge_document, approve, audit_integrity, create_approval, data_catalog, delete_knowledge_document, execute_approved, initialize, list_approvals, list_audit, list_knowledge_documents, list_metric_definitions, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.evaluation import run_evaluation
-from app.skills import SkillRegistry
+from app.skills import SkillRegistry, run_skill
 from app.tool_registry import catalog, definition, invoke
 from app.workflow import SqlAgentWorkflow
 from app.rag import KnowledgeRag
@@ -58,6 +58,10 @@ class MutationActorRequest(BaseModel):
 
 class ToolInvokeRequest(MutationActorRequest):
     pass
+
+
+class SkillRunRequest(MutationActorRequest):
+    user_input: str = Field(default="", max_length=500)
 
 
 class ApprovalActionRequest(BaseModel):
@@ -172,9 +176,9 @@ def explorer_table(table_name: str, role: str = "viewer", limit: int = 30, offse
 
 
 @app.get("/api/v1/skills")
-def skills() -> list[dict[str, str]]:
+def skills() -> list[dict]:
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
-    return [{"name": item.name, "description": item.description} for item in registry.load()]
+    return [{"name": item.name, "description": item.description, "category": item.category, "risk": item.risk, "suggestions": list(item.suggestions), "runnable": item.runnable} for item in registry.load()]
 
 
 @app.get("/api/v1/skills/{skill_name}")
@@ -184,6 +188,21 @@ def skill_detail(skill_name: str) -> dict[str, str]:
         if item.name == skill_name:
             return {"name": item.name, "description": item.description, "content": item.content}
     raise HTTPException(status_code=404, detail="Skill 不存在")
+
+
+@app.post("/api/v1/skills/{skill_name}/run")
+def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
+    if not permitted(request.role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无 Skill 运行权限。")
+    registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
+    skill = registry.get(skill_name)
+    if skill is None:
+        raise HTTPException(status_code=404, detail="Skill 不存在")
+    if not skill.runnable:
+        raise HTTPException(status_code=400, detail="该 Skill 是规范型能力，请在智能查询或对应页面中使用。")
+    result = run_skill(skill_name, request.user_input)
+    write_audit(request.requester, "skill_run", {"skill": skill_name, "input": request.user_input[:160], "status": result["status"], "role": request.role})
+    return result
 
 
 @app.get("/api/v1/knowledge")
