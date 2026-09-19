@@ -100,6 +100,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(requested["status"], "approval_required")
         self.assertTrue(requested["approval_id"])
 
+    def test_legacy_tool_call_without_request_body_is_safe_for_auto_tools(self) -> None:
+        result = invoke_tool("alert_query")
+        self.assertEqual(result["status"], "completed")
+
     def test_viewer_cannot_write_knowledge_base(self) -> None:
         with self.assertRaises(HTTPException) as denied:
             create_knowledge(KnowledgeDocumentRequest(title="无权写入", content="这条文档不应该被观察者写入知识库。", role="viewer"))

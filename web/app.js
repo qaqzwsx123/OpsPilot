@@ -345,9 +345,21 @@ async function invokeTool(name, button) {
   button.disabled = true; button.textContent = "调用中…";
   try {
     const response = await fetch("/api/v1/tools/" + encodeURIComponent(name) + "/invoke", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) });
-    const result = await response.json(); const box = $("#tool-result"); box.hidden = false;
-    box.textContent = JSON.stringify(result, null, 2); toast("工具调用状态：" + result.status); loadAudit();
-  } catch { toast("工具调用失败"); }
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "工具调用失败");
+    const box = $("#tool-result"); box.hidden = false;
+    box.textContent = JSON.stringify(result, null, 2);
+    if (result.status === "approval_required" && result.approval_id) {
+      toast("已创建审批单，可前往审批中心处理"); loadApprovals();
+    } else {
+      toast("工具调用状态：" + result.status);
+    }
+    loadAudit();
+  } catch (error) {
+    const box = $("#tool-result"); box.hidden = false;
+    box.textContent = "工具调用失败：" + (error.message || "未知错误");
+    toast(error.message || "工具调用失败");
+  }
   finally { button.disabled = false; button.textContent = "试运行工具"; }
 }
 

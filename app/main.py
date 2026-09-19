@@ -285,7 +285,7 @@ def tools_catalog() -> list[dict[str, str]]:
 
 
 @app.post("/api/v1/tools/{tool_name}/invoke")
-def invoke_tool(tool_name: str, request: ToolInvokeRequest) -> dict:
+def invoke_tool(tool_name: str, request: ToolInvokeRequest = ToolInvokeRequest(role="viewer", requester="Lenovo")) -> dict:
     tool = definition(tool_name)
     if tool is None:
         raise HTTPException(status_code=404, detail="工具不存在")
