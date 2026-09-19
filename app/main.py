@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, import_metric_csv, initialize, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
@@ -287,10 +287,17 @@ def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
 
 
 @app.get("/api/v1/knowledge")
-def knowledge(role: str = "viewer") -> list[dict]:
+def knowledge(role: str = "viewer", limit: int = 5, offset: int = 0) -> dict:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
-    return list_knowledge_documents()
+    bounded_limit = min(max(limit, 1), 20)
+    bounded_offset = max(offset, 0)
+    return {
+        "items": list_knowledge_documents(bounded_limit, bounded_offset),
+        "total": knowledge_document_count(),
+        "limit": bounded_limit,
+        "offset": bounded_offset,
+    }
 
 
 @app.get("/api/v1/knowledge/search")

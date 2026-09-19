@@ -160,6 +160,7 @@ def seed_demo_data() -> None:
     with connect() as conn:
         count = conn.execute("SELECT COUNT(*) FROM assets").fetchone()[0]
         if count:
+            seed_knowledge_library()
             return
         conn.executemany(
             "INSERT INTO assets VALUES (?, ?, ?, ?, ?, ?)",
@@ -199,6 +200,29 @@ def seed_demo_data() -> None:
                 (3, "工单优先级规范", "高优工单要求在两小时内响应。关闭工单前必须记录根因、处理动作与验证结果。", "工单,优先级,规范"),
             ],
         )
+    seed_knowledge_library()
+
+
+def seed_knowledge_library() -> None:
+    """Add the operational baseline library without replacing user-authored documents."""
+    documents = [
+        ("告警确认与分级 SOP", "收到告警后先确认告警时间、影响资源、持续时长和是否存在关联告警。P1 需要在 5 分钟内确认并通知值班负责人；P2 在 30 分钟内完成初步定位；P3 纳入工作日排期。告警关闭前必须记录根因、处理动作和验证证据。", "告警,分级,确认,SOP"),
+        ("网络链路丢包与延迟排障", "发现链路丢包或延迟升高时，先比对同区域和跨区域指标，再检查网关端口错误、带宽利用率、路由变更和 DNS 解析。单节点异常优先检查设备与接入链路；多节点同时异常升级网络值班，并保留 ping、traceroute 和监控截图。", "网络,丢包,延迟,链路,排障"),
+        ("网关磁盘空间清理规范", "网关磁盘使用率超过 80% 时，先确认增长目录、日志保留策略和是否存在异常转储文件。只允许按保留规范清理可再生日志与过期缓存；不得直接删除业务数据、配置文件或未确认的转储。清理后复核磁盘使用率和服务日志。", "网关,磁盘,日志,容量,规范"),
+        ("服务 CPU 与内存异常排查", "CPU 或内存持续超过阈值时，确认是瞬时波动还是持续增长，再比对发布记录、请求量、线程池、GC 日志和依赖服务延迟。优先限流、扩容或回滚已确认异常的发布；需要重启前先确认流量切换、会话影响和回滚方案。", "服务,CPU,内存,GC,性能"),
+        ("数据库连接池耗尽应急 SOP", "连接池使用率持续高于 90% 时，检查慢 SQL、未释放连接、连接超时配置和应用实例数量。先通过只读查询确认活跃连接来源与持续时间，再评估限流或扩容。禁止在未备份和未审批的情况下执行 KILL、DDL 或清库操作。", "数据库,连接池,慢SQL,应急,SOP"),
+        ("消息队列积压处置指南", "消息积压出现后，确认积压主题、生产速率、消费速率、失败重试和下游依赖状态。若消费者异常，先恢复消费能力并观察积压斜率；若下游不可用，按业务优先级限流或暂停生产。处理完成后记录积压峰值、恢复时间和遗留消息数。", "消息队列,积压,消费,重试,排障"),
+        ("发布变更前检查清单", "发布前必须确认变更单已审批、影响范围明确、回滚包可用、监控看板已准备，并通知相关值班人员。执行窗口内先进行小流量验证，观察错误率、延迟和资源指标。任何关键指标异常都应停止扩大范围并进入回滚判断。", "发布,变更,检查,审批,灰度"),
+        ("发布失败回滚与验证 SOP", "发布失败时先停止继续扩散，记录失败版本、错误日志和影响实例。按已审批的回滚方案恢复上一稳定版本，再验证核心接口、关键任务、告警恢复和数据一致性。回滚完成不代表事件结束，需补充根因分析和预防措施。", "发布,回滚,验证,故障,SOP"),
+        ("值班交接与事件升级规范", "交接时应列出未关闭 P1/P2 告警、进行中的工单、风险变更、观察指标和下一检查时间。事件达到升级条件时，说明影响范围、已完成动作、当前证据和需要协助的决策。交接信息必须可追溯，避免仅口头传递。", "值班,交接,升级,事件,规范"),
+        ("指标异常波动分析手册", "分析指标异常时，先确认数据来源、采样间隔和基线范围，再查看趋势、同比资源与关联告警。区分单点尖峰、周期性波动和持续劣化；只有在指标、日志和业务影响相互印证后，才将其判定为故障根因。", "指标,趋势,异常,分析,监控"),
+    ]
+    with connect() as conn:
+        for title, content, tags in documents:
+            conn.execute(
+                "INSERT INTO knowledge_documents (title, content, tags) SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM knowledge_documents WHERE title = ?)",
+                (title, content, tags, title),
+            )
 
 
 def seed_metric_demo_data() -> None:
@@ -691,10 +715,15 @@ def list_metric_imports(limit: int = 8) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def list_knowledge_documents(limit: int = 100) -> list[dict[str, Any]]:
+def knowledge_document_count() -> int:
+    with connect() as conn:
+        return conn.execute("SELECT COUNT(*) FROM knowledge_documents").fetchone()[0]
+
+
+def list_knowledge_documents(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT id, title, content, tags FROM knowledge_documents ORDER BY id DESC LIMIT ?", (limit,)
+            "SELECT id, title, content, tags FROM knowledge_documents ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset)
         ).fetchall()
     return [dict(row) for row in rows]
 

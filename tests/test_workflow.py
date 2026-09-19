@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from uuid import uuid4
 
-from app.database import add_chat_message, add_evaluation_case, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, delete_evaluation_case, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, list_approvals, list_audit, list_chat_conversations, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.database import add_chat_message, add_evaluation_case, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_chat_conversation, delete_evaluation_case, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, knowledge_document_count, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
@@ -128,6 +128,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(snapshot)
         self.assertEqual(len(snapshot["rows"]), 2)
         self.assertIsNone(table_snapshot("sqlite_master"))
+
+    def test_knowledge_library_has_baseline_documents_and_supports_pagination(self) -> None:
+        self.assertGreaterEqual(knowledge_document_count(), 13)
+        first_page = list_knowledge_documents(limit=5, offset=0)
+        second_page = list_knowledge_documents(limit=5, offset=5)
+        self.assertEqual(len(first_page), 5)
+        self.assertEqual(len(second_page), 5)
+        self.assertNotEqual(first_page[0]["id"], second_page[0]["id"])
+        self.assertTrue(any(item["title"] == "发布失败回滚与验证 SOP" for item in list_knowledge_documents()))
 
     def test_tool_invocation_enforces_role_and_manual_tools_create_approval(self) -> None:
         with self.assertRaises(HTTPException) as denied:

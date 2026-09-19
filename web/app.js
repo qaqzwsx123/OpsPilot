@@ -6,9 +6,11 @@ let explorerCatalog = [];
 let explorerOffset = 0;
 let auditOffset = 0;
 let approvalOffset = 0;
+let knowledgeOffset = 0;
 let chatConversationId = "";
 let chatConversations = [];
 const recordPageSize = 10;
+const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
 
 const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
@@ -316,14 +318,27 @@ async function runSkill(name, suggestedInput) {
   } catch (error) { toast(error.message || "Skill 运行失败"); }
 }
 
-function renderKnowledge(documents) {
+function renderKnowledge(documents, total) {
   const target = $("#knowledge-list");
   target.innerHTML = documents.length ? documents.map((document) => `<article class="knowledge-item"><button class="text-button knowledge-delete" data-delete-knowledge="${document.id}">删除</button><strong>${escapeHtml(document.title)}</strong><p>${escapeHtml(document.content)}</p><div>${String(document.tags || "未分类").split(/[,，]/).filter(Boolean).map((tag) => `<span>${escapeHtml(tag.trim())}</span>`).join("")}</div></article>`).join("") : "<div class='empty-state'><strong>知识库为空</strong><p>新增一份 SOP 后即可在 RAG 中使用。</p></div>";
   document.querySelectorAll("[data-delete-knowledge]").forEach((button) => button.addEventListener("click", () => deleteKnowledge(button.dataset.deleteKnowledge)));
+  const page = total ? Math.floor(knowledgeOffset / knowledgePageSize) + 1 : 1;
+  const pages = Math.max(1, Math.ceil(total / knowledgePageSize));
+  $("#knowledge-page-note").textContent = `第 ${page} / ${pages} 页 · 共 ${total} 份`;
+  $("#prev-knowledge").disabled = knowledgeOffset === 0;
+  $("#next-knowledge").disabled = knowledgeOffset + knowledgePageSize >= total;
 }
 
 async function loadKnowledge() {
-  try { const response = await fetch("/api/v1/knowledge?role=" + encodeURIComponent(currentRole())); const documents = await response.json(); if (!response.ok) throw new Error(documents.detail); renderKnowledge(documents); } catch { $("#knowledge-list").innerHTML = "<div class='empty-state'><strong>无法加载知识库</strong></div>"; }
+  try {
+    const response = await fetch("/api/v1/knowledge?role=" + encodeURIComponent(currentRole()) + "&limit=" + knowledgePageSize + "&offset=" + knowledgeOffset);
+    const payload = await response.json(); if (!response.ok) throw new Error(payload.detail);
+    if (!payload.items.length && knowledgeOffset > 0) { knowledgeOffset = Math.max(0, knowledgeOffset - knowledgePageSize); return loadKnowledge(); }
+    renderKnowledge(payload.items, payload.total);
+  } catch {
+    $("#knowledge-list").innerHTML = "<div class='empty-state'><strong>无法加载知识库</strong></div>";
+    $("#knowledge-page-note").textContent = "加载失败";
+  }
 }
 
 async function saveKnowledge() {
@@ -334,7 +349,7 @@ async function saveKnowledge() {
     const response = await fetch("/api/v1/knowledge", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ title, tags, content, role:currentRole(), requester:"Lenovo" }) });
     const document = await response.json(); if (!response.ok) throw new Error(document.detail || "保存失败");
     $("#knowledge-title").value = ""; $("#knowledge-tags").value = ""; $("#knowledge-content").value = "";
-    toast(`“${document.title}” 已纳入 RAG`); loadKnowledge(); loadMetrics();
+    knowledgeOffset = 0; toast(`“${document.title}” 已纳入 RAG`); loadKnowledge(); loadMetrics();
   } catch (error) { toast(error.message || "保存失败"); }
   finally { button.disabled = false; button.innerHTML = "保存并纳入 RAG <span>↗</span>"; }
 }
@@ -539,7 +554,9 @@ $("#prev-data").addEventListener("click", () => { explorerOffset = Math.max(0, e
 $("#next-data").addEventListener("click", () => { explorerOffset += 30; loadDataTable(); });
 $("#run-evaluation").addEventListener("click", openEvaluationDialog);
 $("#verify-audit").addEventListener("click", openIntegrityDialog);
-$("#refresh-knowledge").addEventListener("click", loadKnowledge);
+$("#refresh-knowledge").addEventListener("click", () => { knowledgeOffset = 0; loadKnowledge(); });
+$("#prev-knowledge").addEventListener("click", () => { knowledgeOffset = Math.max(0, knowledgeOffset - knowledgePageSize); loadKnowledge(); });
+$("#next-knowledge").addEventListener("click", () => { knowledgeOffset += knowledgePageSize; loadKnowledge(); });
 $("#search-knowledge").addEventListener("click", searchKnowledge);
 $("#reindex-knowledge").addEventListener("click", reindexKnowledge);
 $("#refresh-approvals").addEventListener("click", () => { approvalOffset = 0; loadApprovals(); });
