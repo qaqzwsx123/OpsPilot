@@ -57,12 +57,13 @@
           </article>
 
           <article class="trace-card card">
-            <div class="card-heading"><div><p class="section-label">LIVE TRACE</p><h3>工作流轨迹</h3></div><span id="trace-status" class="trace-status idle">等待任务</span></div>
+            <div class="card-heading"><div><p class="section-label">LIVE TRACE</p><h3>工作流轨迹</h3></div><div class="trace-heading-meta"><span id="trace-count" class="trace-count">0 个节点</span><span id="trace-status" class="trace-status idle">等待任务</span></div></div>
             <ol id="trace-list" class="trace-list">
               <li class="muted"><span class="trace-node">1</span><div><strong>Recall</strong><small>等待查询请求</small></div></li>
               <li class="muted"><span class="trace-node">2</span><div><strong>Writer</strong><small>生成受控 SQL</small></div></li>
               <li class="muted"><span class="trace-node">3</span><div><strong>Reviewer & Runner</strong><small>审查、授权与执行</small></div></li>
             </ol>
+            <div id="trace-inspector" class="trace-inspector"><span class="trace-inspector-kicker">选择一个节点</span><strong>这里会展示该阶段实际产生的证据。</strong><p>例如召回的表、生成 SQL、审查结论、风险原因或执行结果。</p></div>
           </article>
         </section>
 
@@ -80,9 +81,11 @@
             </div>
           </article>
           <article class="insight-card card">
-            <div class="card-heading"><div><p class="section-label">SAFETY POLICY</p><h3>执行护栏</h3></div></div>
-            <div class="policy-list"><div><span class="policy-check">✓</span><div><strong>元数据范围约束</strong><small>只访问被召回的授权表</small></div></div><div><span class="policy-check">✓</span><div><strong>SQL 审查</strong><small>仅允许单条只读查询</small></div></div><div><span class="policy-check">✓</span><div><strong>风险分级</strong><small>写操作进入人工审批流</small></div></div><div><span class="policy-check">✓</span><div><strong>全链路审计</strong><small>保留问题、SQL 与执行轨迹</small></div></div></div>
-            <div class="context-stat"><span>Context Engineering</span><strong>Token ↓ 43%</strong><div><i></i></div></div>
+            <div class="card-heading"><div><p class="section-label">SAFETY POLICY</p><h3>执行护栏</h3></div><span id="guard-status" class="guard-status waiting">等待判定</span></div>
+            <div id="guard-verdict" class="guard-verdict waiting"><span class="guard-verdict-icon">◌</span><div><strong>尚未发起查询</strong><small>护栏会根据每一次实际工作流输出动态更新。</small></div></div>
+            <div id="guard-list" class="policy-list"><div><span class="policy-check waiting">1</span><div><strong>元数据范围约束</strong><small>等待召回授权表</small></div><em>待判定</em></div><div><span class="policy-check waiting">2</span><div><strong>SQL 审查</strong><small>等待生成候选 SQL</small></div><em>待判定</em></div><div><span class="policy-check waiting">3</span><div><strong>风险分级</strong><small>等待判断执行方式</small></div><em>待判定</em></div><div><span class="policy-check waiting">4</span><div><strong>全链路审计</strong><small>完成后写入防篡改审计链</small></div><em>待判定</em></div></div>
+            <div class="guard-actions"><button id="guard-open-audit" class="text-button">查看审计记录 →</button><button id="guard-open-approval" class="text-button" hidden>前往审批中心 →</button></div>
+            <div id="context-stat" class="context-stat"><div class="context-stat-heading"><span>Context Engineering</span><strong id="context-reduction">等待本次结果</strong></div><div class="context-values"><span>原始 <b id="context-before">—</b></span><span>压缩后 <b id="context-after">—</b></span><span>实际减少 <b id="context-percent">—</b></span></div><div class="context-progress"><i id="context-progress-bar"></i></div><small id="context-note">仅在只读 SQL 返回结果后计算，不使用固定展示值。</small></div>
           </article>
         </section>
       </section>
@@ -157,6 +160,6 @@
     </main>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-agent-chat"></script>
+  <script src="/static/app.js?v=20260919-context-metrics"></script>
 </body>
 </html>

@@ -12,6 +12,7 @@ const recordPageSize = 10;
 const currentRole = () => $("#role-selector").value;
 
 const stageNames = { context: "Context Memory", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
+let selectedTraceIndex = -1;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[character]);
@@ -22,17 +23,119 @@ function toast(message) {
   setTimeout(() => node.classList.remove("show"), 2600);
 }
 
+function formatTraceValue(key, value) {
+  if (value === undefined || value === null || value === "") return "—";
+  if (key === "confidence" && typeof value === "number") return Math.round(value * 100) + "%";
+  if (key === "context" && typeof value === "object") {
+    const parts = [];
+    if (value.before !== undefined) parts.push("原始 " + value.before + " tokens");
+    if (value.after !== undefined) parts.push("压缩后 " + value.after + " tokens");
+    if (value.before !== undefined && value.after !== undefined) parts.push("减少 " + Math.max(0, Math.round((1 - value.after / Math.max(1, value.before)) * 100)) + "%");
+    if (value.strategy) parts.push(value.strategy === "not_needed" ? "无需压缩" : "已归档压缩");
+    return parts.join(" · ") || JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return value.join("、") || "无";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function traceSummary(event) {
+  const entries = Object.entries(event.details || {});
+  if (!entries.length) return event.message;
+  const preferred = entries.find(([key]) => ["reason", "tables", "sql", "issues", "row_count", "mode", "error"].includes(key)) || entries[0];
+  return formatTraceValue(preferred[0], preferred[1]);
+}
+
+function renderTraceInspector(events, index) {
+  const target = $("#trace-inspector");
+  const event = events[index];
+  if (!event) {
+    target.innerHTML = '<span class="trace-inspector-kicker">选择一个节点</span><strong>这里会展示该阶段实际产生的证据。</strong><p>例如召回的表、生成 SQL、审查结论、风险原因或执行结果。</p>';
+    return;
+  }
+  const entries = Object.entries(event.details || {});
+  target.innerHTML = '<span class="trace-inspector-kicker">' + escapeHtml(stageNames[event.stage] || event.stage) + ' · 实际输出</span><strong>' + escapeHtml(event.message) + '</strong>' + (entries.length ? '<div class="trace-evidence">' + entries.map(([key, value]) => '<span><b>' + escapeHtml(key) + '</b>' + escapeHtml(formatTraceValue(key, value)) + '</span>').join("") + '</div>' : '<p>该步骤没有额外参数，但已记录其决策结论。</p>');
+}
+
 function setTrace(events, status) {
   const trace = $("#trace-list");
-  if (!events.length) return;
+  $("#trace-count").textContent = events.length + " 个节点";
+  if (!events.length) { renderTraceInspector([], -1); return; }
+  if (selectedTraceIndex < 0 || selectedTraceIndex >= events.length) selectedTraceIndex = events.length - 1;
   trace.innerHTML = events.map((event, index) => {
     const state = status === "running" ? (index === events.length - 1 ? "active" : "complete") : (status === "blocked" || status === "approval_required" ? (index === events.length - 1 ? "blocked" : "complete") : "complete");
-    const details = event.details && Object.keys(event.details).length ? Object.values(event.details)[0] : "";
-    const short = Array.isArray(details) ? details.join("、") : String(details || event.message);
-    return `<li class="${state}"><span class="trace-node">${state === "complete" ? "✓" : state === "active" ? "…" : "!"}</span><div><strong>${stageNames[event.stage] || event.stage}</strong><small>${escapeHtml(short)}</small></div></li>`;
+    const short = traceSummary(event);
+    return `<li class="${state}"><button type="button" class="trace-row ${index === selectedTraceIndex ? "selected" : ""}" data-trace-index="${index}"><span class="trace-node">${state === "complete" ? "✓" : state === "active" ? "…" : "!"}</span><span><strong>${stageNames[event.stage] || event.stage}</strong><small>${escapeHtml(short)}</small></span><b class="trace-detail-link">详情</b></button></li>`;
   }).join("");
+  document.querySelectorAll("[data-trace-index]").forEach((button) => button.addEventListener("click", () => { selectedTraceIndex = Number(button.dataset.traceIndex); setTrace(events, status); }));
+  renderTraceInspector(events, selectedTraceIndex);
   const badge = $("#trace-status"); badge.textContent = status === "running" ? "Agent 执行中" : status === "completed" ? "执行完成" : status === "answered_by_rag" ? "RAG 已回答" : status === "approval_required" ? "等待审批" : "已阻断";
   badge.className = `trace-status ${status === "running" ? "running" : status === "completed" || status === "answered_by_rag" ? "done" : "blocked"}`;
+}
+
+function guardItem(label, detail, state, verdict) {
+  const icon = state === "pass" ? "✓" : state === "hold" ? "!" : state === "block" ? "×" : "…";
+  return '<div><span class="policy-check ' + state + '">' + icon + '</span><div><strong>' + escapeHtml(label) + '</strong><small>' + escapeHtml(detail) + '</small></div><em class="guard-item-state ' + state + '">' + escapeHtml(verdict) + '</em></div>';
+}
+
+function updateContextStat(result) {
+  const runner = (result.events || []).filter((event) => event.stage === "runner").at(-1);
+  const context = runner?.details?.context;
+  const reduction = context && Number.isFinite(Number(context.before)) && Number.isFinite(Number(context.after))
+    ? Math.max(0, Math.round((1 - Number(context.after) / Math.max(1, Number(context.before))) * 100)) : null;
+  const reset = (headline, note) => {
+    $("#context-reduction").textContent = headline; $("#context-before").textContent = "—"; $("#context-after").textContent = "—"; $("#context-percent").textContent = "—";
+    $("#context-progress-bar").style.width = "0%"; $("#context-note").textContent = note;
+  };
+  if (!context || result.status !== "completed") {
+    if (result.status === "running") reset("计算中", "等待只读 SQL 返回结果后再计算真实 Token 数。");
+    else if (result.status === "approval_required") reset("未执行", "本次请求等待审批，未产生可压缩的 SQL 结果。");
+    else if (result.status === "answered_by_rag") reset("不适用", "本次由知识库回答，未产生 SQL 结果压缩统计。");
+    else if (result.status === "blocked") reset("未执行", "本次请求已被策略拦截，未产生可压缩的 SQL 结果。");
+    else reset("等待本次结果", "仅在只读 SQL 返回结果后计算，不使用固定展示值。");
+    return;
+  }
+  $("#context-before").textContent = context.before + " tokens";
+  $("#context-after").textContent = context.after + " tokens";
+  $("#context-percent").textContent = reduction + "%";
+  $("#context-reduction").textContent = context.strategy === "not_needed" ? "无需压缩" : "Token ↓ " + reduction + "%";
+  $("#context-progress-bar").style.width = reduction + "%";
+  $("#context-note").textContent = context.strategy === "not_needed" ? "结果未超过 180 Token 预算，保留原文以避免无意义压缩。" : "完整结果已归档，本次向后续 Agent 仅传递压缩上下文。";
+}
+
+function updateGuard(result) {
+  const events = result.events || [];
+  const inProgress = result.status === "running";
+  const findStage = (stage) => events.filter((event) => event.stage === stage).at(-1);
+  const recall = findStage("recall"); const writer = findStage("writer"); const reviewer = findStage("reviewer"); const risk = findStage("risk"); const runner = findStage("runner"); const rag = findStage("rag");
+  const tables = recall?.details?.tables;
+  const metadata = tables?.length ? guardItem("元数据范围约束", "仅允许访问：" + tables.join("、"), "pass", "已收敛") : guardItem("元数据范围约束", rag ? "无可靠结构化表命中，已转知识库" : (inProgress ? "正在召回授权表" : "未产生可执行表范围"), rag ? "hold" : (inProgress ? "waiting" : "block"), rag ? "已兜底" : (inProgress ? "分析中" : "未通过"));
+  const reviewOk = reviewer?.message?.includes("通过");
+  const reviewDetail = reviewOk ? "单条只读 SQL 已通过表范围与语法审查" : (reviewer?.details?.issues?.join("；") || (writer ? "候选 SQL 未获得审查放行" : "未生成候选 SQL"));
+  const reviewState = reviewOk ? "pass" : (inProgress ? "waiting" : (rag ? "hold" : "block"));
+  const reviewLabel = reviewOk ? "已放行" : (inProgress ? "分析中" : (rag ? "未执行" : "已拦截"));
+  const riskMode = risk?.details?.mode;
+  const riskReason = risk?.details?.reason || (result.status === "approval_required" ? "写操作必须先经人工审批" : result.status === "blocked" ? "未满足安全执行规则" : "只读查询自动执行");
+  const riskState = riskMode === "auto" || result.status === "completed" ? "pass" : inProgress ? "waiting" : result.status === "approval_required" ? "hold" : result.status === "answered_by_rag" ? "hold" : "block";
+  const riskLabel = riskMode === "auto" || result.status === "completed" ? "自动执行" : inProgress ? "分析中" : result.status === "approval_required" ? "待审批" : result.status === "answered_by_rag" ? "已兜底" : "已阻断";
+  const auditDetail = result.status === "completed" ? "问题、SQL、行数与每个阶段已写入审计链" : result.status === "approval_required" ? "审批申请及风险原因已写入审计链" : result.status === "answered_by_rag" ? "RAG 兜底路径与知识来源已写入审计链" : "拦截原因已写入审计链";
+  $("#guard-list").innerHTML = metadata + guardItem("SQL 审查", reviewDetail, reviewState, reviewLabel) + guardItem("风险分级", riskReason, riskState, riskLabel) + guardItem("全链路审计", inProgress ? "将在本次工作流结束后写入防篡改审计链" : auditDetail, inProgress ? "waiting" : "pass", inProgress ? "等待结束" : "已留痕");
+  const stateMap = { completed:["pass", "✓", "本次查询已安全执行", (runner?.details?.row_count ?? result.rows?.length ?? 0) + " 条记录已在只读范围内返回"], answered_by_rag:["hold", "⌁", "未执行 SQL，已由知识库回答", "结构化查询未被放行，因此没有访问业务表"], approval_required:["hold", "!", "已暂停，等待人工审批", "写操作不会自动执行；请先核对影响预估"], blocked:["block", "×", "请求已被安全策略阻断", riskReason] };
+  const state = stateMap[result.status] || ["waiting", "…", "正在判定执行护栏", "正在收集元数据与审查证据"];
+  $("#guard-status").textContent = state[2]; $("#guard-status").className = "guard-status " + state[0];
+  $("#guard-verdict").className = "guard-verdict " + state[0]; $("#guard-verdict").innerHTML = '<span class="guard-verdict-icon">' + state[1] + '</span><div><strong>' + escapeHtml(state[2]) + '</strong><small>' + escapeHtml(state[3]) + '</small></div>';
+  $("#guard-open-approval").hidden = result.status !== "approval_required";
+  updateContextStat(result);
+}
+
+function resetGuard() {
+  selectedTraceIndex = -1;
+  $("#trace-count").textContent = "规划中";
+  $("#trace-inspector").innerHTML = '<span class="trace-inspector-kicker">Agent 正在规划</span><strong>安全证据会随工作流逐步出现。</strong><p>依次观察召回表范围、候选 SQL、审查结论、风险等级和执行结果。</p>';
+  $("#guard-status").textContent = "分析中"; $("#guard-status").className = "guard-status waiting";
+  $("#guard-verdict").className = "guard-verdict waiting"; $("#guard-verdict").innerHTML = '<span class="guard-verdict-icon">…</span><div><strong>正在收集安全证据</strong><small>召回表范围、SQL 审查、风险分级和审计会依次更新。</small></div>';
+  $("#guard-open-approval").hidden = true;
+  updateContextStat({ status:"running", events:[] });
 }
 
 function renderRows(rows) {
@@ -51,11 +154,13 @@ function renderResult(result) {
   const sources = $("#sources"); sources.innerHTML = result.sources?.length ? `知识来源：${result.sources.map((source) => `<span>${escapeHtml(source)}</span>`).join("")}` : ""; sources.hidden = !result.sources?.length;
   const approval = $("#approval-box"); latestApprovalId = result.approval_id || ""; approval.style.display = result.status === "approval_required" ? "flex" : "none";
   $("#approval-description").textContent = result.status === "approval_required" ? `审批单 ${latestApprovalId.slice(0, 8)}… 已创建。审批后由安全策略决定是否允许执行。` : "";
+  updateGuard(result);
 }
 
 async function runQuery() {
   const question = $("#question").value.trim(); if (!question) return toast("请先输入一个运维问题");
   const button = $("#run-query"); button.disabled = true; button.textContent = "分析中…";
+  resetGuard();
   const badge = $("#trace-status"); badge.textContent = "Agent 执行中"; badge.className = "trace-status running";
   $("#trace-list").innerHTML = `<li class="active"><span class="trace-node">…</span><div><strong>Agent 正在规划</strong><small>召回元数据、生成 SQL 并进行安全审查</small></div></li>`;
   try {
@@ -66,7 +171,7 @@ async function runQuery() {
       if (!frame || frame.startsWith(":")) return;
       const event = frame.match(/^event:\s*(.+)$/m)?.[1]; const raw = frame.match(/^data:\s*(.+)$/m)?.[1];
       if (!event || !raw) return; const payload = JSON.parse(raw);
-      if (event === "stage") { events.push(payload); setTrace(events, "running"); }
+      if (event === "stage") { events.push(payload); setTrace(events, "running"); updateGuard({ status:"running", events }); }
       if (event === "result") { resultReceived = true; renderResult(payload); setTrace(events, payload.status); loadAudit(); loadMetrics(); }
       if (event === "error") throw new Error(payload.message || "工作流失败");
     };
@@ -213,6 +318,8 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
   if (button.dataset.page === "chat") loadChat(); if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") loadKnowledge(); if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
+$("#guard-open-audit").addEventListener("click", () => document.querySelector('.nav-item[data-page="audit"]').click());
+$("#guard-open-approval").addEventListener("click", () => document.querySelector('.nav-item[data-page="approval"]').click());
 $("#new-chat").addEventListener("click", createChat);
 $("#send-chat").addEventListener("click", sendChat);
 $("#chat-input").addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendChat(); } });
