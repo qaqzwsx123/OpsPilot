@@ -121,7 +121,7 @@
 
       <section id="approval-page" class="page">
         <div class="section-intro"><span class="pill">HUMAN IN THE LOOP</span><button class="page-help-button" data-guide="approval">使用说明 ?</button><h2>高风险操作必须由人确认。</h2><p>审批前先做只读影响预估；审批意见、审批人、拒绝结论和执行结果均可追溯。默认安全模式不会执行写 SQL。</p></div>
-        <article class="card approval-library"><div class="card-heading"><div><p class="section-label">APPROVAL QUEUE</p><h3>审批队列</h3></div><button id="refresh-approvals" class="text-button">刷新</button></div><div id="approval-list" class="approval-list"></div><div class="record-pagination"><button id="prev-approvals" class="text-button">← 上一页</button><span id="approval-page-note">第 1 页</span><button id="next-approvals" class="text-button">下一页 →</button></div></article>
+        <article class="card approval-library"><div class="card-heading"><div><p class="section-label">APPROVAL QUEUE</p><h3>审批队列</h3></div><button id="refresh-approvals" class="text-button">刷新</button></div><div class="approval-quick-filter" role="group" aria-label="审批状态快捷筛选"><button class="approval-filter active" data-approval-status="">全部</button><button class="approval-filter" data-approval-status="pending">待审批</button><button class="approval-filter" data-approval-status="rejected">已拒绝</button><button class="approval-filter" data-approval-status="approved_safe_mode">安全模式已批准</button><button class="approval-filter" data-approval-status="expired">已过期</button></div><div id="approval-list" class="approval-list"></div><div class="record-pagination"><button id="prev-approvals" class="text-button">← 上一页</button><span id="approval-page-note">第 1 页</span><button id="next-approvals" class="text-button">下一页 →</button></div></article>
       </section>
 
       <section id="policy-page" class="page">
@@ -177,6 +177,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260919-knowledge-governance"></script>
+  <script src="/static/app.js?v=20260919-approval-filters"></script>
 </body>
 </html>

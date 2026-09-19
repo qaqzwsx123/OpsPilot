@@ -197,6 +197,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertLessEqual(len(list_approvals(limit=10, offset=0)), 10)
         self.assertGreaterEqual(audit_count(), len(first_audit_page))
         self.assertGreaterEqual(approval_count(), len(list_approvals(limit=10, offset=0)))
+        rejected_id = create_approval("test-filter", "DELETE FROM alerts WHERE status = 'closed';", "验证拒绝筛选")
+        reject_approval(rejected_id, "test-approver", "测试拒绝")
+        self.assertIn(rejected_id, {item["id"] for item in list_approvals(status="rejected")})
+        self.assertGreaterEqual(approval_count("rejected"), 1)
 
     def test_agent_chat_conversation_persists_and_isolated_by_requester(self) -> None:
         conversation = create_chat_conversation("test-chat-user")

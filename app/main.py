@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
+from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
@@ -372,13 +372,17 @@ def metrics() -> dict:
 
 
 @app.get("/api/v1/approvals")
-def approvals(limit: int = 100, offset: int = 0) -> list[dict]:
-    return list_approvals(min(max(limit, 1), 200), max(offset, 0))
+def approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[dict]:
+    if status and status not in APPROVAL_STATUSES:
+        raise HTTPException(status_code=400, detail="不支持的审批状态筛选")
+    return list_approvals(min(max(limit, 1), 200), max(offset, 0), status)
 
 
 @app.get("/api/v1/approvals/summary")
-def approval_summary() -> dict:
-    return {"total": approval_count()}
+def approval_summary(status: str = "") -> dict:
+    if status and status not in APPROVAL_STATUSES:
+        raise HTTPException(status_code=400, detail="不支持的审批状态筛选")
+    return {"total": approval_count(status), "status_counts": approval_status_counts()}
 
 
 @app.get("/api/v1/policies")

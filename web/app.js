@@ -6,6 +6,7 @@ let explorerCatalog = [];
 let explorerOffset = 0;
 let auditOffset = 0;
 let approvalOffset = 0;
+let approvalStatus = "";
 let knowledgeOffset = 0;
 let chatConversationId = "";
 let chatConversations = [];
@@ -632,6 +633,7 @@ $("#refresh-tool-history").addEventListener("click", loadToolHistory);
 $("#refresh-approvals").addEventListener("click", () => { approvalOffset = 0; loadApprovals(); });
 $("#prev-approvals").addEventListener("click", () => { approvalOffset = Math.max(0, approvalOffset - recordPageSize); loadApprovals(); });
 $("#next-approvals").addEventListener("click", () => { approvalOffset += recordPageSize; loadApprovals(); });
+document.querySelectorAll("[data-approval-status]").forEach((button) => button.addEventListener("click", () => { approvalStatus = button.dataset.approvalStatus || ""; approvalOffset = 0; loadApprovals(); }));
 $("#refresh-monitoring").addEventListener("click", loadMonitoring);
 $("#search-metrics").addEventListener("click", loadMetricCatalog);
 $("#refresh-metrics").addEventListener("click", () => { $("#metric-keyword").value = ""; $("#metric-category").value = ""; loadMetricCatalog(); });
@@ -734,11 +736,14 @@ function renderApprovals(approvals) {
 
 async function loadApprovals() {
   try {
-    const [response, summaryResponse] = await Promise.all([fetch("/api/v1/approvals?limit=" + recordPageSize + "&offset=" + approvalOffset), fetch("/api/v1/approvals/summary")]);
+    const statusQuery = "&status=" + encodeURIComponent(approvalStatus);
+    const [response, summaryResponse] = await Promise.all([fetch("/api/v1/approvals?limit=" + recordPageSize + "&offset=" + approvalOffset + statusQuery), fetch("/api/v1/approvals/summary?status=" + encodeURIComponent(approvalStatus))]);
     const rows = await response.json(); const summary = await summaryResponse.json();
     if (!response.ok || !summaryResponse.ok) throw new Error("审批队列加载失败");
     renderApprovals(rows);
-    $("#approval-page-note").textContent = "第 " + (Math.floor(approvalOffset / recordPageSize) + 1) + " 页 · 本页 " + rows.length + " 条 / 共 " + summary.total + " 条";
+    const labels = { "":"全部", pending:"待审批", rejected:"已拒绝", approved_safe_mode:"安全模式已批准", expired:"已过期" };
+    document.querySelectorAll("[data-approval-status]").forEach((button) => { const status = button.dataset.approvalStatus || ""; button.classList.toggle("active", status === approvalStatus); button.textContent = labels[status] + " " + (status ? (summary.status_counts?.[status] || 0) : summary.total); });
+    $("#approval-page-note").textContent = "当前筛选：" + labels[approvalStatus] + " · 第 " + (Math.floor(approvalOffset / recordPageSize) + 1) + " 页 · 本页 " + rows.length + " 条 / 共 " + summary.total + " 条";
     $("#prev-approvals").disabled = approvalOffset === 0; $("#next-approvals").disabled = approvalOffset + rows.length >= summary.total;
   } catch { $("#approval-list").innerHTML = '<div class="empty-state"><strong>无法加载审批队列</strong></div>'; }
 }

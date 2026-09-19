@@ -836,13 +836,26 @@ def knowledge_chunks() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def list_approvals(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+APPROVAL_STATUSES = {"pending", "approved", "approved_safe_mode", "executed", "rejected", "expired"}
+
+
+def _approval_status_clause(status: str) -> tuple[str, tuple[str, ...]]:
+    """Build a fixed, parameterized status predicate for approval list views."""
+    if not status:
+        return "", ()
+    if status not in APPROVAL_STATUSES:
+        raise ValueError(f"Unsupported approval status: {status}")
+    return " WHERE status = ?", (status,)
+
+
+def list_approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[dict[str, Any]]:
     with connect() as conn:
         _expire_pending_approvals(conn)
+        where_clause, parameters = _approval_status_clause(status)
         rows = conn.execute(
             "SELECT id, created_at, requester, sql, reason, status, risk_level, impact_preview, decision_comment, "
             "decided_by, decided_at, expires_at, executed_at, execution_result "
-            "FROM approvals ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)
+            f"FROM approvals{where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?", (*parameters, limit, offset)
         ).fetchall()
     result = []
     for row in rows:
@@ -886,9 +899,21 @@ def audit_count() -> int:
         return conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
 
 
-def approval_count() -> int:
+def approval_count(status: str = "") -> int:
     with connect() as conn:
-        return conn.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]
+        _expire_pending_approvals(conn)
+        where_clause, parameters = _approval_status_clause(status)
+        return conn.execute(f"SELECT COUNT(*) FROM approvals{where_clause}", parameters).fetchone()[0]
+
+
+def approval_status_counts() -> dict[str, int]:
+    """Return stable zero-filled counts so the approval filter badges are reliable."""
+    with connect() as conn:
+        _expire_pending_approvals(conn)
+        rows = conn.execute("SELECT status, COUNT(*) AS count FROM approvals GROUP BY status").fetchall()
+    counts = {status: 0 for status in APPROVAL_STATUSES}
+    counts.update({row["status"]: row["count"] for row in rows})
+    return counts
 
 
 def data_catalog() -> list[dict[str, Any]]:
