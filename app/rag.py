@@ -6,6 +6,7 @@ import re
 from collections import Counter
 from typing import Any
 
+from app.chroma_store import search_knowledge as chroma_search_knowledge
 from app.database import knowledge_chunks, rebuild_knowledge_index
 
 
@@ -34,10 +35,24 @@ class KnowledgeRag:
     """Dependency-free hybrid RAG: chunking, lexical recall, hash-vector recall and reranking."""
 
     def search(self, question: str, top_k: int = 3) -> list[dict[str, Any]]:
+        try:
+            chroma_hits = chroma_search_knowledge(question, top_k)
+        except Exception:
+            chroma_hits = []
+        if chroma_hits:
+            return self._rank(question, chroma_hits, top_k)
         chunks = knowledge_chunks()
         if not chunks:
             rebuild_knowledge_index()
             chunks = knowledge_chunks()
+        query_tokens = _tokens(question)
+        if not query_tokens:
+            return []
+        query_set = set(query_tokens)
+        query_vector = _embedding(query_tokens)
+        return self._rank(question, chunks, top_k)
+
+    def _rank(self, question: str, chunks: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
         query_tokens = _tokens(question)
         if not query_tokens:
             return []
@@ -49,7 +64,7 @@ class KnowledgeRag:
             if not document_tokens:
                 continue
             lexical = len(query_set & set(document_tokens)) / max(1, len(query_set))
-            semantic = _cosine(query_vector, _embedding(document_tokens))
+            semantic = chunk.get("semantic_score", _cosine(query_vector, _embedding(document_tokens)))
             title_boost = 0.12 if query_set & set(_tokens(chunk["title"] + " " + chunk["tags"])) else 0.0
             score = round(lexical * 0.62 + semantic * 0.30 + title_boost, 4)
             if score > 0.06:

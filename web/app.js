@@ -65,7 +65,7 @@ const pageGuides = {
   knowledge: { eyebrow:"KNOWLEDGE IN, RAG OUT", title:"知识库使用说明", lead:"知识库用于沉淀 SOP、排障手册和规范文本。当 SQL 工作流无法可靠回答时，Agent 会检索这些内容提供带来源的答复。", sections:[
     { title:"维护知识", text:"运维工程师及以上可新增、删除文档或重建索引。正文应写清判断条件、步骤、升级规则和验证方式。", tone:"manual" },
     { title:"验证检索", text:"在右侧输入问题并点击检索，可看到命中文档片段和得分，用于检查知识是否能被正确召回。" },
-    { title:"索引说明", text:"保存文档会纳入本地检索索引；删除后不再参与 RAG。知识维护动作都会记录在审计中心。" }
+    { title:"索引说明", text:"保存文档会自动切分并同步到本地 Chroma 向量库；页面右上角会显示集合数量和索引状态。SQLite 仍是业务事实库，Chroma 只是可重建的检索索引，删除或重建索引不会修改业务数据。" }
   ] },
   skills: { eyebrow:"REUSABLE EXPERIENCE", title:"Skills 与 SOP 使用说明", lead:"Skill 将重复运维经验封装为可复用的输入、步骤、输出和风险声明，方便 Agent 按标准方式执行或给出建议。", sections:[
     { title:"阅读 SOP", text:"点击“查看完整 SOP”可以查看 Skill 的原始说明、适用场景、输入要求、步骤和边界。" },
@@ -437,9 +437,71 @@ async function loadKnowledge() {
     const payload = await response.json(); if (!response.ok) throw new Error(payload.detail);
     if (!payload.items.length && knowledgeOffset > 0) { knowledgeOffset = Math.max(0, knowledgeOffset - knowledgePageSize); return loadKnowledge(); }
     renderKnowledge(payload.items, payload.total);
+    loadChromaStatus();
   } catch {
     $("#knowledge-list").innerHTML = "<div class='empty-state'><strong>无法加载知识库</strong></div>";
     $("#knowledge-page-note").textContent = "加载失败";
+  }
+}
+
+async function loadChromaStatus() {
+  const target = $("#chroma-store-status");
+  if (!target) return;
+  try {
+    const response = await fetch("/api/v1/knowledge/chroma?role=" + encodeURIComponent(currentRole()));
+    const status = await response.json();
+    if (!response.ok) throw new Error(status.detail || "Chroma 未就绪");
+    const collections = Object.keys(status.collections || {}).length;
+    target.textContent = "Chroma · " + collections + " 个集合 · " + status.total + " 条索引";
+    target.className = "chroma-store-status ready";
+    target.title = "本地路径：" + status.path + "；模型：" + status.model + "；维度：" + status.dimensions;
+  } catch {
+    target.textContent = "Chroma 未就绪";
+    target.className = "chroma-store-status needs-reindex";
+  }
+}
+
+async function openChromaBrowser() {
+  activeAuditAction = "";
+  renderAuditAction("Chroma 向量浏览器", "CHROMA COLLECTION BROWSER", '<p class="modal-lead">这里展示项目当前本地 Chroma 索引中的真实记录。知识库 SQLite 是业务主数据，Chroma 是可重建的向量检索索引；删除或修改知识后请使用“重建索引”保持两者一致。</p><div id="chroma-browser-summary" class="action-callout"><strong>正在读取集合</strong><span>请稍候…</span></div><label class="action-field">选择集合<select id="chroma-collection-select"><option value="">加载中…</option></select></label><div id="chroma-browser-records" class="chroma-browser-records"><div class="empty-state">正在读取索引记录…</div></div>', "关闭");
+  $("#confirm-audit-action").onclick = () => setAuditActionVisible(false);
+  setAuditActionVisible(true);
+  try {
+    const response = await fetch("/api/v1/chroma/collections?role=" + encodeURIComponent(currentRole()));
+    const collections = await response.json();
+    if (!response.ok) throw new Error(collections.detail || "无法读取 Chroma 集合");
+    const select = $("#chroma-collection-select");
+    if (!collections.length) {
+      select.innerHTML = '<option value="">暂无集合</option>';
+      $("#chroma-browser-summary").innerHTML = "<strong>Chroma 暂无索引</strong><span>请先在知识库点击“重建索引”，再回来查看。</span>";
+      $("#chroma-browser-records").innerHTML = '<div class="empty-state">当前没有可浏览的 Chroma 记录。</div>';
+      return;
+    }
+    select.innerHTML = collections.map((item) => '<option value="' + escapeHtml(item.name) + '">' + escapeHtml(item.name) + " · " + item.count + " 条</option>").join("");
+    select.addEventListener("change", () => loadChromaCollectionRecords(select.value));
+    await loadChromaCollectionRecords(collections[0].name);
+  } catch (error) {
+    $("#chroma-browser-summary").innerHTML = "<strong>Chroma 读取失败</strong><span>" + escapeHtml(error.message || "请检查 Chroma 索引") + "</span>";
+    $("#chroma-browser-records").innerHTML = '<div class="empty-state">无法读取集合记录。</div>';
+  }
+}
+
+async function loadChromaCollectionRecords(collectionName) {
+  const target = $("#chroma-browser-records");
+  if (!target || !collectionName) return;
+  target.innerHTML = '<div class="empty-state">正在读取记录…</div>';
+  try {
+    const response = await fetch("/api/v1/chroma/collections/" + encodeURIComponent(collectionName) + "?limit=100&offset=0&role=" + encodeURIComponent(currentRole()));
+    const records = await response.json();
+    if (!response.ok) throw new Error(records.detail || "记录读取失败");
+    $("#chroma-browser-summary").innerHTML = "<strong>集合 " + escapeHtml(collectionName) + "</strong><span>共 " + records.length + " 条索引记录（当前最多展示 100 条）。记录来自本地 Chroma，不是演示占位数据。</span>";
+    if (!records.length) {
+      target.innerHTML = '<div class="empty-state">这个集合目前没有记录。</div>';
+      return;
+    }
+    target.innerHTML = '<table class="chroma-browser-table"><thead><tr><th>ID</th><th>Document</th><th>Metadata</th></tr></thead><tbody>' + records.map((record) => '<tr><td>' + escapeHtml(record.id) + '</td><td>' + escapeHtml(record.document || "") + '</td><td>' + escapeHtml(JSON.stringify(record.metadata || {}, null, 2)) + '</td></tr>').join("") + '</tbody></table>';
+  } catch (error) {
+    target.innerHTML = '<div class="empty-state">' + escapeHtml(error.message || "无法读取记录") + '</div>';
   }
 }
 
@@ -540,7 +602,7 @@ async function reindexKnowledge() {
   const button = $("#reindex-knowledge"); button.disabled = true; button.textContent = "构建中…";
   try {
     const response = await fetch("/api/v1/knowledge/reindex", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) }); const result = await response.json(); if (!response.ok) throw new Error(result.detail || "索引重建失败");
-    toast("索引已重建，共 " + result.chunk_count + " 个知识片段"); loadAudit();
+    toast("SQLite 与 Chroma 索引已重建，共 " + result.chunk_count + " 个知识片段"); loadChromaStatus(); loadAudit();
   } catch { toast("索引重建失败"); }
   finally { button.disabled = false; button.textContent = "重建索引"; }
 }
@@ -798,6 +860,7 @@ $("#prev-knowledge").addEventListener("click", () => { knowledgeOffset = Math.ma
 $("#next-knowledge").addEventListener("click", () => { knowledgeOffset += knowledgePageSize; loadKnowledge(); });
 $("#search-knowledge").addEventListener("click", searchKnowledge);
 $("#reindex-knowledge").addEventListener("click", reindexKnowledge);
+$("#browse-chroma").addEventListener("click", openChromaBrowser);
 $("#skill-filter").addEventListener("change", renderSkills);
 $("#skill-risk-filter").addEventListener("change", renderSkills);
 $("#refresh-skill-history").addEventListener("click", loadSkillHistory);

@@ -20,7 +20,7 @@ Recall → Writer → Reviewer → Fix → Runner
 - 可验证审计：审计事件以 SHA-256 哈希链串联，控制台可校验链路连续性，帮助发现本地数据被意外修改的情况。
 - 内置数据浏览器：基于固定表白名单提供字段结构、行数与分页样例，仅允许只读浏览，并将访问动作写入审计。
 - 权限闭环：知识库新增、删除、索引重建需要 `operator` 及以上角色；自动工具要求 `read`，手工风险工具要求 `request_change` 并会创建真正的审批单。
-- Agentic RAG：无法生成可执行查询时，以运维知识库生成带来源的回答。
+- Agentic RAG：无法生成可执行查询时，以运维知识库生成带来源的回答；本地 Chroma 持久化知识分块、资产、告警、工单和作业单向量索引。
 - Context Engineering：超预算上下文先落盘、再保留摘要，减少后续提示词负担。
 - Skill 能力库：读取 `skills/*/SKILL.md`，内置告警分诊、指标诊断、工单交接、变更评审等可试运行 SOP；每次运行都有结构化输出和审计记录。
 - FastAPI、真正逐阶段推送的 SSE 事件流、SQLite 示例数据、持久化会话记忆、审批执行开关、单元测试和离线评测集。
@@ -73,7 +73,8 @@ app/
   workflow.py      # Recall → Writer → Reviewer → Fix → Runner
   database.py      # SQLite、示例业务数据、审计与审批持久化
   sql_agent.py     # Provider、检索、审查、风险分级
-  rag.py           # 轻量 Agentic RAG
+  rag.py           # Agentic RAG 与 Chroma 检索
+  chroma_store.py  # 本地 Chroma 索引与业务数据同步
   context.py       # 上下文压缩与落盘
   skills.py        # Skill.md 加载
 skills/            # 可复用运维 SOP
@@ -87,5 +88,5 @@ tests/             # 核心安全与流程测试
 1. 用真实 LLM Provider 替换 `RuleBasedSqlWriter`，要求输出严格 JSON（SQL、涉及表、置信度）。
 2. 接入 MySQL/PostgreSQL 只读账号和数据库解析器（如 sqlglot），不要复用本 Demo 的正则检查。
 3. 将审批单接入企业 IAM、工单/SSE 通知；执行器使用短期凭证、行数/扫描量/超时硬限制。
-4. 接入向量库、Embedding 和离线评测平台，持续监控成功率、拒绝率、P95 延迟与高危拦截率。
+4. 当前已接入本地 Chroma 和可替换的 64 维本地向量生成器；生产环境可替换为企业 Embedding 服务，并持续监控成功率、拒绝率、P95 延迟与高危拦截率。
 5. 审计哈希链是本地 Demo 的篡改检测机制；生产环境应改为基于 KMS/HSM 的 HMAC 或外部不可变审计存储。

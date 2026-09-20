@@ -20,6 +20,7 @@ from app.skills import SkillRegistry, run_skill
 from app.tool_registry import catalog, definition, invoke
 from app.workflow import SqlAgentWorkflow
 from app.rag import KnowledgeRag
+from app.chroma_store import chroma_collection_catalog, chroma_collection_records, chroma_stats, rebuild_chroma_index
 from app.knowledge_evaluation import run_knowledge_evaluation
 from app.policy import permitted, policy_summary, role_catalog
 
@@ -30,6 +31,11 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     seed_demo_data()
     seed_metric_demo_data()
     rebuild_knowledge_index()
+    try:
+        rebuild_chroma_index()
+    except Exception:
+        # SQLite/RAG remains available even if the optional local index needs repair.
+        pass
     yield
 
 
@@ -104,7 +110,7 @@ class EvaluationCaseRequest(MutationActorRequest):
 
 
 class EvaluationRunRequest(BaseModel):
-    scope: str = Field(default="baseline", regex="^(baseline|all|selected)$")
+    scope: str = Field(default="baseline", pattern="^(baseline|all|selected)$")
     case_ids: list[str] = Field(default_factory=list, max_length=100)
     role: str = Field(default="viewer", min_length=1, max_length=32)
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
@@ -449,6 +455,38 @@ def search_knowledge(query: str, limit: int = 3, role: str = "viewer") -> list[d
     return KnowledgeRag().search(query, min(max(limit, 1), 10))
 
 
+@app.get("/api/v1/knowledge/chroma")
+def knowledge_chroma(role: str = "viewer") -> dict:
+    if not permitted(role, "rag"):
+        raise HTTPException(status_code=403, detail="当前角色无知识向量索引查看权限。")
+    try:
+        return chroma_stats()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Chroma 尚未就绪：{exc}") from exc
+
+
+@app.get("/api/v1/chroma/collections")
+def chroma_collections(role: str = "viewer") -> list[dict]:
+    if not permitted(role, "rag"):
+        raise HTTPException(status_code=403, detail="当前角色无 Chroma 集合查看权限。")
+    try:
+        return chroma_collection_catalog()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Chroma 尚未就绪：{exc}") from exc
+
+
+@app.get("/api/v1/chroma/collections/{collection_name}")
+def chroma_collection(collection_name: str, limit: int = 100, offset: int = 0, role: str = "viewer") -> list[dict]:
+    if not permitted(role, "rag"):
+        raise HTTPException(status_code=403, detail="当前角色无 Chroma 数据查看权限。")
+    try:
+        return chroma_collection_records(collection_name, limit, offset)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Chroma 记录读取失败：{exc}") from exc
+
+
 @app.post("/api/v1/knowledge/evaluation")
 def evaluate_knowledge(request: MutationActorRequest) -> dict:
     if not permitted(request.role, "read"):
@@ -473,8 +511,9 @@ def reindex_knowledge(request: MutationActorRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     chunks = rebuild_knowledge_index()
-    write_audit(request.requester, "knowledge_reindexed", {"chunk_count": chunks, "role": request.role})
-    return {"status": "completed", "chunk_count": chunks}
+    chroma = rebuild_chroma_index()
+    write_audit(request.requester, "knowledge_reindexed", {"chunk_count": chunks, "chroma_total": chroma["total"], "role": request.role})
+    return {"status": "completed", "chunk_count": chunks, "chroma": chroma}
 
 
 @app.post("/api/v1/knowledge", status_code=201)
@@ -482,6 +521,7 @@ def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     document = add_knowledge_document(request.title, request.content, request.tags, request.expires_at)
+    rebuild_chroma_index()
     write_audit(request.requester, "knowledge_created", {"document_id": document["id"], "title": document["title"], "role": request.role})
     return document
 
@@ -494,6 +534,7 @@ def upload_knowledge(request: KnowledgeUploadRequest) -> dict:
     if suffix not in {".txt", ".md"}:
         raise HTTPException(status_code=400, detail="目前仅支持上传 .txt 或 .md 文档。")
     document = add_knowledge_document(request.title, request.content, request.tags, request.expires_at)
+    rebuild_chroma_index()
     write_audit(request.requester, "knowledge_uploaded", {"document_id": document["id"], "filename": request.filename, "role": request.role})
     return document
 
@@ -505,6 +546,7 @@ def edit_knowledge(document_id: int, request: KnowledgeDocumentRequest) -> dict:
     document = update_knowledge_document(document_id, request.title, request.content, request.tags, request.expires_at)
     if document is None:
         raise HTTPException(status_code=404, detail="知识文档不存在")
+    rebuild_chroma_index()
     write_audit(request.requester, "knowledge_updated", {"document_id": document_id, "version": document["version"], "role": request.role})
     return document
 
@@ -516,6 +558,7 @@ def rollback_knowledge(document_id: int, version: int, request: MutationActorReq
     document = rollback_knowledge_document(document_id, version)
     if document is None:
         raise HTTPException(status_code=404, detail="目标版本或知识文档不存在")
+    rebuild_chroma_index()
     write_audit(request.requester, "knowledge_rolled_back", {"document_id": document_id, "source_version": version, "new_version": document["version"], "role": request.role})
     return document
 
@@ -526,6 +569,7 @@ def delete_knowledge(document_id: int, request: MutationActorRequest) -> None:
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     if not delete_knowledge_document(document_id):
         raise HTTPException(status_code=404, detail="知识文档不存在")
+    rebuild_chroma_index()
     write_audit(request.requester, "knowledge_deleted", {"document_id": document_id, "role": request.role})
 
 
@@ -555,7 +599,13 @@ def policies() -> dict:
 
 @app.get("/api/v1/monitoring/overview")
 def monitoring() -> dict:
-    return monitoring_overview()
+    overview = monitoring_overview()
+    try:
+        status = chroma_stats()
+        overview.setdefault("health_checks", []).append({"name": "Chroma 向量库", "status": "healthy", "detail": f"{len(status['collections'])} 个集合 · {status['total']} 条索引"})
+    except Exception as exc:
+        overview.setdefault("health_checks", []).append({"name": "Chroma 向量库", "status": "degraded", "detail": f"索引不可用：{exc}"})
+    return overview
 
 
 @app.get("/api/v1/metric-definitions")
