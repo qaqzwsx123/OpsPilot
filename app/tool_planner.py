@@ -62,14 +62,14 @@ class ToolPlanner:
                 evidence.append({"tool": selection.name, "reason": selection.reason, "status": "failed", "result_count": 0, "sample": [], "summary": f"工具执行失败：{type(exc).__name__}"})
         return selections, evidence
 
-    def execute_agent(self, question: str, max_rounds: int = 3, max_tools: int = 3) -> tuple[list[ToolSelection], list[dict[str, Any]], str, str]:
-        """Let the local model choose tools, validate every call, and optionally continue planning."""
+    def execute_agent(self, question: str, max_rounds: int = 2, max_tools: int = 2) -> tuple[list[ToolSelection], list[dict[str, Any]], str, str]:
+        """Let the local model choose one tool first, then continue only on explicit follow-up evidence."""
         selections: list[ToolSelection] = []
         evidence: list[dict[str, Any]] = []
         used: set[str] = set()
         mode = "model_function_calling"
         for round_number in range(1, max_rounds + 1):
-            calls = self._model_choose(question, evidence, used)
+            calls = self._model_choose(question, evidence, used, max_calls=1)
             if calls is None:
                 mode = "rule_based_allowlist_fallback"
                 break
@@ -89,20 +89,25 @@ class ToolPlanner:
                     evidence.append(compact)
                 except Exception as exc:
                     evidence.append({"tool": call.name, "reason": selection.reason, "arguments": call.arguments, "round": round_number, "selection_mode": mode, "status": "failed", "result_count": 0, "sample": [], "summary": f"工具执行失败：{type(exc).__name__}"})
-            if accepted == 0 or len(selections) >= max_tools:
+                if accepted >= 1:
+                    break
+            # A second model round is intentionally opt-in. Read-only tools may
+            # explicitly return needs_followup=true when the first result is not
+            # sufficient to answer the question.
+            if accepted == 0 or len(selections) >= max_tools or not any(item.get("needs_followup") for item in evidence[-accepted:]):
                 break
         if not selections:
             selections, evidence = self.execute(question)
             mode = "rule_based_allowlist_fallback"
-        summary = self._model_summarize(question, evidence) or self._fallback_summary(evidence)
+        summary = self._fallback_summary(evidence)
         return selections, evidence, summary, mode
 
-    def _model_choose(self, question: str, evidence: list[dict[str, Any]], used: set[str]) -> list[ModelToolCall] | None:
+    def _model_choose(self, question: str, evidence: list[dict[str, Any]], used: set[str], max_calls: int = 1) -> list[ModelToolCall] | None:
         if not settings.chat_enabled:
             return None
         available = [tool for tool in self.rules if definition(tool[0]) and definition(tool[0]).risk == "auto" and tool[0] not in used]
         tool_specs = [{"type": "function", "function": {"name": name, "description": definition(name).description, "parameters": {"type": "object", "properties": {"query": {"type": "string", "description": "传给工具的业务问题或筛选条件"}, "reason": {"type": "string", "description": "为什么需要调用这个工具"}}, "required": ["query"]}}} for name, _, _ in available]
-        prompt = {"question": question, "already_called": sorted(used), "evidence": evidence[-3:], "instruction": "只从 tools 白名单中选择 0 到 2 个最有帮助的只读工具；如果现有证据已经足够，返回空调用。不要选择 manual 或 blocked 工具。"}
+        prompt = {"question": question, "already_called": sorted(used), "evidence": evidence[-3:], "instruction": f"只从 tools 白名单中选择最多 {max_calls} 个最有帮助的只读工具；如果现有证据已经足够，返回空调用。不要选择 manual 或 blocked 工具。第一轮优先只调用一个工具。"}
         payload = {"model": settings.chat_model, "messages": [{"role": "system", "content": "你是 OpsPilot 的工具规划器。必须遵守工具白名单，只规划只读调用。"}, {"role": "user", "content": json.dumps(prompt, ensure_ascii=False, default=str)}], "tools": tool_specs, "tool_choice": "auto", "temperature": 0}
         try:
             response = self._request(payload)
@@ -122,16 +127,6 @@ class ToolPlanner:
         except (HTTPError, URLError, TimeoutError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError):
             return None
 
-    def _model_summarize(self, question: str, evidence: list[dict[str, Any]]) -> str | None:
-        if not settings.chat_enabled or not evidence:
-            return None
-        payload = {"model": settings.chat_model, "messages": [{"role": "system", "content": "你是 OpsPilot。基于只读工具结果用中文给出简洁、可核对的运维结论。不要声称执行了变更；如果需要变更，明确建议进入审批中心。"}, {"role": "user", "content": json.dumps({"question": question, "tool_results": evidence}, ensure_ascii=False, default=str)}], "temperature": 0.2}
-        try:
-            content = self._request(payload).get("choices", [{}])[0].get("message", {}).get("content")
-            return str(content).strip() if content else None
-        except (HTTPError, URLError, TimeoutError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError):
-            return None
-
     @staticmethod
     def _request(payload: dict[str, Any]) -> dict[str, Any]:
         request = Request(f"{settings.chat_base_url}/chat/completions", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
@@ -142,7 +137,8 @@ class ToolPlanner:
     def _fallback_summary(evidence: list[dict[str, Any]]) -> str:
         if not evidence:
             return "未匹配到可自动调用的只读工具。"
-        return "Agent 已完成只读工具编排：" + "、".join(item["tool"] for item in evidence) + "。详细结果见工作流轨迹；涉及变更的操作仍需进入审批流程。"
+        details = "、".join(f"{item['tool']} 返回 {item.get('result_count', 0)} 条" for item in evidence)
+        return "Agent 已完成只读工具编排：" + details + "。详细结果见工作流轨迹；涉及变更的操作仍需进入审批流程。"
 
     @staticmethod
     def _compact(selection: ToolSelection, result: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +149,9 @@ class ToolPlanner:
         else:
             sample = rows
             count = 0
+        followup = bool(result.get("needs_followup"))
+        if "needs_followup" not in result and isinstance(rows, list) and not rows:
+            followup = True
         return {
             "tool": selection.name,
             "reason": selection.reason,
@@ -160,4 +159,6 @@ class ToolPlanner:
             "result_count": count,
             "sample": sample,
             "summary": result.get("message") or (f"返回 {count} 条结构化记录" if isinstance(rows, list) else "已返回结构化状态"),
+            "needs_followup": followup,
+            "followup_hint": result.get("followup_hint", "") if followup else "",
         }

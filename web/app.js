@@ -289,7 +289,23 @@ async function loadAudit() {
     const [response, summaryResponse] = await Promise.all([fetch("/api/v1/audit?limit=" + recordPageSize + "&offset=" + auditOffset), fetch("/api/v1/audit/summary")]);
     const rows = await response.json(); const summary = await summaryResponse.json();
     if (!response.ok || !summaryResponse.ok) throw new Error("审计记录加载失败");
-    target.innerHTML = rows.length ? rows.map((row) => `<div class="audit-row"><span class="audit-action">${escapeHtml(row.action)}</span><span class="audit-payload">${escapeHtml(row.payload.question || row.payload.sql || row.payload.sources?.join("、") || "系统事件")}</span><span class="audit-time">${new Date(row.created_at).toLocaleString("zh-CN", {hour12:false})}</span></div>`).join("") : "<div class='empty-state'><strong>暂无审计记录</strong></div>";
+    const preview = (row) => {
+      const payload = row.payload || {};
+      if (row.action === "agent_tool_plan") {
+        const tools = (payload.tools || []).map((item) => item.name).join("、") || "未选择工具";
+        return (payload.planner || "工具规划") + " 选择 " + tools + (payload.latency_ms !== undefined ? " · " + payload.latency_ms + "ms" : "");
+      }
+      if (row.action === "agent_tool_invoked") {
+        return (payload.tool || "未知工具") + " · " + (payload.status || "未知状态") + " · 返回 " + (payload.result_count ?? 0) + " 条";
+      }
+      if (row.action === "agent_chat_stream_completed") {
+        return (payload.provider || "模型") + " 流式对话完成 · 上下文 " + (payload.context_messages ?? 0) + " 条";
+      }
+      if (row.action === "chat_conversation_created") return "创建聊天会话 · " + (payload.role || "未标注角色");
+      if (row.action === "sql_executed") return (payload.question || "查询") + " · 返回 " + (payload.row_count ?? 0) + " 条";
+      return payload.question || payload.sql || (Array.isArray(payload.sources) ? payload.sources.join("、") : "") || "系统事件";
+    };
+    target.innerHTML = rows.length ? rows.map((row) => `<div class="audit-row"><span class="audit-action">${escapeHtml(row.action)}</span><span class="audit-payload">${escapeHtml(preview(row))}</span><span class="audit-time">${new Date(row.created_at).toLocaleString("zh-CN", {hour12:false})}</span></div>`).join("") : "<div class='empty-state'><strong>暂无审计记录</strong></div>";
     $("#audit-page-note").textContent = "第 " + (Math.floor(auditOffset / recordPageSize) + 1) + " 页 · 本页 " + rows.length + " 条 / 共 " + summary.total + " 条";
     $("#prev-audit").disabled = auditOffset === 0; $("#next-audit").disabled = auditOffset + rows.length >= summary.total;
   } catch { target.innerHTML = "<div class='empty-state'><strong>无法加载审计记录</strong></div>"; }

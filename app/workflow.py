@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -48,21 +49,30 @@ class SqlAgentWorkflow:
         if memory:
             emit("context", "已加载用户近期会话记忆", message_count=len(memory))
         save_memory(requester, "user", question)
+        planner_started = time.perf_counter()
         if use_model_tools:
             selections, tool_context, tool_summary, selection_mode = self.tool_planner.execute_agent(question)
         else:
             selections, tool_context = self.tool_planner.execute(question)
             tool_summary, selection_mode = "", "rule_based_allowlist"
+        planner_latency_ms = round((time.perf_counter() - planner_started) * 1000)
+        planner_name = "DeepSeek Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
+        if use_model_tools:
+            write_audit(requester, "agent_tool_plan", {
+                "tools": [{"name": item.name, "reason": item.reason} for item in selections],
+                "selection_mode": selection_mode,
+                "planner": planner_name,
+                "latency_ms": planner_latency_ms,
+                "role": role,
+            })
         if selections:
-            planner_name = "DeepSeek Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
-            emit("tool_plan", "Agent 已选择只读白名单工具", tools=[{"name": item.name, "reason": item.reason} for item in selections], selection_mode=selection_mode, planner=planner_name)
+            emit("tool_plan", "Agent 已选择只读白名单工具", tools=[{"name": item.name, "reason": item.reason} for item in selections], selection_mode=selection_mode, planner=planner_name, latency_ms=planner_latency_ms)
             for evidence in tool_context:
                 emit("tool", f"工具 {evidence['tool']} 执行完成", **evidence)
-                write_audit(requester, "agent_tool_invoked", {"tool": evidence["tool"], "status": evidence["status"], "result_count": evidence["result_count"], "reason": evidence["reason"], "role": role})
+                write_audit(requester, "agent_tool_invoked", {"tool": evidence["tool"], "status": evidence["status"], "result_count": evidence["result_count"], "reason": evidence["reason"], "arguments": evidence.get("arguments", {}), "round": evidence.get("round", 1), "selection_mode": evidence.get("selection_mode", selection_mode), "needs_followup": evidence.get("needs_followup", False), "role": role})
             emit("tool_summary", "Agent 已汇总工具结果", answer=tool_summary)
         else:
-            planner_name = "DeepSeek Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
-            emit("tool_plan", "未命中适用的自动工具，继续结构化召回", tools=[], selection_mode=selection_mode, planner=planner_name)
+            emit("tool_plan", "未命中适用的自动工具，继续结构化召回", tools=[], selection_mode=selection_mode, planner=planner_name, latency_ms=planner_latency_ms)
         emit("recall", "开始三路元数据召回")
         candidates = self.retriever.retrieve(question)
         emit("recall", "元数据召回完成", tables=[candidate.name for candidate in candidates])
