@@ -36,5 +36,6 @@ def policy_summary() -> list[dict[str, str]]:
         {"operation": "只读 SQL / RAG / 自动工具", "tier": "AUTO", "required_permission": "read"},
         {"operation": "创建作业、关闭告警、写库操作", "tier": "MANUAL", "required_permission": "request_change"},
         {"operation": "审批待执行变更", "tier": "MANUAL", "required_permission": "approve_change"},
+        {"operation": "删除审计记录（删除动作仍会留痕）", "tier": "MANUAL", "required_permission": "approve_change"},
         {"operation": "数据库维护、DDL、多语句", "tier": "BLOCKED", "required_permission": "无"},
     ]

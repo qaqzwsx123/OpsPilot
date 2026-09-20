@@ -464,6 +464,34 @@ def write_audit(requester: str, action: str, payload: dict[str, Any]) -> None:
         )
 
 
+def delete_audit_event(event_id: str, deleted_by: str) -> dict[str, Any] | None:
+    """Delete one audit row, rebuild the remaining chain, and retain a deletion event."""
+    with connect() as conn:
+        row = conn.execute("SELECT id, created_at, requester, action FROM audit_logs WHERE id = ?", (event_id,)).fetchone()
+        if row is None:
+            return None
+        conn.execute("DELETE FROM audit_logs WHERE id = ?", (event_id,))
+        _backfill_audit_hashes(conn)
+
+        deletion_id, deletion_time = str(uuid4()), utc_now()
+        deletion_payload = {
+            "deleted_event_id": event_id,
+            "deleted_action": row["action"],
+            "deleted_requester": row["requester"],
+            "deleted_created_at": row["created_at"],
+            "deleted_by": deleted_by,
+        }
+        canonical_payload = _canonical_payload(deletion_payload)
+        previous_row = conn.execute("SELECT entry_hash FROM audit_logs WHERE entry_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1").fetchone()
+        previous = previous_row["entry_hash"] if previous_row else ""
+        digest = _audit_digest(previous, deletion_id, deletion_time, deleted_by, "audit_deleted", canonical_payload)
+        conn.execute(
+            "INSERT INTO audit_logs (id, created_at, requester, action, payload, prev_hash, entry_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (deletion_id, deletion_time, deleted_by, "audit_deleted", canonical_payload, previous, digest),
+        )
+        return {"deleted": True, "deleted_event_id": event_id, "deleted_action": row["action"], "audit_event_id": deletion_id}
+
+
 def _normalized_sql(sql: str) -> str:
     return " ".join(sql.strip().split()).rstrip(";")
 

@@ -49,6 +49,7 @@ const pageGuides = {
   audit: { eyebrow:"AUDITABLE BY DEFAULT", title:"审计中心使用说明", lead:"审计中心记录 Agent 查询、工具调用、审批决定、知识维护、CSV 导入等关键事件，用于追踪与复盘。", sections:[
     { title:"查看记录", text:"记录按时间倒序分页展示，每页 10 条，并显示总数。刷新只读取最新审计数据。" },
     { title:"验证完整性", text:"“验证完整性”会弹出范围选择：可校验全量 SHA-256 哈希链，或快速校验最近 100 条及前序锚点；发现断裂时应停止依赖该链进行合规判断。" },
+    { title:"删除记录", text:"切换为值班负责人后，每条记录会出现“删除”按钮。点击后必须二次确认；原记录会从列表移除，但系统会新增 audit_deleted 留痕并重建剩余哈希链。" },
     { title:"离线评测", text:"“运行评测”可选择 5 条内置基线、全部用例或勾选的用例。运维工程师可新增自定义“问题 + 预期状态”用例；评测不会修改业务表。" }
   ] },
   approval: { eyebrow:"HUMAN IN THE LOOP", title:"审批中心使用说明", lead:"审批中心承接 SQL 写操作和 MANUAL 工具请求。它让高风险变更必须经过人工确认，而非由 Agent 自动执行。", sections:[
@@ -302,13 +303,29 @@ async function loadAudit() {
         return (payload.provider || "模型") + " 流式对话完成 · 上下文 " + (payload.context_messages ?? 0) + " 条";
       }
       if (row.action === "chat_conversation_created") return "创建聊天会话 · " + (payload.role || "未标注角色");
+      if (row.action === "audit_deleted") return "删除 " + (payload.deleted_action || "审计事件") + " · 操作人 " + (payload.deleted_by || "未知");
       if (row.action === "sql_executed") return (payload.question || "查询") + " · 返回 " + (payload.row_count ?? 0) + " 条";
       return payload.question || payload.sql || (Array.isArray(payload.sources) ? payload.sources.join("、") : "") || "系统事件";
     };
-    target.innerHTML = rows.length ? rows.map((row) => `<div class="audit-row"><span class="audit-action">${escapeHtml(row.action)}</span><span class="audit-payload">${escapeHtml(preview(row))}</span><span class="audit-time">${new Date(row.created_at).toLocaleString("zh-CN", {hour12:false})}</span></div>`).join("") : "<div class='empty-state'><strong>暂无审计记录</strong></div>";
+    const canDelete = currentRole() === "approver";
+    target.innerHTML = rows.length ? rows.map((row) => `<div class="audit-row"><span class="audit-action">${escapeHtml(row.action)}</span><span class="audit-payload">${escapeHtml(preview(row))}</span><span class="audit-time">${new Date(row.created_at).toLocaleString("zh-CN", {hour12:false})}</span><span class="audit-delete-cell">${canDelete ? '<button type="button" class="text-button audit-delete-button" data-delete-audit="' + escapeHtml(row.id) + '">删除</button>' : ''}</span></div>`).join("") : "<div class='empty-state'><strong>暂无审计记录</strong></div>";
+    document.querySelectorAll("[data-delete-audit]").forEach((button) => button.addEventListener("click", () => confirmDeleteAudit(button.dataset.deleteAudit)));
     $("#audit-page-note").textContent = "第 " + (Math.floor(auditOffset / recordPageSize) + 1) + " 页 · 本页 " + rows.length + " 条 / 共 " + summary.total + " 条";
     $("#prev-audit").disabled = auditOffset === 0; $("#next-audit").disabled = auditOffset + rows.length >= summary.total;
   } catch { target.innerHTML = "<div class='empty-state'><strong>无法加载审计记录</strong></div>"; }
+}
+
+async function confirmDeleteAudit(eventId) {
+  if (currentRole() !== "approver") return toast("只有值班负责人可以删除审计记录");
+  if (!window.confirm("确认删除这条审计记录？删除后原记录将从列表移除，但系统会新增一条 audit_deleted 留痕；业务数据不会受影响。")) return;
+  try {
+    const response = await fetch("/api/v1/audit/" + encodeURIComponent(eventId), { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", confirm:true }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "删除审计记录失败");
+    toast("审计记录已删除，删除动作已留痕");
+    auditOffset = 0;
+    loadAudit(); loadMetrics();
+  } catch (error) { toast(error.message || "删除审计记录失败"); }
 }
 
 function renderSkills() {

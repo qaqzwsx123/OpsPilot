@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from uuid import uuid4
 
-from app.database import add_chat_message, add_evaluation_case, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_approval, delete_chat_conversation, delete_evaluation_case, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, knowledge_document_count, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
+from app.database import add_chat_message, add_evaluation_case, approve, approval_count, audit_count, audit_integrity, create_approval, create_chat_conversation, data_catalog, delete_approval, delete_audit_event, delete_chat_conversation, delete_evaluation_case, execute_approved, execute_readonly, get_chat_messages, import_metric_csv, knowledge_document_count, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_metric_definitions, list_metric_imports, metric_trend, reject_approval, seed_demo_data, seed_metric_demo_data, table_snapshot, write_audit
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.main import KnowledgeDocumentRequest, ToolInvokeRequest, create_knowledge, invoke_tool
 from app.skills import SkillRegistry, run_skill
@@ -133,6 +133,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(recent["valid"])
         self.assertEqual(recent["scope"], "recent")
         self.assertEqual(recent["checked_events"], 1)
+
+    def test_audit_event_can_be_deleted_with_deletion_trail(self) -> None:
+        write_audit("test-audit-delete", "deletion_target", {"case": "confirm_delete"})
+        target = next(item for item in list_audit(limit=30) if item["action"] == "deletion_target")
+        result = delete_audit_event(target["id"], "test-approver")
+        self.assertTrue(result["deleted"])
+        self.assertFalse(any(item["id"] == target["id"] for item in list_audit(limit=200)))
+        self.assertTrue(any(item["action"] == "audit_deleted" and item["payload"]["deleted_event_id"] == target["id"] for item in list_audit(limit=30)))
+        self.assertTrue(audit_integrity()["valid"])
 
     def test_custom_evaluation_cases_can_be_selected_and_removed(self) -> None:
         custom = add_evaluation_case("自定义离线设备", "查询华东区离线设备", "completed", "test-evaluation")
