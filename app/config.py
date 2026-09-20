@@ -40,6 +40,7 @@ class Settings:
     chat_api_key: str = os.getenv("MODEL_API_KEY", "")
     chat_model: str = os.getenv("MODEL_NAME", "")
     chat_timeout_seconds: int = int(os.getenv("MODEL_TIMEOUT", "90"))
+    tool_planner_mode: str = os.getenv("AGENT_TOOL_PLANNER_MODE", "model").strip().lower()
 
     @property
     def llm_enabled(self) -> bool:
@@ -52,6 +53,11 @@ class Settings:
     @property
     def chat_enabled(self) -> bool:
         return self.chat_provider == "openai-compatible" and bool(self.chat_base_url and self.chat_model)
+
+    @property
+    def model_tool_planner_enabled(self) -> bool:
+        """Whether query workflows may ask the local model to select read-only tools."""
+        return self.tool_planner_mode in {"model", "auto", "on", "true", "1"}
 
 
 settings = Settings()

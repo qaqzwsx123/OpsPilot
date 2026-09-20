@@ -210,7 +210,7 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
 
 @app.post("/api/v1/query")
 def query(request: QueryRequest) -> dict:
-    return workflow.run(request.question, request.requester, request.role).to_dict()
+    return workflow.run(request.question, request.requester, request.role, use_model_tools=settings.model_tool_planner_enabled).to_dict()
 
 
 @app.post("/api/v1/query/stream")
@@ -221,7 +221,7 @@ def stream_query(request: QueryRequest) -> StreamingResponse:
 
         def worker() -> None:
             try:
-                result = workflow.run(request.question, request.requester, request.role, lambda event: queue.put(("stage", event.to_dict())))
+                result = workflow.run(request.question, request.requester, request.role, lambda event: queue.put(("stage", event.to_dict())), use_model_tools=settings.model_tool_planner_enabled)
                 queue.put(("result", result.to_dict()))
             except Exception as exc:  # errors remain structured for the browser client
                 queue.put(("error", {"message": "工作流执行失败", "type": type(exc).__name__}))

@@ -18,7 +18,7 @@ const recordPageSize = 10;
 const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
 
-const stageNames = { context: "Context Memory", tool_plan: "Tool Planner", tool: "Tool Runner", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
+const stageNames = { context: "Context Memory", tool_plan: "Tool Planner", tool: "Tool Runner", tool_summary: "Agent Summary", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
 let selectedTraceIndex = -1;
 const pageGuides = {
   agent: { eyebrow:"SAFE SQL WORKFLOW", title:"智能查询使用说明", lead:"这里把自然语言运维问题转换为受控查询。系统优先查询授权的结构化数据，无法生成可靠 SQL 时才使用知识库回答。", sections:[

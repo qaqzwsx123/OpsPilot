@@ -27,7 +27,7 @@ class SqlAgentWorkflow:
         self.tool_planner = ToolPlanner()
         self.compressor = ContextCompressor(Path(__file__).resolve().parent.parent / "data" / "context")
 
-    def run(self, question: str, requester: str, role: str = "operator", on_event: EventHandler | None = None) -> QueryResult:
+    def run(self, question: str, requester: str, role: str = "operator", on_event: EventHandler | None = None, use_model_tools: bool = False) -> QueryResult:
         events: list[WorkflowEvent] = []
 
         def emit(stage: str, message: str, **details: object) -> None:
@@ -48,14 +48,21 @@ class SqlAgentWorkflow:
         if memory:
             emit("context", "已加载用户近期会话记忆", message_count=len(memory))
         save_memory(requester, "user", question)
-        selections, tool_context = self.tool_planner.execute(question)
+        if use_model_tools:
+            selections, tool_context, tool_summary, selection_mode = self.tool_planner.execute_agent(question)
+        else:
+            selections, tool_context = self.tool_planner.execute(question)
+            tool_summary, selection_mode = "", "rule_based_allowlist"
         if selections:
-            emit("tool_plan", "已根据问题选择只读白名单工具", tools=[{"name": item.name, "reason": item.reason} for item in selections], selection_mode="rule_based_allowlist")
+            planner_name = "DeepSeek Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
+            emit("tool_plan", "Agent 已选择只读白名单工具", tools=[{"name": item.name, "reason": item.reason} for item in selections], selection_mode=selection_mode, planner=planner_name)
             for evidence in tool_context:
                 emit("tool", f"工具 {evidence['tool']} 执行完成", **evidence)
                 write_audit(requester, "agent_tool_invoked", {"tool": evidence["tool"], "status": evidence["status"], "result_count": evidence["result_count"], "reason": evidence["reason"], "role": role})
+            emit("tool_summary", "Agent 已汇总工具结果", answer=tool_summary)
         else:
-            emit("tool_plan", "未命中适用的自动工具，继续结构化召回", tools=[], selection_mode="rule_based_allowlist")
+            planner_name = "DeepSeek Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
+            emit("tool_plan", "未命中适用的自动工具，继续结构化召回", tools=[], selection_mode=selection_mode, planner=planner_name)
         emit("recall", "开始三路元数据召回")
         candidates = self.retriever.retrieve(question)
         emit("recall", "元数据召回完成", tables=[candidate.name for candidate in candidates])
@@ -111,5 +118,5 @@ class SqlAgentWorkflow:
         compacted, stats = self.compressor.compact(str(rows))
         emit("runner", "只读 SQL 执行完成", row_count=len(rows), context=stats)
         write_audit(requester, "sql_executed", {"question": question, "sql": sql, "row_count": len(rows)})
-        answer = f"查询完成，共返回 {len(rows)} 条记录。"
+        answer = (tool_summary + "\n\n" if tool_summary else "") + f"查询完成，共返回 {len(rows)} 条记录。"
         return finalize(QueryResult("completed", answer, sql=sql, rows=rows, events=events))
