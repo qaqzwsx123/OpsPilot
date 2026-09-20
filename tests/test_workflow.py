@@ -143,11 +143,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(result["maintenance_logged"])
         self.assertTrue(audit_integrity()["valid"])
 
-    def test_audit_cleanup_preview_and_delete_before_reduce_audit_rows(self) -> None:
+    def test_audit_cleanup_preview_supports_inclusive_time_range(self) -> None:
         write_audit("test-audit-cleanup", "old_cleanup_target", {"case": "retention"})
-        preview = audit_cleanup_preview("2999-01-01T00:00:00+00:00")
+        preview = audit_cleanup_preview("2000-01-01T00:00:00+00:00", "2999-01-01T00:00:00+00:00")
+        self.assertEqual(preview["start"], "2000-01-01T00:00:00+00:00")
+        self.assertEqual(preview["end"], "2999-01-01T00:00:00+00:00")
         self.assertGreaterEqual(preview["matched_count"], 1)
         self.assertTrue(audit_integrity()["valid"])
+        with self.assertRaises(ValueError):
+            audit_cleanup_preview("2999-01-01T00:00:00+00:00", "2000-01-01T00:00:00+00:00")
 
     def test_custom_evaluation_cases_can_be_selected_and_removed(self) -> None:
         custom = add_evaluation_case("自定义离线设备", "查询华东区离线设备", "completed", "test-evaluation")

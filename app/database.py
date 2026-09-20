@@ -498,30 +498,38 @@ def _normalize_audit_cutoff(cutoff: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
-def audit_cleanup_preview(cutoff: str) -> dict[str, Any]:
-    normalized = _normalize_audit_cutoff(cutoff)
-    with connect() as conn:
-        row = conn.execute("SELECT COUNT(*) AS count, MIN(created_at) AS oldest, MAX(created_at) AS newest FROM audit_logs WHERE created_at < ?", (normalized,)).fetchone()
-    return {"before": normalized, "matched_count": row["count"], "oldest": row["oldest"], "newest": row["newest"]}
+def _normalize_audit_range(start: str, end: str) -> tuple[str, str]:
+    normalized_start = _normalize_audit_cutoff(start)
+    normalized_end = _normalize_audit_cutoff(end)
+    if normalized_start > normalized_end:
+        raise ValueError("开始时间不能晚于结束时间")
+    return normalized_start, normalized_end
 
 
-def delete_audit_before(cutoff: str, deleted_by: str) -> dict[str, Any]:
-    """Delete audit rows before a cutoff and store cleanup metadata separately."""
-    normalized = _normalize_audit_cutoff(cutoff)
+def audit_cleanup_preview(start: str, end: str) -> dict[str, Any]:
+    normalized_start, normalized_end = _normalize_audit_range(start, end)
     with connect() as conn:
-        rows = conn.execute("SELECT id, action FROM audit_logs WHERE created_at < ? ORDER BY rowid", (normalized,)).fetchall()
+        row = conn.execute("SELECT COUNT(*) AS count, MIN(created_at) AS oldest, MAX(created_at) AS newest FROM audit_logs WHERE created_at >= ? AND created_at <= ?", (normalized_start, normalized_end)).fetchone()
+    return {"start": normalized_start, "end": normalized_end, "matched_count": row["count"], "oldest": row["oldest"], "newest": row["newest"]}
+
+
+def delete_audit_range(start: str, end: str, deleted_by: str) -> dict[str, Any]:
+    """Delete audit rows in a time range and store cleanup metadata separately."""
+    normalized_start, normalized_end = _normalize_audit_range(start, end)
+    with connect() as conn:
+        rows = conn.execute("SELECT id, action FROM audit_logs WHERE created_at >= ? AND created_at <= ? ORDER BY rowid", (normalized_start, normalized_end)).fetchall()
         if not rows:
-            return {"deleted": False, "deleted_count": 0, "before": normalized, "maintenance_logged": False}
+            return {"deleted": False, "deleted_count": 0, "start": normalized_start, "end": normalized_end, "maintenance_logged": False}
         action_counts: dict[str, int] = {}
         for row in rows:
             action_counts[row["action"]] = action_counts.get(row["action"], 0) + 1
-        conn.execute("DELETE FROM audit_logs WHERE created_at < ?", (normalized,))
+        conn.execute("DELETE FROM audit_logs WHERE created_at >= ? AND created_at <= ?", (normalized_start, normalized_end))
         _backfill_audit_hashes(conn)
         conn.execute(
             "INSERT INTO audit_maintenance_logs (id, created_at, actor, operation, target_event_id, target_action, cutoff, deleted_count, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid4()), utc_now(), deleted_by, "delete_before", None, None, normalized, len(rows), _canonical_payload({"action_counts": action_counts})),
+            (str(uuid4()), utc_now(), deleted_by, "delete_range", None, None, normalized_start + " / " + normalized_end, len(rows), _canonical_payload({"start": normalized_start, "end": normalized_end, "action_counts": action_counts})),
         )
-    return {"deleted": True, "deleted_count": len(rows), "before": normalized, "maintenance_logged": True, "action_counts": action_counts}
+    return {"deleted": True, "deleted_count": len(rows), "start": normalized_start, "end": normalized_end, "maintenance_logged": True, "action_counts": action_counts}
 
 
 def _normalized_sql(sql: str) -> str:

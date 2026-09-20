@@ -49,7 +49,7 @@ const pageGuides = {
   audit: { eyebrow:"AUDITABLE BY DEFAULT", title:"审计中心使用说明", lead:"审计中心记录 Agent 查询、工具调用、审批决定、知识维护、CSV 导入等关键事件，用于追踪与复盘。", sections:[
     { title:"查看记录", text:"记录按时间倒序分页展示，每页 10 条，并显示总数。刷新只读取最新审计数据。" },
     { title:"验证完整性", text:"“验证完整性”会弹出范围选择：可校验全量 SHA-256 哈希链，或快速校验最近 100 条及前序锚点；发现断裂时应停止依赖该链进行合规判断。" },
-    { title:"删除记录", text:"切换为值班负责人后，每条记录会出现“删除”按钮，也可以使用“按时间清理”批量删除旧记录。删除前会先预览数量并二次确认；维护动作记录在独立日志中，不会再次占用审计记录列表。" },
+    { title:"删除记录", text:"切换为值班负责人后，每条记录会出现“删除”按钮，也可以使用“按时间清理”选择开始时间和结束时间，批量删除该闭区间内的记录。删除前会先预览数量并二次确认；维护动作记录在独立日志中，不会再次占用审计记录列表。" },
     { title:"离线评测", text:"“运行评测”可选择 5 条内置基线、全部用例或勾选的用例。运维工程师可新增自定义“问题 + 预期状态”用例；评测不会修改业务表。" }
   ] },
   approval: { eyebrow:"HUMAN IN THE LOOP", title:"审批中心使用说明", lead:"审批中心承接 SQL 写操作和 MANUAL 工具请求。它让高风险变更必须经过人工确认，而非由 Agent 自动执行。", sections:[
@@ -330,20 +330,22 @@ async function confirmDeleteAudit(eventId) {
 
 async function cleanupAuditByTime() {
   if (currentRole() !== "approver") return toast("只有值班负责人可以按时间清理审计记录");
-  const defaultCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16);
-  const cutoffLocal = await showInputDialog({ title:"按时间清理审计记录", eyebrow:"AUDIT RETENTION", label:"删除此时间之前创建的记录", value:defaultCutoff, inputType:"datetime-local", confirmText:"预览清理范围" });
-  if (!cutoffLocal) return;
-  const cutoffDate = new Date(cutoffLocal);
-  if (Number.isNaN(cutoffDate.getTime()) || cutoffDate > new Date()) return toast("请选择有效且不晚于当前时间的清理时间");
-  const before = cutoffDate.toISOString();
+  const range = await showDateRangeDialog();
+  if (!range) return;
+  const startDate = new Date(range.start);
+  const endDate = new Date(range.end);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime()) || startDate > endDate || endDate > new Date()) return toast("请选择有效的起止时间，且结束时间不能晚于当前时间");
+  const start = startDate.toISOString();
+  const end = endDate.toISOString();
   try {
-    const response = await fetch("/api/v1/audit/cleanup-preview?before=" + encodeURIComponent(before) + "&role=" + encodeURIComponent(currentRole()));
+    const response = await fetch("/api/v1/audit/cleanup-preview?start=" + encodeURIComponent(start) + "&end=" + encodeURIComponent(end) + "&role=" + encodeURIComponent(currentRole()));
     const preview = await response.json();
     if (!response.ok) throw new Error(preview.detail || "无法预览清理范围");
-    if (!preview.matched_count) return toast("该时间点之前没有可清理的审计记录");
-    const confirmed = await showConfirmDialog({ title:"确认批量清理", eyebrow:"AUDIT RETENTION", message:"确认删除 " + preview.matched_count + " 条审计记录？", detail:"删除范围：" + new Date(before).toLocaleString("zh-CN", { hour12:false }) + " 之前。原记录会从审计中心移除，清理动作只保存在独立的审计维护日志中，不会再次占用审计记录数量。", confirmText:"确认清理" });
+    if (!preview.matched_count) return toast("该时间范围内没有可清理的审计记录");
+    const formatTime = (value) => new Date(value).toLocaleString("zh-CN", { hour12:false });
+    const confirmed = await showConfirmDialog({ title:"确认批量清理", eyebrow:"AUDIT RETENTION", message:"确认删除 " + preview.matched_count + " 条审计记录？", detail:"删除范围：" + formatTime(start) + " 至 " + formatTime(end) + "（含起止时间）。仅删除该区间内的记录，区间外记录保留；清理动作只保存在独立的审计维护日志中，不会再次占用审计记录数量。", confirmText:"确认清理" });
     if (!confirmed) return;
-    const deleteResponse = await fetch("/api/v1/audit/before", { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ before, role:currentRole(), requester:"Lenovo", confirm:true }) });
+    const deleteResponse = await fetch("/api/v1/audit/range", { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ start, end, role:currentRole(), requester:"Lenovo", confirm:true }) });
     const result = await deleteResponse.json();
     if (!deleteResponse.ok) throw new Error(result.detail || "审计清理失败");
     auditOffset = 0;
@@ -600,6 +602,27 @@ function showInputDialog({ title, eyebrow = "请填写信息", label, placeholde
   modal.hidden = false;
   document.body.classList.add("modal-open");
   setTimeout(() => $("#confirm-input").focus(), 0);
+  return new Promise((resolve) => { confirmResolver = resolve; });
+}
+
+function localDateTimeValue(date) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-" + pad(date.getDate()) + "T" + pad(date.getHours()) + ":" + pad(date.getMinutes());
+}
+
+function showDateRangeDialog() {
+  if (confirmResolver) closeConfirmDialog(null);
+  const end = new Date();
+  const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+  $("#confirm-modal-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">AUDIT RETENTION</p><h2 id="confirm-modal-title">筛选审计清理范围</h2></div><button id="close-confirm" class="modal-close" aria-label="关闭时间筛选">×</button></div><div class="confirm-copy"><p>选择开始时间和结束时间，系统会先预览命中数量，再由你确认删除。</p><small>仅删除闭区间内的审计记录，区间外记录不会受影响。</small></div><div class="confirm-range-fields"><label class="confirm-input-label">开始时间<input id="confirm-start" type="datetime-local" value="' + localDateTimeValue(start) + '" /></label><label class="confirm-input-label">结束时间<input id="confirm-end" type="datetime-local" value="' + localDateTimeValue(end) + '" /></label></div>';
+  $("#confirm-confirm").textContent = "预览清理范围";
+  $("#confirm-confirm").classList.remove("danger-button");
+  $("#confirm-confirm").onclick = () => closeConfirmDialog({ start: $("#confirm-start").value, end: $("#confirm-end").value });
+  $("#close-confirm").addEventListener("click", () => closeConfirmDialog(null));
+  const modal = $("#confirm-modal");
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  setTimeout(() => $("#confirm-start").focus(), 0);
   return new Promise((resolve) => { confirmResolver = resolve; });
 }
 
