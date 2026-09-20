@@ -317,7 +317,7 @@ async function loadAudit() {
 
 async function confirmDeleteAudit(eventId) {
   if (currentRole() !== "approver") return toast("只有值班负责人可以删除审计记录");
-  if (!window.confirm("确认删除这条审计记录？删除后原记录将从列表移除，但系统会新增一条 audit_deleted 留痕；业务数据不会受影响。")) return;
+  if (!await showConfirmDialog({ title:"删除审计记录", eyebrow:"AUDIT RECORD DELETE", message:"确认删除这条审计记录？", detail:"原记录会从列表移除，但系统会新增 audit_deleted 留痕；业务数据不会受影响。", confirmText:"确认删除" })) return;
   try {
     const response = await fetch("/api/v1/audit/" + encodeURIComponent(eventId), { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", confirm:true }) });
     const result = await response.json();
@@ -423,8 +423,9 @@ async function runKnowledgeEvaluation() {
 }
 
 async function submitKnowledgeFeedback(button) {
-  const score = Number(prompt("请为这条检索结果评分（1-5分）", "5")); if (!Number.isInteger(score) || score < 1 || score > 5) return toast("评分必须是 1 到 5 的整数");
-  const comment = prompt("可选：填写证据是否准确、是否需要补充文档", "") || "";
+  const scoreValue = await showInputDialog({ title:"人工评分", eyebrow:"RAG QUALITY FEEDBACK", label:"请为这条检索结果评分（1-5 分）", placeholder:"请输入 1 到 5 的整数", value:"5", confirmText:"下一步" });
+  const score = Number(scoreValue); if (!Number.isInteger(score) || score < 1 || score > 5) return toast("评分必须是 1 到 5 的整数");
+  const comment = (await showInputDialog({ title:"补充评分意见", eyebrow:"RAG QUALITY FEEDBACK", label:"证据是否准确，是否需要补充文档（可选）", placeholder:"例如：命中正确，但缺少回滚验证步骤", multiline:true, confirmText:"提交评分" })) || "";
   try { const response = await fetch("/api/v1/knowledge/evaluation/feedback", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({evaluation_id:button.dataset.evalId, question:button.dataset.evalQuestion, score, comment, role:currentRole(), requester:"Lenovo"})}); const result = await response.json(); if (!response.ok) throw new Error(result.detail || "评分保存失败"); $("#rag-manual-summary").textContent = "人工评分：" + result.summary.average_score + " / 5（已评 " + result.summary.count + " 条）"; button.textContent = "已评分 " + score + " 分"; button.disabled = true; toast("人工评分已保存"); loadAudit(); } catch (error) { toast(error.message || "评分保存失败"); }
 }
 
@@ -457,7 +458,7 @@ async function showKnowledgeVersions(documentId) {
 }
 
 async function rollbackKnowledge(documentId, version) {
-  if (!confirm("确认回滚到 v" + version + "？系统会创建一条新的版本记录，当前版本仍会保留。")) return;
+  if (!await showConfirmDialog({ title:"回滚知识文档", eyebrow:"KNOWLEDGE ROLLBACK", message:"确认回滚到 v" + version + "？", detail:"系统会创建一条新的版本记录，当前版本仍会保留。", confirmText:"确认回滚", danger:false })) return;
   try { const response = await fetch("/api/v1/knowledge/" + documentId + "/rollback/" + version, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({role:currentRole(), requester:"Lenovo"})}); const result = await response.json(); if (!response.ok) throw new Error(result.detail || "回滚失败"); setAuditActionVisible(false); toast("已回滚，并生成 v" + result.version); loadKnowledge(); loadAudit(); } catch (error) { toast(error.message || "回滚失败"); }
 }
 
@@ -491,7 +492,7 @@ async function saveKnowledge() {
 }
 
 async function deleteKnowledge(documentId) {
-  if (!confirm("确认删除这份知识文档？它将不再参与 RAG 检索。")) return;
+  if (!await showConfirmDialog({ title:"删除知识文档", eyebrow:"KNOWLEDGE DELETE", message:"确认删除这份知识文档？", detail:"删除后它将不再参与 RAG 检索，删除操作会写入审计中心。", confirmText:"确认删除" })) return;
   try {
     const response = await fetch("/api/v1/knowledge/" + documentId, { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) });
     const result = response.ok ? null : await response.json(); if (!response.ok) throw new Error(result.detail || "删除失败");
@@ -529,12 +530,53 @@ async function loadMetrics() {
 
 let activeAuditAction = "";
 let activeSkillRun = null;
+let confirmResolver = null;
 
 function setAuditActionVisible(visible) {
   const modal = $("#audit-action-modal");
   modal.hidden = !visible;
   document.body.classList.toggle("modal-open", visible);
   if (visible) setTimeout(() => $("#cancel-audit-action").focus(), 0);
+}
+
+function closeConfirmDialog(result) {
+  const modal = $("#confirm-modal");
+  modal.hidden = true;
+  document.body.classList.remove("modal-open");
+  const resolve = confirmResolver;
+  confirmResolver = null;
+  if (resolve) resolve(result);
+}
+
+function showConfirmDialog({ title, eyebrow = "请确认操作", message, detail = "", confirmText = "确认操作", danger = true }) {
+  if (confirmResolver) closeConfirmDialog(false);
+  $("#confirm-modal-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + escapeHtml(eyebrow) + '</p><h2 id="confirm-modal-title">' + escapeHtml(title) + '</h2></div><button id="close-confirm" class="modal-close" aria-label="关闭确认框">×</button></div><div class="confirm-copy"><p>' + escapeHtml(message) + '</p>' + (detail ? '<small>' + escapeHtml(detail) + '</small>' : '') + '</div>';
+  $("#confirm-confirm").textContent = confirmText;
+  $("#confirm-confirm").classList.toggle("danger-button", danger);
+  $("#confirm-confirm").onclick = () => closeConfirmDialog(true);
+  $("#close-confirm").addEventListener("click", () => closeConfirmDialog(false));
+  const modal = $("#confirm-modal");
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  setTimeout(() => $("#cancel-confirm").focus(), 0);
+  return new Promise((resolve) => { confirmResolver = resolve; });
+}
+
+function showInputDialog({ title, eyebrow = "请填写信息", label, placeholder = "", value = "", multiline = false, confirmText = "保存" }) {
+  if (confirmResolver) closeConfirmDialog(null);
+  const field = multiline
+    ? '<textarea id="confirm-input" rows="4" placeholder="' + escapeHtml(placeholder) + '">' + escapeHtml(value) + '</textarea>'
+    : '<input id="confirm-input" value="' + escapeHtml(value) + '" placeholder="' + escapeHtml(placeholder) + '" />';
+  $("#confirm-modal-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + escapeHtml(eyebrow) + '</p><h2 id="confirm-modal-title">' + escapeHtml(title) + '</h2></div><button id="close-confirm" class="modal-close" aria-label="关闭输入框">×</button></div><label class="confirm-input-label">' + escapeHtml(label) + field + '</label>';
+  $("#confirm-confirm").textContent = confirmText;
+  $("#confirm-confirm").classList.remove("danger-button");
+  $("#confirm-confirm").onclick = () => closeConfirmDialog($("#confirm-input").value.trim());
+  $("#close-confirm").addEventListener("click", () => closeConfirmDialog(null));
+  const modal = $("#confirm-modal");
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  setTimeout(() => $("#confirm-input").focus(), 0);
+  return new Promise((resolve) => { confirmResolver = resolve; });
 }
 
 function renderAuditAction(title, eyebrow, body, confirmText) {
@@ -604,7 +646,7 @@ async function createEvaluationCase() {
 }
 
 async function deleteEvaluationCase(caseId) {
-  if (!confirm("确认删除这条自定义评测用例？不会影响历史审计和评测记录。")) return;
+  if (!await showConfirmDialog({ title:"删除评测用例", eyebrow:"EVALUATION CASE DELETE", message:"确认删除这条自定义评测用例？", detail:"不会影响历史审计和已经生成的评测报告。", confirmText:"确认删除" })) return;
   const response = await fetch("/api/v1/evaluations/cases/" + encodeURIComponent(caseId), { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) });
   const result = await response.json();
   if (!response.ok) return toast(result.detail || "删除用例失败");
@@ -659,6 +701,7 @@ document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!$("#tool-help-modal").hidden) setToolHelpVisible(false);
   if (!$("#audit-action-modal").hidden) setAuditActionVisible(false);
+  if (!$("#confirm-modal").hidden) closeConfirmDialog(null);
 });
 $("#guard-open-audit").addEventListener("click", () => document.querySelector('.nav-item[data-page="audit"]').click());
 $("#guard-open-approval").addEventListener("click", () => document.querySelector('.nav-item[data-page="approval"]').click());
@@ -669,6 +712,8 @@ document.querySelectorAll("[data-query]").forEach((button) => button.addEventLis
 $("#copy-sql").addEventListener("click", async () => { await navigator.clipboard.writeText(latestSql); toast("SQL 已复制到剪贴板"); });
 $("#cancel-audit-action").addEventListener("click", () => setAuditActionVisible(false));
 $("#audit-action-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) setAuditActionVisible(false); });
+$("#cancel-confirm").addEventListener("click", () => closeConfirmDialog(null));
+$("#confirm-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) closeConfirmDialog(null); });
 $("#confirm-audit-action").addEventListener("click", async () => {
   if (activeAuditAction === "integrity") {
     const scope = $("#integrity-scope").value;
@@ -786,7 +831,7 @@ async function openChat(conversationId) {
 }
 
 async function deleteChat(conversationId) {
-  if (!confirm("确认删除该 Agent 对话及其历史消息？")) return;
+  if (!await showConfirmDialog({ title:"删除 Agent 对话", eyebrow:"CONVERSATION DELETE", message:"确认删除该 Agent 对话及其历史消息？", detail:"删除后当前对话和消息记录将无法在页面恢复。", confirmText:"确认删除" })) return;
   try {
     const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(conversationId), chatRequestOptions("DELETE", { role:currentRole(), requester:"Lenovo" })); const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "删除对话失败");
@@ -863,10 +908,10 @@ async function loadApprovals() {
 }
 
 async function resolveApproval(id, button) {
-  if (!confirm("确认批准该审批单？当前安全模式下只记录审批和影响预估，不会执行写库操作。")) return;
+  if (!await showConfirmDialog({ title:"批准审批单", eyebrow:"APPROVAL CONFIRM", message:"确认批准该审批单？", detail:"当前安全模式下只记录审批和影响预估，不会执行写库操作。", confirmText:"确认批准", danger:false })) return;
   if (button) { button.disabled = true; button.textContent = "处理中…"; }
   try {
-    const comment = prompt("可选：填写审批意见（会写入审计日志）", "风险已核对，同意进入安全模式审批。") || "";
+    const comment = (await showInputDialog({ title:"填写审批意见", eyebrow:"APPROVAL COMMENT", label:"审批意见（可选，会写入审计日志）", value:"风险已核对，同意进入安全模式审批。", multiline:true, confirmText:"提交审批" })) || "";
     const response = await fetch("/api/v1/approvals/" + id + "/approve", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), actor:"Lenovo", comment }) }); const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "审批失败");
     toast(result.message); loadApprovals(); loadAudit(); loadMetrics();
@@ -875,8 +920,8 @@ async function resolveApproval(id, button) {
 }
 
 async function rejectApproval(id, button) {
-  const comment = prompt("请填写拒绝原因（会写入审计日志）", "影响范围或执行窗口不满足要求。") || "";
-  if (!confirm("确认拒绝该审批单？此操作不会执行 SQL，也不会修改业务数据。")) return;
+  if (!await showConfirmDialog({ title:"拒绝审批单", eyebrow:"APPROVAL REJECT", message:"确认拒绝该审批单？", detail:"此操作不会执行 SQL，也不会修改业务数据。", confirmText:"确认拒绝" })) return;
+  const comment = (await showInputDialog({ title:"填写拒绝原因", eyebrow:"APPROVAL COMMENT", label:"拒绝原因（会写入审计日志）", value:"影响范围或执行窗口不满足要求。", multiline:true, confirmText:"提交拒绝" })) || "";
   if (button) { button.disabled = true; button.textContent = "处理中…"; }
   try {
     const response = await fetch("/api/v1/approvals/" + id + "/reject", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), actor:"Lenovo", comment }) }); const result = await response.json();
@@ -887,7 +932,7 @@ async function rejectApproval(id, button) {
 }
 
 async function deleteApproval(id, button) {
-  if (!confirm("确认删除这条已完成的审批记录？审批卡片会移除，但删除行为会永久保留在审计中心。")) return;
+  if (!await showConfirmDialog({ title:"删除审批记录", eyebrow:"APPROVAL RECORD DELETE", message:"确认删除这条已完成的审批记录？", detail:"审批卡片会移除，但删除行为会永久保留在审计中心。", confirmText:"确认删除" })) return;
   if (button) { button.disabled = true; button.textContent = "删除中…"; }
   try {
     const response = await fetch("/api/v1/approvals/" + id, { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), actor:"Lenovo" }) }); const result = await response.json();
