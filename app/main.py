@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_audit_event, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_evaluation_feedback_summary, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_knowledge_versions, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, rollback_knowledge_document, save_knowledge_evaluation_feedback, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, update_knowledge_document, write_audit
+from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_cleanup_preview, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_audit_before, delete_audit_event, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_evaluation_feedback_summary, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_knowledge_versions, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, rollback_knowledge_document, save_knowledge_evaluation_feedback, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, update_knowledge_document, write_audit
 from app.chat_service import AgentChatService
 from app.evaluation import available_evaluation_cases, run_evaluation
 from app.skills import SkillRegistry, run_skill
@@ -66,6 +66,11 @@ class MutationActorRequest(BaseModel):
 
 
 class AuditDeleteRequest(MutationActorRequest):
+    confirm: bool = False
+
+
+class AuditCleanupRequest(MutationActorRequest):
+    before: str = Field(min_length=10, max_length=40)
     confirm: bool = False
 
 
@@ -298,6 +303,28 @@ def remove_approval(approval_id: str, request: ApprovalActionRequest = ApprovalA
 @app.get("/api/v1/audit")
 def audit(limit: int = 50, offset: int = 0) -> list[dict]:
     return list_audit(min(max(limit, 1), 200), max(offset, 0))
+
+
+@app.get("/api/v1/audit/cleanup-preview")
+def audit_cleanup_check(before: str, role: str = "viewer") -> dict:
+    if not permitted(role, "approve_change"):
+        raise HTTPException(status_code=403, detail="只有值班负责人可以预览审计清理范围。")
+    try:
+        return audit_cleanup_preview(before)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/v1/audit/before")
+def cleanup_audit(before: AuditCleanupRequest) -> dict:
+    if not permitted(before.role, "approve_change"):
+        raise HTTPException(status_code=403, detail="只有值班负责人可以清理审计记录。")
+    if not before.confirm:
+        raise HTTPException(status_code=400, detail="请确认按时间清理审计记录。")
+    try:
+        return delete_audit_before(before.before, before.requester)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.delete("/api/v1/audit/{event_id}")

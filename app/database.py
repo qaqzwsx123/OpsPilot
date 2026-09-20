@@ -32,6 +32,7 @@ EXPLORER_TABLES = {
     "knowledge_eval_feedback": "RAG 人工评分",
     "approvals": "审批单",
     "audit_logs": "审计日志",
+    "audit_maintenance_logs": "审计维护日志",
     "conversation_memory": "会话记忆",
     "chat_conversations": "Agent 聊天会话",
     "chat_messages": "Agent 聊天消息",
@@ -83,6 +84,11 @@ def initialize() -> None:
             CREATE TABLE IF NOT EXISTS audit_logs (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
               action TEXT NOT NULL, payload TEXT NOT NULL, prev_hash TEXT, entry_hash TEXT
+            );
+            CREATE TABLE IF NOT EXISTS audit_maintenance_logs (
+              id TEXT PRIMARY KEY, created_at TEXT NOT NULL, actor TEXT NOT NULL,
+              operation TEXT NOT NULL, target_event_id TEXT, target_action TEXT,
+              cutoff TEXT, deleted_count INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS approvals (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
@@ -465,31 +471,57 @@ def write_audit(requester: str, action: str, payload: dict[str, Any]) -> None:
 
 
 def delete_audit_event(event_id: str, deleted_by: str) -> dict[str, Any] | None:
-    """Delete one audit row, rebuild the remaining chain, and retain a deletion event."""
+    """Delete one audit row and record maintenance metadata outside audit_logs."""
     with connect() as conn:
         row = conn.execute("SELECT id, created_at, requester, action FROM audit_logs WHERE id = ?", (event_id,)).fetchone()
         if row is None:
             return None
         conn.execute("DELETE FROM audit_logs WHERE id = ?", (event_id,))
         _backfill_audit_hashes(conn)
-
-        deletion_id, deletion_time = str(uuid4()), utc_now()
-        deletion_payload = {
-            "deleted_event_id": event_id,
-            "deleted_action": row["action"],
-            "deleted_requester": row["requester"],
-            "deleted_created_at": row["created_at"],
-            "deleted_by": deleted_by,
-        }
-        canonical_payload = _canonical_payload(deletion_payload)
-        previous_row = conn.execute("SELECT entry_hash FROM audit_logs WHERE entry_hash IS NOT NULL ORDER BY rowid DESC LIMIT 1").fetchone()
-        previous = previous_row["entry_hash"] if previous_row else ""
-        digest = _audit_digest(previous, deletion_id, deletion_time, deleted_by, "audit_deleted", canonical_payload)
         conn.execute(
-            "INSERT INTO audit_logs (id, created_at, requester, action, payload, prev_hash, entry_hash) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (deletion_id, deletion_time, deleted_by, "audit_deleted", canonical_payload, previous, digest),
+            "INSERT INTO audit_maintenance_logs (id, created_at, actor, operation, target_event_id, target_action, cutoff, deleted_count, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid4()), utc_now(), deleted_by, "delete_event", event_id, row["action"], None, 1, _canonical_payload({"target_created_at": row["created_at"], "target_requester": row["requester"]})),
         )
-        return {"deleted": True, "deleted_event_id": event_id, "deleted_action": row["action"], "audit_event_id": deletion_id}
+        return {"deleted": True, "deleted_event_id": event_id, "deleted_action": row["action"], "maintenance_logged": True}
+
+
+def _normalize_audit_cutoff(cutoff: str) -> str:
+    value = cutoff.strip()
+    if not value:
+        raise ValueError("清理时间不能为空")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("清理时间格式无效") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def audit_cleanup_preview(cutoff: str) -> dict[str, Any]:
+    normalized = _normalize_audit_cutoff(cutoff)
+    with connect() as conn:
+        row = conn.execute("SELECT COUNT(*) AS count, MIN(created_at) AS oldest, MAX(created_at) AS newest FROM audit_logs WHERE created_at < ?", (normalized,)).fetchone()
+    return {"before": normalized, "matched_count": row["count"], "oldest": row["oldest"], "newest": row["newest"]}
+
+
+def delete_audit_before(cutoff: str, deleted_by: str) -> dict[str, Any]:
+    """Delete audit rows before a cutoff and store cleanup metadata separately."""
+    normalized = _normalize_audit_cutoff(cutoff)
+    with connect() as conn:
+        rows = conn.execute("SELECT id, action FROM audit_logs WHERE created_at < ? ORDER BY rowid", (normalized,)).fetchall()
+        if not rows:
+            return {"deleted": False, "deleted_count": 0, "before": normalized, "maintenance_logged": False}
+        action_counts: dict[str, int] = {}
+        for row in rows:
+            action_counts[row["action"]] = action_counts.get(row["action"], 0) + 1
+        conn.execute("DELETE FROM audit_logs WHERE created_at < ?", (normalized,))
+        _backfill_audit_hashes(conn)
+        conn.execute(
+            "INSERT INTO audit_maintenance_logs (id, created_at, actor, operation, target_event_id, target_action, cutoff, deleted_count, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid4()), utc_now(), deleted_by, "delete_before", None, None, normalized, len(rows), _canonical_payload({"action_counts": action_counts})),
+        )
+    return {"deleted": True, "deleted_count": len(rows), "before": normalized, "maintenance_logged": True, "action_counts": action_counts}
 
 
 def _normalized_sql(sql: str) -> str:

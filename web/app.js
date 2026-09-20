@@ -49,7 +49,7 @@ const pageGuides = {
   audit: { eyebrow:"AUDITABLE BY DEFAULT", title:"审计中心使用说明", lead:"审计中心记录 Agent 查询、工具调用、审批决定、知识维护、CSV 导入等关键事件，用于追踪与复盘。", sections:[
     { title:"查看记录", text:"记录按时间倒序分页展示，每页 10 条，并显示总数。刷新只读取最新审计数据。" },
     { title:"验证完整性", text:"“验证完整性”会弹出范围选择：可校验全量 SHA-256 哈希链，或快速校验最近 100 条及前序锚点；发现断裂时应停止依赖该链进行合规判断。" },
-    { title:"删除记录", text:"切换为值班负责人后，每条记录会出现“删除”按钮。点击后必须二次确认；原记录会从列表移除，但系统会新增 audit_deleted 留痕并重建剩余哈希链。" },
+    { title:"删除记录", text:"切换为值班负责人后，每条记录会出现“删除”按钮，也可以使用“按时间清理”批量删除旧记录。删除前会先预览数量并二次确认；维护动作记录在独立日志中，不会再次占用审计记录列表。" },
     { title:"离线评测", text:"“运行评测”可选择 5 条内置基线、全部用例或勾选的用例。运维工程师可新增自定义“问题 + 预期状态”用例；评测不会修改业务表。" }
   ] },
   approval: { eyebrow:"HUMAN IN THE LOOP", title:"审批中心使用说明", lead:"审批中心承接 SQL 写操作和 MANUAL 工具请求。它让高风险变更必须经过人工确认，而非由 Agent 自动执行。", sections:[
@@ -317,7 +317,7 @@ async function loadAudit() {
 
 async function confirmDeleteAudit(eventId) {
   if (currentRole() !== "approver") return toast("只有值班负责人可以删除审计记录");
-  if (!await showConfirmDialog({ title:"删除审计记录", eyebrow:"AUDIT RECORD DELETE", message:"确认删除这条审计记录？", detail:"原记录会从列表移除，但系统会新增 audit_deleted 留痕；业务数据不会受影响。", confirmText:"确认删除" })) return;
+  if (!await showConfirmDialog({ title:"删除审计记录", eyebrow:"AUDIT RECORD DELETE", message:"确认删除这条审计记录？", detail:"原记录会从列表移除，删除动作会记录到独立的审计维护日志；业务数据不会受影响。", confirmText:"确认删除" })) return;
   try {
     const response = await fetch("/api/v1/audit/" + encodeURIComponent(eventId), { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", confirm:true }) });
     const result = await response.json();
@@ -326,6 +326,30 @@ async function confirmDeleteAudit(eventId) {
     auditOffset = 0;
     loadAudit(); loadMetrics();
   } catch (error) { toast(error.message || "删除审计记录失败"); }
+}
+
+async function cleanupAuditByTime() {
+  if (currentRole() !== "approver") return toast("只有值班负责人可以按时间清理审计记录");
+  const defaultCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16);
+  const cutoffLocal = await showInputDialog({ title:"按时间清理审计记录", eyebrow:"AUDIT RETENTION", label:"删除此时间之前创建的记录", value:defaultCutoff, inputType:"datetime-local", confirmText:"预览清理范围" });
+  if (!cutoffLocal) return;
+  const cutoffDate = new Date(cutoffLocal);
+  if (Number.isNaN(cutoffDate.getTime()) || cutoffDate > new Date()) return toast("请选择有效且不晚于当前时间的清理时间");
+  const before = cutoffDate.toISOString();
+  try {
+    const response = await fetch("/api/v1/audit/cleanup-preview?before=" + encodeURIComponent(before) + "&role=" + encodeURIComponent(currentRole()));
+    const preview = await response.json();
+    if (!response.ok) throw new Error(preview.detail || "无法预览清理范围");
+    if (!preview.matched_count) return toast("该时间点之前没有可清理的审计记录");
+    const confirmed = await showConfirmDialog({ title:"确认批量清理", eyebrow:"AUDIT RETENTION", message:"确认删除 " + preview.matched_count + " 条审计记录？", detail:"删除范围：" + new Date(before).toLocaleString("zh-CN", { hour12:false }) + " 之前。原记录会从审计中心移除，清理动作只保存在独立的审计维护日志中，不会再次占用审计记录数量。", confirmText:"确认清理" });
+    if (!confirmed) return;
+    const deleteResponse = await fetch("/api/v1/audit/before", { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ before, role:currentRole(), requester:"Lenovo", confirm:true }) });
+    const result = await deleteResponse.json();
+    if (!deleteResponse.ok) throw new Error(result.detail || "审计清理失败");
+    auditOffset = 0;
+    toast("已清理 " + result.deleted_count + " 条审计记录");
+    loadAudit(); loadMetrics();
+  } catch (error) { toast(error.message || "审计清理失败"); }
 }
 
 function renderSkills() {
@@ -562,11 +586,11 @@ function showConfirmDialog({ title, eyebrow = "请确认操作", message, detail
   return new Promise((resolve) => { confirmResolver = resolve; });
 }
 
-function showInputDialog({ title, eyebrow = "请填写信息", label, placeholder = "", value = "", multiline = false, confirmText = "保存" }) {
+function showInputDialog({ title, eyebrow = "请填写信息", label, placeholder = "", value = "", multiline = false, inputType = "text", confirmText = "保存" }) {
   if (confirmResolver) closeConfirmDialog(null);
   const field = multiline
     ? '<textarea id="confirm-input" rows="4" placeholder="' + escapeHtml(placeholder) + '">' + escapeHtml(value) + '</textarea>'
-    : '<input id="confirm-input" value="' + escapeHtml(value) + '" placeholder="' + escapeHtml(placeholder) + '" />';
+    : '<input id="confirm-input" type="' + escapeHtml(inputType) + '" value="' + escapeHtml(value) + '" placeholder="' + escapeHtml(placeholder) + '" />';
   $("#confirm-modal-content").innerHTML = '<div class="modal-heading"><div><p class="section-label">' + escapeHtml(eyebrow) + '</p><h2 id="confirm-modal-title">' + escapeHtml(title) + '</h2></div><button id="close-confirm" class="modal-close" aria-label="关闭输入框">×</button></div><label class="confirm-input-label">' + escapeHtml(label) + field + '</label>';
   $("#confirm-confirm").textContent = confirmText;
   $("#confirm-confirm").classList.remove("danger-button");
@@ -735,6 +759,7 @@ $("#confirm-audit-action").addEventListener("click", async () => {
   }
 });
 $("#refresh-audit").addEventListener("click", () => { auditOffset = 0; loadAudit(); });
+$("#cleanup-audit").addEventListener("click", cleanupAuditByTime);
 $("#prev-audit").addEventListener("click", () => { auditOffset = Math.max(0, auditOffset - recordPageSize); loadAudit(); });
 $("#next-audit").addEventListener("click", () => { auditOffset += recordPageSize; loadAudit(); });
 $("#refresh-data").addEventListener("click", () => loadDataExplorer());
