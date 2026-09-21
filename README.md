@@ -70,7 +70,8 @@ Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/v1/query -ContentT
 ```text
 app/
   main.py          # HTTP API 与 SSE
-  workflow.py      # Recall → Writer → Reviewer → Fix → Runner
+  workflow.py      # 主流程入口与 QueryResult 兼容层
+  graph.py         # LangGraph：Recall → Writer → Reviewer → Fix → Runner
   database.py      # SQLite、示例业务数据、审计与审批持久化
   sql_agent.py     # Provider、检索、审查、风险分级
   rag.py           # Agentic RAG 与 Chroma 检索
