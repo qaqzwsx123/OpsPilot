@@ -4,11 +4,11 @@ version = "0.1.0"
 description = "A safe, observable SQL Agent demo with workflow, approval and RAG fallback."
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi>=0.110,<0.111",
-  "uvicorn>=0.30,<1.0",
-  "pydantic>=2.0,<3.0",
-  "chromadb>=1.5,<2.0",
-  "langgraph>=0.2,<2.0",
+  "fastapi>=0.110,<0.111", #Web 框架，用于提供 HTTP API 和 SSE 流式接口。
+  "uvicorn>=0.30,<1.0", # ASGI 服务器，用于运行 FastAPI 应用。
+  "pydantic>=2.0,<3.0", # 数据校验和设置管理库，FastAPI 的核心依赖
+  "chromadb>=1.5,<2.0", #本地向量数据库，用于知识库和运维上下文的语义检索。
+  "langgraph>=0.2,<2.0", #LangGraph 工作流编排库，用于构建 SQL Agent 的多节点状态图。
 ]
 
 [project.optional-dependencies]
@@ -17,7 +17,7 @@ mysql = ["PyMySQL>=1.1,<2.0"]
 
 [build-system]
 requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+build-backend = "setuptools.build_meta" #指定构建后端为 setuptools 的标准 PEP 517 后端。
 
 [tool.setuptools.packages.find]
 include = ["app*"]

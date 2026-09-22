@@ -6,15 +6,12 @@
 3. 在本地模型不可用时返回离线兜底文案；
 4. 通过系统提示词和任务规划约束模型，确保聊天不越权执行写操作。
 """
-
 from __future__ import annotations  # 延迟解析类型注解，避免运行时求值，提升兼容性
-
 import json  # 构造和解析 OpenAI 兼容接口的 JSON 请求与响应
 from collections.abc import Iterator  # 标注流式生成器的返回类型
 from typing import Any  # 标注较宽松的字典结构，便于适配不同模型返回
 from urllib.error import HTTPError, URLError  # 捕获 HTTP 错误和网络错误
 from urllib.request import Request, urlopen  # 使用标准库 HTTP 客户端，避免额外依赖
-
 from app.config import settings  # 项目配置：模型地址、密钥、超时、开关等
 
 
