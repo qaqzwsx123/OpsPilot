@@ -1,36 +1,117 @@
-"""FastAPI 应用入口：提供页面 API、SSE 流式接口和权限边界。"""
+"""FastAPI 应用入口：提供页面 API、SSE 流式接口和权限边界。
 
-from __future__ import annotations
+本模块是 OpsPilot 的后端 HTTP 入口，负责：
+1. 应用生命周期管理：启动时初始化 SQLite、演示数据、知识分块和 Chroma 索引；
+2. 提供 Agent 聊天接口：会话 CRUD、消息 CRUD、同步回复和 SSE 流式回复；
+3. 提供智能查询接口：同步 SQL Agent 工作流和 SSE 工作流轨迹；
+4. 提供审批中心接口：批准、拒绝、删除审批单；
+5. 提供审计中心接口：查询、清理、单条删除和哈希链校验；
+6. 提供数据浏览器、Skills、知识库、Chroma、指标、工具、记忆和离线评测接口；
+7. 在每个写操作入口做 RBAC 权限检查，并写入审计日志。
 
-import json
-from collections.abc import AsyncIterator, Iterator
-from contextlib import asynccontextmanager
-from pathlib import Path
-from queue import Empty, Queue
-from threading import Event, Thread
+安全边界：
+- role 只是前端声明，最终权限由后端 RBAC、工具风险和 SQL 审查共同决定；
+- 所有写操作都必须先通过 permitted(role, permission) 检查；
+- 数据浏览器只允许白名单表；
+- 审批执行默认走安全模式，不真正写业务数据；
+- 审计删除需要显式 confirm，并写入独立的维护日志。
+"""
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from __future__ import annotations  # 延迟解析类型注解，提升兼容性并避免运行时求值
 
-from app.config import settings
-from app.database import APPROVAL_STATUSES, add_chat_message, add_evaluation_case, add_knowledge_document, approve, approval_count, approval_status_counts, audit_cleanup_preview, audit_count, audit_integrity, create_approval, create_chat_conversation as create_chat_conversation_record, data_catalog, delete_approval, delete_audit_event, delete_audit_range, delete_evaluation_case, delete_chat_conversation, delete_knowledge_document, document_chunks, execute_approved, get_chat_messages, import_metric_csv, initialize, knowledge_document_count, knowledge_evaluation_feedback_summary, knowledge_tags, list_approvals, list_audit, list_chat_conversations, list_knowledge_documents, list_knowledge_versions, list_metric_definitions, list_metric_imports, metric_csv_template, metric_trend, monitoring_overview, recent_memory, rebuild_knowledge_index, reject_approval, rollback_knowledge_document, save_knowledge_evaluation_feedback, seed_demo_data, seed_metric_demo_data, system_metrics, table_snapshot, update_knowledge_document, write_audit
-from app.chat_service import AgentChatService
-from app.evaluation import available_evaluation_cases, run_evaluation
-from app.skills import SkillRegistry, run_skill
-from app.tool_registry import catalog, definition, invoke
-from app.workflow import SqlAgentWorkflow
-from app.rag import KnowledgeRag
-from app.chroma_store import chroma_collection_catalog, chroma_collection_records, chroma_stats, rebuild_chroma_index
-from app.knowledge_evaluation import run_knowledge_evaluation
-from app.policy import permitted, policy_summary, role_catalog
+import json  # 序列化 SSE 事件数据
+from collections.abc import AsyncIterator, Iterator  # 标注异步生命周期和流式生成器
+from contextlib import asynccontextmanager  # 声明 FastAPI 异步生命周期管理器
+from pathlib import Path  # 跨平台路径处理
+from queue import Empty, Queue  # 用于跨线程传递工作流事件
+from threading import Event, Thread  # 在后台线程运行工作流，避免阻塞事件循环
+
+from fastapi import FastAPI, HTTPException, Request  # FastAPI 核心组件
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse  # 各类响应类型
+from fastapi.staticfiles import StaticFiles  # 挂载静态文件目录
+from pydantic import BaseModel, Field  # 请求体校验和字段约束
+
+from app.config import settings  # 运行配置：模型地址、超时、写开关等
+# 下面这一大串是从 database 模块导入的所有持久化函数，覆盖业务、知识、审批、审计、会话、指标等。
+from app.database import (
+    APPROVAL_STATUSES,           # 合法审批状态集合，用于校验过滤参数
+    add_chat_message,            # 追加聊天消息
+    add_evaluation_case,         # 新增评测用例
+    add_knowledge_document,      # 新增知识文档
+    approve,                     # 批准审批单
+    approval_count,              # 审批单数量
+    approval_status_counts,      # 各状态审批数量
+    audit_cleanup_preview,       # 审计清理预览
+    audit_count,                 # 审计总数
+    audit_integrity,             # 审计哈希链校验
+    create_approval,             # 创建审批单
+    create_chat_conversation as create_chat_conversation_record,  # 创建会话（重命名避免与 API 函数冲突）
+    data_catalog,                # 数据浏览器表目录
+    delete_approval,             # 删除审批单
+    delete_audit_event,          # 删除单条审计
+    delete_audit_range,          # 按范围删除审计
+    delete_evaluation_case,      # 删除评测用例
+    delete_chat_conversation,    # 删除会话
+    delete_knowledge_document,   # 删除知识文档
+    document_chunks,             # 查询文档分块
+    execute_approved,            # 执行已批准变更
+    get_chat_messages,           # 查询会话消息
+    import_metric_csv,           # 导入指标 CSV
+    initialize,                  # 初始化数据库
+    knowledge_document_count,    # 知识文档数量
+    knowledge_evaluation_feedback_summary,  # 知识评分汇总
+    knowledge_tags,              # 知识标签目录
+    list_approvals,              # 审批列表
+    list_audit,                  # 审计列表
+    list_chat_conversations,     # 会话列表
+    list_knowledge_documents,    # 知识文档列表
+    list_knowledge_versions,     # 知识版本列表
+    list_metric_definitions,     # 指标定义列表
+    list_metric_imports,         # 指标导入记录
+    metric_csv_template,         # 指标 CSV 模板
+    metric_trend,                # 指标趋势
+    monitoring_overview,         # 监控概览
+    recent_memory,               # 最近记忆
+    rebuild_knowledge_index,     # 重建知识分块
+    reject_approval,             # 拒绝审批单
+    rollback_knowledge_document, # 回滚知识文档
+    save_knowledge_evaluation_feedback,  # 保存知识评分
+    seed_demo_data,              # 填充演示业务数据
+    seed_metric_demo_data,       # 填充演示指标
+    system_metrics,              # 系统指标
+    table_snapshot,              # 表快照
+    update_knowledge_document,   # 更新知识文档
+    write_audit,                 # 写审计日志
+)
+from app.chat_service import AgentChatService  # Agent 聊天服务
+from app.evaluation import available_evaluation_cases, run_evaluation  # SQL Agent 离线评测
+from app.skills import SkillRegistry, run_skill  # Skill 注册表和运行入口
+from app.tool_registry import catalog, definition, invoke  # 工具目录、定义、调用
+from app.workflow import SqlAgentWorkflow  # SQL Agent 工作流
+from app.rag import KnowledgeRag  # RAG 检索
+from app.chroma_store import (
+    chroma_collection_catalog,   # Chroma 集合目录
+    chroma_collection_records,   # Chroma 集合记录
+    chroma_stats,                # Chroma 统计
+    rebuild_chroma_index,        # 重建 Chroma 索引
+)
+from app.knowledge_evaluation import run_knowledge_evaluation  # 知识检索评测
+from app.policy import permitted, policy_summary, role_catalog  # RBAC 权限检查与目录
 
 
 @asynccontextmanager
-# 作用：说明函数 lifespan 的输入、输出与安全边界，避免调用方越过受控流程。
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    # 服务启动时确保 SQLite、演示数据和可重建的知识索引处于可用状态。
+    """FastAPI 应用生命周期管理器。
+
+    在服务启动时执行一次初始化：
+    1. initialize()：幂等创建表结构和执行轻量迁移；
+    2. seed_demo_data()：填充演示业务数据和内置知识库；
+    3. seed_metric_demo_data()：填充演示指标；
+    4. rebuild_knowledge_index()：重建知识分块，保证 RAG 可用；
+    5. rebuild_chroma_index()：重建 Chroma 向量索引；失败时不影响 SQLite/RAG 可用性。
+
+    进入 yield 后进入请求处理阶段；当前未实现 shutdown 逻辑。
+    """
     initialize()
     seed_demo_data()
     seed_metric_demo_data()
@@ -39,16 +120,28 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         rebuild_chroma_index()
     except Exception:
         # SQLite/RAG remains available even if the optional local index needs repair.
+        # Chroma 是可选索引；重建失败时不应阻塞服务启动。
         pass
     yield
 
 
+# 创建 FastAPI 应用实例；lifespan 指定启动/关闭逻辑。
 app = FastAPI(title="安全可控 SQL Agent", version="0.1.0", lifespan=lifespan)
+
+# 全局 SQL Agent 工作流实例，供同步和流式查询接口复用。
 workflow = SqlAgentWorkflow()
+
+# 全局 Agent 聊天服务实例，供同步和流式聊天接口复用。
 chat_service = AgentChatService()
+
+# 前端静态文件目录：项目根目录 web/。
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
+# 挂载静态文件目录到 /static，前端通过 /static/xxx 访问。
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
+
+# ---------- 请求体模型 ----------
 
 class QueryRequest(BaseModel):
     """智能查询入口的请求体。
@@ -79,7 +172,6 @@ class KnowledgeDocumentRequest(BaseModel):
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
-# 作用：说明类 KnowledgeUploadRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class KnowledgeUploadRequest(KnowledgeDocumentRequest):
     """上传文档的请求体；上传正文允许比普通编辑更长。"""
     # 上传文件的原始名称，仅用于显示和审计，不作为本地路径执行。
@@ -87,7 +179,6 @@ class KnowledgeUploadRequest(KnowledgeDocumentRequest):
     filename: str = Field(min_length=1, max_length=180)
 
 
-# 作用：说明类 MutationActorRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class MutationActorRequest(BaseModel):
     """所有会产生副作用的 API 共用的操作者信息。"""
     # 后端权限检查使用的角色 ID。
@@ -96,14 +187,12 @@ class MutationActorRequest(BaseModel):
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
-# 作用：说明类 AuditDeleteRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class AuditDeleteRequest(MutationActorRequest):
     """删除单条审计记录时的二次确认。"""
     # 必须显式传 true，避免误触发不可逆删除。
     confirm: bool = False
 
 
-# 作用：说明类 AuditCleanupRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class AuditCleanupRequest(MutationActorRequest):
     """按起止时间批量清理审计记录的请求体。"""
     # 清理窗口的起始时间，包含边界。
@@ -114,34 +203,29 @@ class AuditCleanupRequest(MutationActorRequest):
     confirm: bool = False
 
 
-# 作用：说明类 ToolInvokeRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ToolInvokeRequest(MutationActorRequest):
     """工具中心试运行请求；工具名来自 URL，权限和风险仍由后端判断。"""
     pass
 
 
-# 作用：说明类 SkillRunRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class SkillRunRequest(MutationActorRequest):
     """运行一个固定 Skill 时传入的补充上下文。"""
     # 例如 P1、区域或指标编号，交给固定 Skill 解析而非拼接任意 SQL。
     user_input: str = Field(default="", max_length=500)
 
 
-# 作用：说明类 ChatConversationRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ChatConversationRequest(MutationActorRequest):
     """创建 Agent 聊天会话的请求体。"""
     # 左侧历史会话显示名称。
     title: str = Field(default="新对话", max_length=48)
 
 
-# 作用：说明类 ChatTurnRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ChatTurnRequest(MutationActorRequest):
     """向已有会话追加一轮用户消息。"""
     # 当前轮的自然语言内容，聊天服务会结合历史上下文调用模型。
     content: str = Field(min_length=1, max_length=4000)
 
 
-# 作用：说明类 ApprovalActionRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ApprovalActionRequest(BaseModel):
     """审批人对一张变更审批单的处理意见。"""
     # 必须拥有 approve_change 权限。
@@ -152,7 +236,6 @@ class ApprovalActionRequest(BaseModel):
     comment: str = Field(default="", max_length=500)
 
 
-# 作用：说明类 EvaluationCaseRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class EvaluationCaseRequest(MutationActorRequest):
     """新增一条可重复运行的 Agent 评测用例。"""
     # 用例展示名称。
@@ -163,7 +246,6 @@ class EvaluationCaseRequest(MutationActorRequest):
     expected_status: str = Field(default="completed", min_length=1, max_length=32)
 
 
-# 作用：说明类 EvaluationRunRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class EvaluationRunRequest(BaseModel):
     """评测运行范围选择。"""
     # baseline 只跑内置用例，all 包含用户自定义用例，selected 只跑 case_ids。
@@ -176,7 +258,6 @@ class EvaluationRunRequest(BaseModel):
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
-# 作用：说明类 KnowledgeEvaluationFeedbackRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class KnowledgeEvaluationFeedbackRequest(MutationActorRequest):
     """人工对一次知识检索结果进行评分的请求。"""
     # 评测运行或单条结果的关联 ID。
@@ -189,42 +270,55 @@ class KnowledgeEvaluationFeedbackRequest(MutationActorRequest):
     comment: str = Field(default="", max_length=1000)
 
 
-# ---------- Agent 聊天：会话、历史消息和流式回复 ----------
+# ---------- 健康检查与首页 ----------
 
 @app.get("/health")
-# 作用：说明函数 health 的输入、输出与安全边界，避免调用方越过受控流程。
 def health() -> dict[str, str]:
+    """健康探针：返回服务基本状态，用于负载均衡和监控。"""
     return {"status": "ok"}
 
 
 @app.get("/", include_in_schema=False)
-# 作用：说明函数 console 的输入、输出与安全边界，避免调用方越过受控流程。
 def console() -> FileResponse:
+    """返回前端首页 index.html。"""
     return FileResponse(WEB_DIR / "index.html")
 
 
+# ---------- Agent 聊天：会话、历史消息和流式回复 ----------
+
 @app.post("/api/v1/chat/conversations")
-# 作用：说明函数 create_chat_conversation 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_chat_conversation(request: ChatConversationRequest) -> dict:
+    """创建 Agent 聊天会话。
+
+    - 先检查 read 权限；
+    - 写入会话记录；
+    - 写审计日志记录会话创建动作。
+    """
     # 聊天会话创建先走 RBAC，再写入会话审计事件。
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
     conversation = create_chat_conversation_record(request.requester, request.title)
-    write_audit(request.requester, "chat_conversation_created", {"conversation_id": conversation["id"], "role": request.role})
+    write_audit(request.requester, "chat_conversation_created", {
+        "conversation_id": conversation["id"], "role": request.role,
+    })
     return conversation
 
 
 @app.get("/api/v1/chat/conversations")
-# 作用：说明函数 chat_conversations 的输入、输出与安全边界，避免调用方越过受控流程。
 def chat_conversations(requester: str = "Lenovo", role: str = "viewer") -> list[dict]:
+    """列出指定请求人的所有聊天会话，按更新时间倒序。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
     return list_chat_conversations(requester)
 
 
 @app.get("/api/v1/chat/conversations/{conversation_id}/messages")
-# 作用：说明函数 chat_messages 的输入、输出与安全边界，避免调用方越过受控流程。
 def chat_messages(conversation_id: str, requester: str = "Lenovo", role: str = "viewer") -> list[dict]:
+    """获取指定会话的所有消息。
+
+    - 会话不存在或不属于该 requester 时返回 404；
+    - 避免通过 ID 猜测访问他人会话。
+    """
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
     messages = get_chat_messages(conversation_id, requester)
@@ -234,35 +328,73 @@ def chat_messages(conversation_id: str, requester: str = "Lenovo", role: str = "
 
 
 @app.delete("/api/v1/chat/conversations/{conversation_id}")
-# 作用：说明函数 delete_chat 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_chat(conversation_id: str, request: MutationActorRequest) -> dict:
+    """删除指定会话及其消息，并写审计日志。"""
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
     if not delete_chat_conversation(conversation_id, request.requester):
         raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
-    write_audit(request.requester, "chat_conversation_deleted", {"conversation_id": conversation_id, "role": request.role})
+    write_audit(request.requester, "chat_conversation_deleted", {
+        "conversation_id": conversation_id, "role": request.role,
+    })
     return {"deleted": True}
 
 
 @app.post("/api/v1/chat/conversations/{conversation_id}/messages")
-# 作用：说明函数 chat_turn 的输入、输出与安全边界，避免调用方越过受控流程。
 def chat_turn(conversation_id: str, request: ChatTurnRequest) -> dict:
+    """同步聊天接口：写入用户消息、调用模型、写入助手消息。
+
+    流程：
+    1. 权限检查；
+    2. 追加用户消息，若会话不存在返回 404；
+    3. 读取完整历史，调用 chat_service.reply；
+    4. 追加助手消息并写审计；
+    5. 返回会话 ID、助手消息和 provider。
+
+    说明：正式聊天页面使用流式接口；本接口用于简单调用和兼容。
+    """
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
+    # 先写入用户消息；返回 None 表示会话不存在或不属于该 requester。
     if add_chat_message(conversation_id, request.requester, "user", request.content) is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+
+    # 重新加载完整历史作为模型上下文。
     history = get_chat_messages(conversation_id, request.requester)
     if history is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
-    content, provider = chat_service.reply([{"role": item["role"], "content": item["content"]} for item in history])
+
+    # 调用聊天服务；reply 内部会处理流式/非流式和兜底。
+    content, provider = chat_service.reply([
+        {"role": item["role"], "content": item["content"]} for item in history
+    ])
+
+    # 写入助手消息并记录审计。
     message = add_chat_message(conversation_id, request.requester, "assistant", content)
-    write_audit(request.requester, "agent_chat_completed", {"conversation_id": conversation_id, "provider": provider, "role": request.role})
+    write_audit(request.requester, "agent_chat_completed", {
+        "conversation_id": conversation_id, "provider": provider, "role": request.role,
+    })
     return {"conversation_id": conversation_id, "message": message, "provider": provider}
 
 
 @app.post("/api/v1/chat/conversations/{conversation_id}/messages/stream")
 def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> StreamingResponse:
-    """Stream planning stages and model deltas, then persist the completed assistant turn."""
+    """Stream planning stages and model deltas, then persist the completed assistant turn.
+
+    流式聊天接口，SSE 事件类型：
+    - stage：规划阶段（context、plan）；
+    - token：模型增量文本；
+    - done：完成，返回会话 ID、provider、助手消息和规划；
+    - error：流式过程中出现异常。
+
+    流程：
+    1. 权限检查；
+    2. 写入用户消息并加载历史；
+    3. 调用 plan_turn 生成本轮规划；
+    4. 定义 event_stream 生成器，依次发送 stage、token、done 事件；
+    5. 拼接所有 token 后写入助手消息并写审计；
+    6. 返回 StreamingResponse，禁用缓存和代理缓冲。
+    """
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
     if add_chat_message(conversation_id, request.requester, "user", request.content) is None:
@@ -270,112 +402,236 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
     history = get_chat_messages(conversation_id, request.requester)
     if history is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+
+    # 转成 OpenAI 兼容的消息列表。
     messages = [{"role": item["role"], "content": item["content"]} for item in history]
+
+    # 生成本轮任务规划：路线、步骤和使用的上下文条数。
     plan = chat_service.plan_turn(request.content, messages)
 
     def event_stream() -> Iterator[str]:
+        """SSE 事件生成器：把规划、增量 token 和完成事件编码为 SSE 格式。"""
         def emit(name: str, payload: dict) -> str:
+            """把事件名和 payload 编码为 SSE 字符串。"""
             return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-        yield emit("stage", {"stage": "context", "message": f"已加载最近 {plan['context_messages']} 条会话消息"})
-        yield emit("stage", {"stage": "plan", "message": plan["route"], "steps": plan["steps"]})
-        chunks: list[str] = []
-        provider = "fallback"
+        # 第一阶段：上下文加载。
+        yield emit("stage", {
+            "stage": "context",
+            "message": f"已加载最近 {plan['context_messages']} 条会话消息",
+        })
+
+        # 第二阶段：任务规划。
+        yield emit("stage", {
+            "stage": "plan",
+            "message": plan["route"],
+            "steps": plan["steps"],
+        })
+
+        chunks: list[str] = []  # 收集所有 token，用于最终写入助手消息
+        provider = "fallback"   # 默认兜底 provider
         try:
+            # 逐段读取聊天服务的流式输出。
             for item in chat_service.stream_reply(messages, plan):
                 provider = item.get("provider", provider)
                 if item.get("type") == "token":
                     chunks.append(item["content"])
                     yield emit("token", {"content": item["content"], "provider": provider})
+
+            # 拼接完整回复并持久化。
             content = "".join(chunks)
             message = add_chat_message(conversation_id, request.requester, "assistant", content)
+
+            # 写审计：记录 provider、role、上下文条数和路线。
             write_audit(request.requester, "agent_chat_stream_completed", {
                 "conversation_id": conversation_id, "provider": provider, "role": request.role,
                 "context_messages": plan["context_messages"], "route": plan["route"],
             })
-            yield emit("done", {"conversation_id": conversation_id, "provider": provider, "message": message, "plan": plan})
+
+            # 完成事件。
+            yield emit("done", {
+                "conversation_id": conversation_id,
+                "provider": provider,
+                "message": message,
+                "plan": plan,
+            })
         except Exception as exc:  # keep the browser informed if the stream fails after it starts
+            # 流已经开始，无法再返回 HTTP 状态码，通过 error 事件通知前端。
             yield emit("error", {"message": "流式聊天失败：" + str(exc)[:180]})
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    # 返回 SSE 响应：禁用缓存和 Nginx 缓冲，保证增量实时到达浏览器。
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ---------- 智能查询：同步结果与 SSE 工作流轨迹 ----------
 
 @app.post("/api/v1/query")
-# 作用：说明函数 query 的输入、输出与安全边界，避免调用方越过受控流程。
 def query(request: QueryRequest) -> dict:
-    return workflow.run(request.question, request.requester, request.role, use_model_tools=settings.model_tool_planner_enabled).to_dict()
+    """同步智能查询接口。
+
+    直接调用 SQL Agent 工作流，返回完整结果。
+    use_model_tools 由配置决定是否允许模型选择只读工具。
+    """
+    return workflow.run(
+        request.question,
+        request.requester,
+        request.role,
+        use_model_tools=settings.model_tool_planner_enabled,
+    ).to_dict()
 
 
 @app.post("/api/v1/query/stream")
-# 作用：说明函数 stream_query 的输入、输出与安全边界，避免调用方越过受控流程。
 def stream_query(request: QueryRequest) -> StreamingResponse:
+    """SSE 流式智能查询接口。
+
+    在后台线程运行工作流，通过队列把事件传给 SSE 生成器：
+    - stage：工作流阶段事件；
+    - result：最终结果；
+    - error：执行异常。
+    使用 keepalive 空注释防止代理断开空闲连接。
+    """
     def event_stream() -> Iterator[str]:
+        # 跨线程队列：工作流线程 put，SSE 生成器 get。
         queue: Queue[tuple[str, dict]] = Queue()
+
+        # 完成标志：通知 SSE 生成器工作流已结束。
         completed = Event()
 
         def worker() -> None:
+            """后台工作流线程：运行工作流并把事件和结果放入队列。"""
             try:
-                result = workflow.run(request.question, request.requester, request.role, lambda event: queue.put(("stage", event.to_dict())), use_model_tools=settings.model_tool_planner_enabled)
+                # 通过回调把每个阶段事件放入队列。
+                result = workflow.run(
+                    request.question,
+                    request.requester,
+                    request.role,
+                    lambda event: queue.put(("stage", event.to_dict())),
+                    use_model_tools=settings.model_tool_planner_enabled,
+                )
+                # 最终结果放入队列。
                 queue.put(("result", result.to_dict()))
             except Exception as exc:  # errors remain structured for the browser client
+                # 异常也作为结构化事件返回，而不是直接抛出。
                 queue.put(("error", {"message": "工作流执行失败", "type": type(exc).__name__}))
             finally:
+                # 无论成功失败都设置完成标志，避免 SSE 生成器挂起。
                 completed.set()
 
+        # 启动后台线程，daemon=True 保证进程退出时线程不阻塞。
         Thread(target=worker, daemon=True).start()
+
+        # 循环读取队列，直到工作流完成且队列为空。
         while not completed.is_set() or not queue.empty():
             try:
+                # 超时 0.5 秒，避免阻塞太久无法发送 keepalive。
                 event_name, payload = queue.get(timeout=0.5)
                 yield f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
             except Empty:
+                # 队列暂时为空时发送 SSE 注释行作为心跳。
                 yield ": keepalive\n\n"
+
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+# ---------- 审批中心 ----------
+
 @app.post("/api/v1/approvals/{approval_id}/approve")
-# 作用：说明函数 approve_request 的输入、输出与安全边界，避免调用方越过受控流程。
 def approve_request(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
+    """批准审批单，并按配置决定是否真正执行写操作。
+
+    流程：
+    1. 检查 approve_change 权限；
+    2. 调用 approve 更新状态；
+    3. 若已过期，返回 expired 并写审计；
+    4. 调用 execute_approved 执行：
+       - allow_writes=False 时进入 safe_mode，只记录不落库；
+       - allow_writes=True 时只允许白名单 SQL，并先备份；
+    5. 写审计并返回结果和提示信息。
+    """
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="当前角色无审批权限。请切换到值班负责人。")
     approval = approve(approval_id, request.actor, request.comment)
     if approval is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
+
+    # 过期分支：不执行任何 SQL，提示重新发起。
     if approval["status"] == "expired":
-        write_audit(approval["requester"], "approval_expired", {"approval_id": approval_id, "approver": request.actor})
-        return {"status": "expired", "approval_id": approval_id, "message": "审批单已过期（有效期 30 分钟），没有执行任何 SQL。请重新发起变更。"}
+        write_audit(approval["requester"], "approval_expired", {
+            "approval_id": approval_id, "approver": request.actor,
+        })
+        return {
+            "status": "expired", "approval_id": approval_id,
+            "message": "审批单已过期（有效期 30 分钟），没有执行任何 SQL。请重新发起变更。",
+        }
+
+    # 执行：safe_mode 或 executed。
     execution = execute_approved(approval_id, settings.allow_approved_writes)
     if execution is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
     outcome = execution.get("outcome")
-    write_audit(approval["requester"], "approval_resolved", {"approval_id": approval_id, "outcome": outcome, "approver_role": request.role, "approver": request.actor, "comment": request.comment})
+
+    # 记录审批结果审计。
+    write_audit(approval["requester"], "approval_resolved", {
+        "approval_id": approval_id, "outcome": outcome,
+        "approver_role": request.role, "approver": request.actor, "comment": request.comment,
+    })
+
+    # 根据 outcome 返回不同的用户提示。
     messages = {
         "executed": "审批完成，已执行受控 Demo 操作。",
         "safe_mode": "审批已记录为“安全模式已批准”。未执行写库；影响范围仅作预估并已留痕。",
         "not_allowlisted": "审批已记录，但该 SQL 不在 Demo 执行白名单内。",
         "not_approved": "审批单当前不处于可执行状态。",
     }
-    return {"status": execution["status"], "approval_id": approval_id, "outcome": outcome, "message": messages.get(outcome, "审批状态已更新。")}
+    return {
+        "status": execution["status"], "approval_id": approval_id,
+        "outcome": outcome, "message": messages.get(outcome, "审批状态已更新。"),
+    }
 
 
 @app.post("/api/v1/approvals/{approval_id}/reject")
-# 作用：说明函数 reject_request 的输入、输出与安全边界，避免调用方越过受控流程。
 def reject_request(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
+    """拒绝审批单。
+
+    - 检查 approve_change 权限；
+    - 调用 reject_approval 更新状态；
+    - 只对处于 pending 的单子写审计，避免重复记录。
+    """
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="当前角色无审批权限。请切换到值班负责人。")
     approval = reject_approval(approval_id, request.actor, request.comment)
     if approval is None:
         raise HTTPException(status_code=404, detail="审批单不存在")
+
+    # 若状态不是 rejected，说明已经处理过，不再写审计。
     if approval["status"] != "rejected":
-        return {"status": approval["status"], "approval_id": approval_id, "message": "审批单当前已不是待处理状态。"}
-    write_audit(approval["requester"], "approval_rejected", {"approval_id": approval_id, "approver_role": request.role, "approver": request.actor, "comment": approval["decision_comment"]})
-    return {"status": "rejected", "approval_id": approval_id, "message": "审批已拒绝；没有执行任何 SQL，也没有修改业务数据。"}
+        return {
+            "status": approval["status"], "approval_id": approval_id,
+            "message": "审批单当前已不是待处理状态。",
+        }
+
+    write_audit(approval["requester"], "approval_rejected", {
+        "approval_id": approval_id, "approver_role": request.role,
+        "approver": request.actor, "comment": approval["decision_comment"],
+    })
+    return {
+        "status": "rejected", "approval_id": approval_id,
+        "message": "审批已拒绝；没有执行任何 SQL，也没有修改业务数据。",
+    }
 
 
 @app.delete("/api/v1/approvals/{approval_id}")
-# 作用：说明函数 remove_approval 的输入、输出与安全边界，避免调用方越过受控流程。
 def remove_approval(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
+    """删除已完成的审批记录。
+
+    - 只有 approve_change 角色可删除；
+    - pending 状态不可删除，需要先批准或拒绝；
+    - 删除操作写审计，保留可追溯性。
+    """
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="当前角色无删除审批记录权限。请切换到值班负责人。")
     approval = delete_approval(approval_id)
@@ -390,15 +646,21 @@ def remove_approval(approval_id: str, request: ApprovalActionRequest = ApprovalA
     return {"deleted": True, "message": "审批记录已删除；删除操作已保留在审计中心。"}
 
 
+# ---------- 审计中心 ----------
+
 @app.get("/api/v1/audit")
-# 作用：说明函数 audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit(limit: int = 50, offset: int = 0) -> list[dict]:
+    """分页查询审计日志，limit 限制在 1~200，offset 不小于 0。"""
     return list_audit(min(max(limit, 1), 200), max(offset, 0))
 
 
 @app.get("/api/v1/audit/cleanup-preview")
-# 作用：说明函数 audit_cleanup_check 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit_cleanup_check(start: str, end: str, role: str = "viewer") -> dict:
+    """预览指定时间范围内的审计清理影响，只读不删除。
+
+    - 只有 approve_change 角色可预览；
+    - 时间格式错误时返回 400。
+    """
     if not permitted(role, "approve_change"):
         raise HTTPException(status_code=403, detail="只有值班负责人可以预览审计清理范围。")
     try:
@@ -408,8 +670,13 @@ def audit_cleanup_check(start: str, end: str, role: str = "viewer") -> dict:
 
 
 @app.delete("/api/v1/audit/range")
-# 作用：说明函数 cleanup_audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def cleanup_audit(request: AuditCleanupRequest) -> dict:
+    """按时间范围批量删除审计记录。
+
+    - 只有 approve_change 角色可执行；
+    - 必须显式 confirm=True，避免误删；
+    - 删除动作记录在独立的审计维护日志中。
+    """
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="只有值班负责人可以清理审计记录。")
     if not request.confirm:
@@ -421,8 +688,13 @@ def cleanup_audit(request: AuditCleanupRequest) -> dict:
 
 
 @app.delete("/api/v1/audit/{event_id}")
-# 作用：说明函数 delete_audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_audit(event_id: str, request: AuditDeleteRequest) -> dict:
+    """删除单条审计记录。
+
+    - 只有 approve_change 角色可执行；
+    - 必须显式 confirm=True；
+    - 删除后重建哈希链，并在维护日志中留痕。
+    """
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="只有值班负责人可以删除审计记录。")
     if not request.confirm:
@@ -434,59 +706,79 @@ def delete_audit(event_id: str, request: AuditDeleteRequest) -> dict:
 
 
 @app.get("/api/v1/audit/integrity")
-# 作用：说明函数 verify_audit_integrity 的输入、输出与安全边界，避免调用方越过受控流程。
 def verify_audit_integrity(scope: str = "full") -> dict:
+    """校验审计哈希链完整性。
+
+    - scope="full"：校验全部事件；
+    - scope="recent_100"：只校验最近 100 条。
+    """
     if scope not in {"full", "recent_100"}:
         raise HTTPException(status_code=400, detail="校验范围必须是 full 或 recent_100")
     return audit_integrity(None if scope == "full" else 100)
 
 
 @app.get("/api/v1/audit/summary")
-# 作用：说明函数 audit_summary 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit_summary() -> dict:
+    """返回审计事件总数。"""
     return {"total": audit_count()}
 
 
 # ---------- 数据浏览器、Skills 和知识库 ----------
 
 @app.get("/api/v1/data/tables")
-# 作用：说明函数 explorer_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def explorer_catalog(role: str = "viewer") -> list[dict]:
+    """返回数据浏览器可访问的表目录。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无数据浏览权限。")
     return data_catalog()
 
 
 @app.get("/api/v1/data/tables/{table_name}")
-# 作用：说明函数 explorer_table 的输入、输出与安全边界，避免调用方越过受控流程。
 def explorer_table(table_name: str, role: str = "viewer", limit: int = 30, offset: int = 0) -> dict:
+    """返回指定表的 schema 和样本数据。
+
+    - 表名必须在白名单中，否则 404；
+    - 每次查看写审计，便于追踪数据浏览行为。
+    """
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无数据浏览权限。")
     snapshot = table_snapshot(table_name, min(max(limit, 1), 100), max(offset, 0))
     if snapshot is None:
         raise HTTPException(status_code=404, detail="该表不在数据浏览器授权范围内。")
-    write_audit("Lenovo", "data_explorer_viewed", {"table": table_name, "limit": snapshot["limit"], "offset": snapshot["offset"], "role": role})
+    write_audit("Lenovo", "data_explorer_viewed", {
+        "table": table_name, "limit": snapshot["limit"],
+        "offset": snapshot["offset"], "role": role,
+    })
     return snapshot
 
 
 @app.get("/api/v1/skills")
-# 作用：说明函数 skills 的输入、输出与安全边界，避免调用方越过受控流程。
 def skills() -> list[dict]:
+    """返回所有 Skill 的目录信息。"""
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
-    return [{"name": item.name, "description": item.description, "category": item.category, "risk": item.risk, "suggestions": list(item.suggestions), "runnable": item.runnable} for item in registry.load()]
+    return [
+        {
+            "name": item.name, "description": item.description,
+            "category": item.category, "risk": item.risk,
+            "suggestions": list(item.suggestions), "runnable": item.runnable,
+        }
+        for item in registry.load()
+    ]
 
 
 @app.get("/api/v1/skills/history")
-# 作用：说明函数 skills_history 的输入、输出与安全边界，避免调用方越过受控流程。
 def skills_history(role: str = "viewer", limit: int = 8) -> list[dict]:
+    """返回最近的 Skill 运行记录（从审计日志中过滤）。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Skill 运行记录查看权限。")
-    return [event for event in list_audit(limit=200) if event["action"] == "skill_run"][:min(max(limit, 1), 30)]
+    return [
+        event for event in list_audit(limit=200) if event["action"] == "skill_run"
+    ][:min(max(limit, 1), 30)]
 
 
 @app.get("/api/v1/skills/{skill_name}")
-# 作用：说明函数 skill_detail 的输入、输出与安全边界，避免调用方越过受控流程。
 def skill_detail(skill_name: str) -> dict[str, str]:
+    """返回指定 Skill 的名称、描述和完整内容。"""
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
     for item in registry.load():
         if item.name == skill_name:
@@ -495,8 +787,13 @@ def skill_detail(skill_name: str) -> dict[str, str]:
 
 
 @app.post("/api/v1/skills/{skill_name}/run")
-# 作用：说明函数 execute_skill 的输入、输出与安全边界，避免调用方越过受控流程。
 def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
+    """运行一个可执行的 Skill。
+
+    - 检查 read 权限；
+    - 规范型 Skill（runnable=False）不允许直接运行；
+    - 运行结果写审计。
+    """
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Skill 运行权限。")
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
@@ -506,13 +803,16 @@ def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
     if not skill.runnable:
         raise HTTPException(status_code=400, detail="该 Skill 是规范型能力，请在智能查询或对应页面中使用。")
     result = run_skill(skill_name, request.user_input)
-    write_audit(request.requester, "skill_run", {"skill": skill_name, "input": request.user_input[:160], "status": result["status"], "role": request.role})
+    write_audit(request.requester, "skill_run", {
+        "skill": skill_name, "input": request.user_input[:160],
+        "status": result["status"], "role": request.role,
+    })
     return result
 
 
 @app.get("/api/v1/knowledge")
-# 作用：说明函数 knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge(role: str = "viewer", limit: int = 5, offset: int = 0, tag: str = "", status: str = "") -> dict:
+    """分页查询知识文档，支持 tag 和 status 过滤。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
     bounded_limit = min(max(limit, 1), 20)
@@ -526,40 +826,49 @@ def knowledge(role: str = "viewer", limit: int = 5, offset: int = 0, tag: str = 
 
 
 @app.get("/api/v1/knowledge/tags")
-# 作用：说明函数 knowledge_tag_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_tag_catalog(role: str = "viewer") -> list[str]:
+    """返回所有知识标签。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
     return knowledge_tags()
 
 
 @app.get("/api/v1/knowledge/{document_id}/chunks")
-# 作用：说明函数 knowledge_document_chunks 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_document_chunks(document_id: int, role: str = "viewer") -> list[dict]:
+    """返回指定文档的所有分块。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
     return document_chunks(document_id)
 
 
 @app.get("/api/v1/knowledge/{document_id}/versions")
-# 作用：说明函数 knowledge_document_versions 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_document_versions(document_id: int, role: str = "viewer") -> list[dict]:
+    """返回指定文档的所有历史版本。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库版本查看权限。")
     return list_knowledge_versions(document_id)
 
 
 @app.get("/api/v1/knowledge/search")
-# 作用：说明函数 search_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def search_knowledge(query: str, limit: int = 3, role: str = "viewer") -> list[dict]:
+    """知识库语义检索。
+
+    - 需要 rag 权限；
+    - limit 限制在 1~10；
+    - 复用 KnowledgeRag，与线上检索行为一致。
+    """
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无知识检索权限。")
     return KnowledgeRag().search(query, min(max(limit, 1), 10))
 
 
 @app.get("/api/v1/knowledge/chroma")
-# 作用：说明函数 knowledge_chroma 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_chroma(role: str = "viewer") -> dict:
+    """返回 Chroma 向量库的统计信息。
+
+    - 需要 rag 权限；
+    - Chroma 未就绪时返回 503。
+    """
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无知识向量索引查看权限。")
     try:
@@ -569,8 +878,8 @@ def knowledge_chroma(role: str = "viewer") -> dict:
 
 
 @app.get("/api/v1/chroma/collections")
-# 作用：说明函数 chroma_collections 的输入、输出与安全边界，避免调用方越过受控流程。
 def chroma_collections(role: str = "viewer") -> list[dict]:
+    """返回所有 Chroma 集合的名称和数量。"""
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无 Chroma 集合查看权限。")
     try:
@@ -580,8 +889,13 @@ def chroma_collections(role: str = "viewer") -> list[dict]:
 
 
 @app.get("/api/v1/chroma/collections/{collection_name}")
-# 作用：说明函数 chroma_collection 的输入、输出与安全边界，避免调用方越过受控流程。
 def chroma_collection(collection_name: str, limit: int = 100, offset: int = 0, role: str = "viewer") -> list[dict]:
+    """分页浏览指定 Chroma 集合的记录。
+
+    - 只允许访问白名单集合；
+    - 集合不存在或名字非法时返回 400；
+    - Chroma 异常时返回 503。
+    """
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无 Chroma 数据查看权限。")
     try:
@@ -593,51 +907,83 @@ def chroma_collection(collection_name: str, limit: int = 100, offset: int = 0, r
 
 
 @app.post("/api/v1/knowledge/evaluation")
-# 作用：说明函数 evaluate_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluate_knowledge(request: MutationActorRequest) -> dict:
+    """运行知识检索评测并写审计。"""
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识检索评测权限。")
     report = run_knowledge_evaluation()
-    write_audit(request.requester, "knowledge_evaluation_completed", {"total": report["total"], "passed": report["passed"], "hit_at_3": report["hit_at_3"], "role": request.role})
+    write_audit(request.requester, "knowledge_evaluation_completed", {
+        "total": report["total"], "passed": report["passed"],
+        "hit_at_3": report["hit_at_3"], "role": request.role,
+    })
     return report
 
 
 @app.post("/api/v1/knowledge/evaluation/feedback")
-# 作用：说明函数 evaluate_knowledge_feedback 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluate_knowledge_feedback(request: KnowledgeEvaluationFeedbackRequest) -> dict:
+    """保存人工知识评分，并返回评分汇总。
+
+    - 需要 request_change 权限；
+    - 评分和汇总一并返回，便于前端即时刷新。
+    """
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无提交知识库人工评分权限。")
-    feedback = save_knowledge_evaluation_feedback(request.evaluation_id, request.question, request.score, request.comment, request.requester)
+    feedback = save_knowledge_evaluation_feedback(
+        request.evaluation_id, request.question,
+        request.score, request.comment, request.requester,
+    )
     summary = knowledge_evaluation_feedback_summary(request.evaluation_id)
-    write_audit(request.requester, "knowledge_evaluation_feedback", {"evaluation_id": request.evaluation_id, "question": request.question, "score": request.score, "role": request.role})
+    write_audit(request.requester, "knowledge_evaluation_feedback", {
+        "evaluation_id": request.evaluation_id, "question": request.question,
+        "score": request.score, "role": request.role,
+    })
     return {"feedback": feedback, "summary": summary}
 
 
 @app.post("/api/v1/knowledge/reindex")
-# 作用：说明函数 reindex_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def reindex_knowledge(request: MutationActorRequest) -> dict:
+    """重建知识分块和 Chroma 索引。
+
+    - 需要 request_change 权限；
+    - 先重建 SQLite 分块，再重建 Chroma；
+    - 写审计记录分块数和 Chroma 总数。
+    """
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     chunks = rebuild_knowledge_index()
     chroma = rebuild_chroma_index()
-    write_audit(request.requester, "knowledge_reindexed", {"chunk_count": chunks, "chroma_total": chroma["total"], "role": request.role})
+    write_audit(request.requester, "knowledge_reindexed", {
+        "chunk_count": chunks, "chroma_total": chroma["total"], "role": request.role,
+    })
     return {"status": "completed", "chunk_count": chunks, "chroma": chroma}
 
 
 @app.post("/api/v1/knowledge", status_code=201)
-# 作用：说明函数 create_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
+    """新增知识文档。
+
+    - 需要 request_change 权限；
+    - 新增后重建 Chroma 索引，保证检索立即可用；
+    - 写审计。
+    """
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     document = add_knowledge_document(request.title, request.content, request.tags, request.expires_at)
     rebuild_chroma_index()
-    write_audit(request.requester, "knowledge_created", {"document_id": document["id"], "title": document["title"], "role": request.role})
+    write_audit(request.requester, "knowledge_created", {
+        "document_id": document["id"], "title": document["title"], "role": request.role,
+    })
     return document
 
 
 @app.post("/api/v1/knowledge/upload", status_code=201)
-# 作用：说明函数 upload_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def upload_knowledge(request: KnowledgeUploadRequest) -> dict:
+    """上传知识文档。
+
+    - 仅支持 .txt 和 .md 后缀；
+    - 正文长度上限更高（100000）；
+    - 保存后重建 Chroma 索引并写审计。
+    """
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     suffix = Path(request.filename).suffix.lower()
@@ -645,98 +991,132 @@ def upload_knowledge(request: KnowledgeUploadRequest) -> dict:
         raise HTTPException(status_code=400, detail="目前仅支持上传 .txt 或 .md 文档。")
     document = add_knowledge_document(request.title, request.content, request.tags, request.expires_at)
     rebuild_chroma_index()
-    write_audit(request.requester, "knowledge_uploaded", {"document_id": document["id"], "filename": request.filename, "role": request.role})
+    write_audit(request.requester, "knowledge_uploaded", {
+        "document_id": document["id"], "filename": request.filename, "role": request.role,
+    })
     return document
 
 
 @app.put("/api/v1/knowledge/{document_id}")
-# 作用：说明函数 edit_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def edit_knowledge(document_id: int, request: KnowledgeDocumentRequest) -> dict:
+    """编辑知识文档，自动递增版本并重建索引。"""
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
-    document = update_knowledge_document(document_id, request.title, request.content, request.tags, request.expires_at)
+    document = update_knowledge_document(
+        document_id, request.title, request.content, request.tags, request.expires_at,
+    )
     if document is None:
         raise HTTPException(status_code=404, detail="知识文档不存在")
     rebuild_chroma_index()
-    write_audit(request.requester, "knowledge_updated", {"document_id": document_id, "version": document["version"], "role": request.role})
+    write_audit(request.requester, "knowledge_updated", {
+        "document_id": document_id, "version": document["version"], "role": request.role,
+    })
     return document
 
 
 @app.post("/api/v1/knowledge/{document_id}/rollback/{version}")
-# 作用：说明函数 rollback_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def rollback_knowledge(document_id: int, version: int, request: MutationActorRequest) -> dict:
+    """将知识文档回滚到指定历史版本。
+
+    - 回滚本身以新版本记录，不会丢失当前版本；
+    - 回滚后重建 Chroma 索引。
+    """
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     document = rollback_knowledge_document(document_id, version)
     if document is None:
         raise HTTPException(status_code=404, detail="目标版本或知识文档不存在")
     rebuild_chroma_index()
-    write_audit(request.requester, "knowledge_rolled_back", {"document_id": document_id, "source_version": version, "new_version": document["version"], "role": request.role})
+    write_audit(request.requester, "knowledge_rolled_back", {
+        "document_id": document_id, "source_version": version,
+        "new_version": document["version"], "role": request.role,
+    })
     return document
 
 
 @app.delete("/api/v1/knowledge/{document_id}")
-# 作用：说明函数 delete_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_knowledge(document_id: int, request: MutationActorRequest) -> None:
+    """删除知识文档及其分块和版本，并重建 Chroma 索引。
+
+    - 返回 204（FastAPI 默认 None 返回空 body）；
+    - 删除后写审计。
+    """
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
     if not delete_knowledge_document(document_id):
         raise HTTPException(status_code=404, detail="知识文档不存在")
     rebuild_chroma_index()
-    write_audit(request.requester, "knowledge_deleted", {"document_id": document_id, "role": request.role})
+    write_audit(request.requester, "knowledge_deleted", {
+        "document_id": document_id, "role": request.role,
+    })
 
 
 # ---------- 指标、工具、记忆和离线评测 ----------
 
 @app.get("/api/v1/metrics")
-# 作用：说明函数 metrics 的输入、输出与安全边界，避免调用方越过受控流程。
 def metrics() -> dict:
-    return {**system_metrics(), "llm_enabled": settings.llm_enabled, "approved_writes_enabled": settings.allow_approved_writes}
+    """返回系统指标、LLM 开关和已批准写操作开关。"""
+    return {
+        **system_metrics(),
+        "llm_enabled": settings.llm_enabled,
+        "approved_writes_enabled": settings.allow_approved_writes,
+    }
 
 
 @app.get("/api/v1/approvals")
-# 作用：说明函数 approvals 的输入、输出与安全边界，避免调用方越过受控流程。
 def approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[dict]:
+    """分页查询审批单，可按状态过滤。"""
     if status and status not in APPROVAL_STATUSES:
         raise HTTPException(status_code=400, detail="不支持的审批状态筛选")
     return list_approvals(min(max(limit, 1), 200), max(offset, 0), status)
 
 
 @app.get("/api/v1/approvals/summary")
-# 作用：说明函数 approval_summary 的输入、输出与安全边界，避免调用方越过受控流程。
 def approval_summary(status: str = "") -> dict:
+    """返回审批总数和各状态计数。"""
     if status and status not in APPROVAL_STATUSES:
         raise HTTPException(status_code=400, detail="不支持的审批状态筛选")
     return {"total": approval_count(status), "status_counts": approval_status_counts()}
 
 
 @app.get("/api/v1/policies")
-# 作用：说明函数 policies 的输入、输出与安全边界，避免调用方越过受控流程。
 def policies() -> dict:
+    """返回角色目录和策略摘要，供前端展示权限边界。"""
     return {"roles": role_catalog(), "policies": policy_summary()}
 
 
 @app.get("/api/v1/monitoring/overview")
-# 作用：说明函数 monitoring 的输入、输出与安全边界，避免调用方越过受控流程。
 def monitoring() -> dict:
+    """返回监控概览，并在健康检查中追加 Chroma 状态。
+
+    - monitoring_overview() 提供基础健康项；
+    - 如果 Chroma 可用，追加 healthy 项；
+    - Chroma 异常时追加 degraded 项，不影响其他健康项。
+    """
     overview = monitoring_overview()
     try:
         status = chroma_stats()
-        overview.setdefault("health_checks", []).append({"name": "Chroma 向量库", "status": "healthy", "detail": f"{len(status['collections'])} 个集合 · {status['total']} 条索引"})
+        overview.setdefault("health_checks", []).append({
+            "name": "Chroma 向量库", "status": "healthy",
+            "detail": f"{len(status['collections'])} 个集合 · {status['total']} 条索引",
+        })
     except Exception as exc:
-        overview.setdefault("health_checks", []).append({"name": "Chroma 向量库", "status": "degraded", "detail": f"索引不可用：{exc}"})
+        overview.setdefault("health_checks", []).append({
+            "name": "Chroma 向量库", "status": "degraded",
+            "detail": f"索引不可用：{exc}",
+        })
     return overview
 
 
 @app.get("/api/v1/metric-definitions")
-# 作用：说明函数 metric_definitions 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_definitions(keyword: str = "", category: str = "", limit: int = 60) -> list[dict]:
+    """按关键字和分类查询指标定义。"""
     return list_metric_definitions(keyword.strip(), category.strip(), min(max(limit, 1), 100))
 
 
 @app.get("/api/v1/metric-definitions/{metric_id}/trend")
-# 作用：说明函数 metric_definition_trend 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_definition_trend(metric_id: int, points: int = 24) -> dict:
+    """返回指定指标的趋势数据点，points 限制在 2~48。"""
     trend = metric_trend(metric_id, min(max(points, 2), 48))
     if trend is None:
         raise HTTPException(status_code=404, detail="指标不存在")
@@ -744,8 +1124,8 @@ def metric_definition_trend(metric_id: int, points: int = 24) -> dict:
 
 
 @app.get("/api/v1/metrics/import-template")
-# 作用：说明函数 metric_import_template 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_import_template() -> PlainTextResponse:
+    """下载指标 CSV 导入模板。"""
     return PlainTextResponse(
         metric_csv_template(),
         media_type="text/csv; charset=utf-8",
@@ -754,116 +1134,188 @@ def metric_import_template() -> PlainTextResponse:
 
 
 @app.get("/api/v1/metrics/imports")
-# 作用：说明函数 metric_imports 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_imports(role: str = "viewer") -> list[dict]:
+    """返回最近的指标导入记录。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无指标导入记录查看权限。")
     return list_metric_imports()
 
 
 @app.post("/api/v1/metrics/import", status_code=201)
-# 作用：说明函数 import_metrics_csv 的输入、输出与安全边界，避免调用方越过受控流程。
-async def import_metrics_csv(request: Request, filename: str = "metrics.csv", role: str = "operator", requester: str = "Lenovo") -> dict:
+async def import_metrics_csv(
+    request: Request, filename: str = "metrics.csv",
+    role: str = "operator", requester: str = "Lenovo",
+) -> dict:
+    """导入真实指标 CSV。
+
+    流程：
+    1. 权限检查；无权限时写拒绝审计并返回 403；
+    2. 读取请求体，校验非空且不超过 5 MB；
+    3. 使用 UTF-8 或 UTF-8 BOM 解码；
+    4. 调用 import_metric_csv 解析并 upsert；
+    5. 写审计记录导入结果。
+    """
     if not permitted(role, "request_change"):
-        write_audit(requester, "metric_import_denied", {"filename": filename[:180], "role": role})
+        write_audit(requester, "metric_import_denied", {
+            "filename": filename[:180], "role": role,
+        })
         raise HTTPException(status_code=403, detail="观察者角色不能导入真实指标 CSV。请切换到运维工程师或值班负责人。")
+
     body = await request.body()
     if not body:
         raise HTTPException(status_code=400, detail="请选择包含指标数据的 CSV 文件。")
     if len(body) > 5 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="CSV 文件不能超过 5 MB。")
+
     try:
+        # utf-8-sig 兼容带 BOM 的 CSV。
         content = body.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="CSV 必须使用 UTF-8 或 UTF-8 BOM 编码保存。") from exc
+
     try:
         result = import_metric_csv(content, filename, requester)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    write_audit(requester, "metric_csv_imported", {"filename": filename[:180], "role": role, **result})
+
+    write_audit(requester, "metric_csv_imported", {
+        "filename": filename[:180], "role": role, **result,
+    })
     return result
 
 
 @app.get("/api/v1/tools")
-# 作用：说明函数 tools_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def tools_catalog() -> list[dict[str, str]]:
+    """返回所有工具目录。"""
     return catalog()
 
 
 @app.get("/api/v1/tools/history")
-# 作用：说明函数 tools_history 的输入、输出与安全边界，避免调用方越过受控流程。
 def tools_history(role: str = "viewer", limit: int = 8) -> list[dict]:
+    """返回最近的工具调用相关审计事件。
+
+    过滤的动作包括：tool_invoked、tool_approval_requested、tool_access_denied。
+    """
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无工具调用记录查看权限。")
     actions = {"tool_invoked", "tool_approval_requested", "tool_access_denied"}
-    return [event for event in list_audit(limit=200) if event["action"] in actions][:min(max(limit, 1), 30)]
+    return [
+        event for event in list_audit(limit=200) if event["action"] in actions
+    ][:min(max(limit, 1), 30)]
 
 
 @app.post("/api/v1/tools/{tool_name}/invoke")
-# 作用：说明函数 invoke_tool 的输入、输出与安全边界，避免调用方越过受控流程。
-def invoke_tool(tool_name: str, request: ToolInvokeRequest = ToolInvokeRequest(role="viewer", requester="Lenovo")) -> dict:
+def invoke_tool(
+    tool_name: str,
+    request: ToolInvokeRequest = ToolInvokeRequest(role="viewer", requester="Lenovo"),
+) -> dict:
+    """调用一个工具。
+
+    - 工具不存在返回 404；
+    - 风险等级为 manual 的工具需要 request_change 权限；
+    - manual 工具不直接执行，而是创建审批单；
+    - 只读工具直接调用并写审计。
+    """
     tool = definition(tool_name)
     if tool is None:
         raise HTTPException(status_code=404, detail="工具不存在")
+
+    # manual 风险工具需要 request_change 权限，其他只需 read。
     required_permission = "request_change" if tool.risk == "manual" else "read"
     if not permitted(request.role, required_permission):
-        write_audit(request.requester, "tool_access_denied", {"tool": tool_name, "role": request.role, "required_permission": required_permission})
+        write_audit(request.requester, "tool_access_denied", {
+            "tool": tool_name, "role": request.role,
+            "required_permission": required_permission,
+        })
         raise HTTPException(status_code=403, detail="当前角色无该工具调用权限。")
+
+    # manual 风险工具不直接执行，创建审批单。
     if tool.risk == "manual":
-        approval_id = create_approval(request.requester, f"TOOL {tool_name}", f"工具 {tool.name} 会改变运维状态，需要人工审批。")
-        write_audit(request.requester, "tool_approval_requested", {"tool": tool_name, "approval_id": approval_id, "role": request.role})
-        return {"status": "approval_required", "tool": tool_name, "approval_id": approval_id, "message": "已创建工具变更审批单，请前往审批中心确认。"}
+        approval_id = create_approval(
+            request.requester, f"TOOL {tool_name}",
+            f"工具 {tool.name} 会改变运维状态，需要人工审批。",
+        )
+        write_audit(request.requester, "tool_approval_requested", {
+            "tool": tool_name, "approval_id": approval_id, "role": request.role,
+        })
+        return {
+            "status": "approval_required", "tool": tool_name,
+            "approval_id": approval_id,
+            "message": "已创建工具变更审批单，请前往审批中心确认。",
+        }
+
+    # 只读工具直接执行。
     result = invoke(tool_name)
-    write_audit(request.requester, "tool_invoked", {"tool": tool_name, "status": result["status"], "role": request.role})
+    write_audit(request.requester, "tool_invoked", {
+        "tool": tool_name, "status": result["status"], "role": request.role,
+    })
     return result
 
 
 @app.get("/api/v1/memory/{requester}")
-# 作用：说明函数 memory 的输入、输出与安全边界，避免调用方越过受控流程。
 def memory(requester: str, limit: int = 6) -> list[dict[str, str]]:
+    """返回指定请求人的最近会话记忆，limit 限制在 1~30。"""
     return recent_memory(requester, min(max(limit, 1), 30))
 
 
 @app.get("/api/v1/evaluations/cases")
-# 作用：说明函数 evaluation_cases 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluation_cases(role: str = "viewer") -> list[dict]:
+    """返回所有可用评测用例（基线 + 自定义）。"""
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无评测用例查看权限。")
     return available_evaluation_cases()
 
 
 @app.post("/api/v1/evaluations/cases", status_code=201)
-# 作用：说明函数 create_evaluation_case 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_evaluation_case(request: EvaluationCaseRequest) -> dict:
+    """新增自定义评测用例。
+
+    - 需要 request_change 权限；
+    - 校验失败返回 400；
+    - 写审计并返回 source="custom"。
+    """
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="观察者角色不能新增评测用例。")
     try:
         case = add_evaluation_case(request.name, request.question, request.expected_status, request.requester)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    write_audit(request.requester, "evaluation_case_created", {"case_id": case["id"], "name": case["name"], "expected_status": case["expected_status"], "role": request.role})
+    write_audit(request.requester, "evaluation_case_created", {
+        "case_id": case["id"], "name": case["name"],
+        "expected_status": case["expected_status"], "role": request.role,
+    })
     return {**case, "source": "custom"}
 
 
 @app.delete("/api/v1/evaluations/cases/{case_id}")
-# 作用：说明函数 remove_evaluation_case 的输入、输出与安全边界，避免调用方越过受控流程。
 def remove_evaluation_case(case_id: str, request: MutationActorRequest) -> dict:
+    """删除自定义评测用例，并写审计。"""
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="观察者角色不能删除评测用例。")
     if not delete_evaluation_case(case_id):
         raise HTTPException(status_code=404, detail="自定义评测用例不存在。")
-    write_audit(request.requester, "evaluation_case_deleted", {"case_id": case_id, "role": request.role})
+    write_audit(request.requester, "evaluation_case_deleted", {
+        "case_id": case_id, "role": request.role,
+    })
     return {"deleted": True}
 
 
 @app.post("/api/v1/evaluations/run")
-# 作用：说明函数 evaluate 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluate(request: EvaluationRunRequest = EvaluationRunRequest()) -> dict:
+    """运行 SQL Agent 离线评测。
+
+    - 需要 read 权限；
+    - 复用真实工作流，结果反映当前权限、RAG 和 SQL 策略；
+    - 运行结束后写审计。
+    """
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无运行评测权限。")
     try:
         report = run_evaluation(request.scope, request.case_ids)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    write_audit(request.requester, "evaluation_completed", {"scope": report["scope"], "dataset_size": report["dataset_size"], "passed": report["passed"], "role": request.role})
+    write_audit(request.requester, "evaluation_completed", {
+        "scope": report["scope"], "dataset_size": report["dataset_size"],
+        "passed": report["passed"], "role": request.role,
+    })
     return report
