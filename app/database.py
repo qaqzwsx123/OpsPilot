@@ -43,10 +43,12 @@ EXPLORER_TABLES = {
 
 # ---------- 连接与初始化 ----------
 
+# 作用：说明函数 utc_now 的输入、输出与安全边界，避免调用方越过受控流程。
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# 作用：说明函数 connect 的输入、输出与安全边界，避免调用方越过受控流程。
 def connect() -> sqlite3.Connection:
     DATA_DIR.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -54,6 +56,7 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+# 作用：说明函数 initialize 的输入、输出与安全边界，避免调用方越过受控流程。
 def initialize() -> None:
     with connect() as conn:
         conn.executescript(
@@ -188,6 +191,7 @@ def initialize() -> None:
 
 # ---------- 演示数据和指标 CSV ----------
 
+# 作用：说明函数 seed_demo_data 的输入、输出与安全边界，避免调用方越过受控流程。
 def seed_demo_data() -> None:
     initialize()
     with connect() as conn:
@@ -311,6 +315,7 @@ CSV_HEADER_ALIASES = {
 MAX_METRIC_IMPORT_ROWS = 50_000
 
 
+# 作用：说明函数 metric_csv_template 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_csv_template() -> str:
     return (
         "metric_name,category,unit,asset_scope,observed_at,value,description\n"
@@ -319,6 +324,7 @@ def metric_csv_template() -> str:
     )
 
 
+# 作用：说明函数 _resolve_csv_headers 的输入、输出与安全边界，避免调用方越过受控流程。
 def _resolve_csv_headers(fieldnames: list[str] | None) -> dict[str, str]:
     normalized = {str(name).strip().lower(): str(name) for name in fieldnames or [] if name and str(name).strip()}
     resolved: dict[str, str] = {}
@@ -335,6 +341,7 @@ def _resolve_csv_headers(fieldnames: list[str] | None) -> dict[str, str]:
     return resolved
 
 
+# 作用：说明函数 _parse_observed_at 的输入、输出与安全边界，避免调用方越过受控流程。
 def _parse_observed_at(value: str) -> str:
     normalized = value.strip().replace("Z", "+00:00")
     try:
@@ -408,6 +415,7 @@ EVALUATION_STATUSES = {"completed", "answered_by_rag", "approval_required", "blo
 
 # ---------- 评测用例与只读 SQL ----------
 
+# 作用：说明函数 list_evaluation_cases 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_evaluation_cases() -> list[dict[str, str]]:
     with connect() as conn:
         rows = conn.execute(
@@ -416,6 +424,7 @@ def list_evaluation_cases() -> list[dict[str, str]]:
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 add_evaluation_case 的输入、输出与安全边界，避免调用方越过受控流程。
 def add_evaluation_case(name: str, question: str, expected_status: str, requester: str) -> dict[str, str]:
     if expected_status not in EVALUATION_STATUSES:
         raise ValueError("预期结果必须是 completed、answered_by_rag、approval_required 或 blocked")
@@ -430,11 +439,13 @@ def add_evaluation_case(name: str, question: str, expected_status: str, requeste
     return case
 
 
+# 作用：说明函数 delete_evaluation_case 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_evaluation_case(case_id: str) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM evaluation_cases WHERE id = ?", (case_id,)).rowcount > 0
 
 
+# 作用：说明函数 execute_readonly 的输入、输出与安全边界，避免调用方越过受控流程。
 def execute_readonly(sql: str) -> list[dict[str, Any]]:
     if settings.mysql_enabled:
         from app.mysql_adapter import execute_readonly as execute_mysql_readonly
@@ -447,15 +458,18 @@ def execute_readonly(sql: str) -> list[dict[str, Any]]:
 
 # ---------- 审计哈希链与按时间清理 ----------
 
+# 作用：说明函数 _canonical_payload 的输入、输出与安全边界，避免调用方越过受控流程。
 def _canonical_payload(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+# 作用：说明函数 _audit_digest 的输入、输出与安全边界，避免调用方越过受控流程。
 def _audit_digest(previous: str, event_id: str, created_at: str, requester: str, action: str, payload: str) -> str:
     value = "|".join((previous, event_id, created_at, requester, action, payload))
     return sha256(value.encode("utf-8")).hexdigest()
 
 
+# 作用：说明函数 _backfill_audit_hashes 的输入、输出与安全边界，避免调用方越过受控流程。
 def _backfill_audit_hashes(conn: sqlite3.Connection) -> None:
     previous = ""
     rows = conn.execute("SELECT rowid, id, created_at, requester, action, payload, entry_hash FROM audit_logs ORDER BY rowid").fetchall()
@@ -467,6 +481,7 @@ def _backfill_audit_hashes(conn: sqlite3.Connection) -> None:
         previous = digest
 
 
+# 作用：说明函数 write_audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def write_audit(requester: str, action: str, payload: dict[str, Any]) -> None:
     event_id, created_at = str(uuid4()), utc_now()
     canonical_payload = _canonical_payload(payload)
@@ -495,6 +510,7 @@ def delete_audit_event(event_id: str, deleted_by: str) -> dict[str, Any] | None:
         return {"deleted": True, "deleted_event_id": event_id, "deleted_action": row["action"], "maintenance_logged": True}
 
 
+# 作用：说明函数 _normalize_audit_cutoff 的输入、输出与安全边界，避免调用方越过受控流程。
 def _normalize_audit_cutoff(cutoff: str) -> str:
     value = cutoff.strip()
     if not value:
@@ -508,6 +524,7 @@ def _normalize_audit_cutoff(cutoff: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat()
 
 
+# 作用：说明函数 _normalize_audit_range 的输入、输出与安全边界，避免调用方越过受控流程。
 def _normalize_audit_range(start: str, end: str) -> tuple[str, str]:
     normalized_start = _normalize_audit_cutoff(start)
     normalized_end = _normalize_audit_cutoff(end)
@@ -516,6 +533,7 @@ def _normalize_audit_range(start: str, end: str) -> tuple[str, str]:
     return normalized_start, normalized_end
 
 
+# 作用：说明函数 audit_cleanup_preview 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit_cleanup_preview(start: str, end: str) -> dict[str, Any]:
     normalized_start, normalized_end = _normalize_audit_range(start, end)
     with connect() as conn:
@@ -544,6 +562,7 @@ def delete_audit_range(start: str, end: str, deleted_by: str) -> dict[str, Any]:
 
 # ---------- 审批、影响预估与受控执行 ----------
 
+# 作用：说明函数 _normalized_sql 的输入、输出与安全边界，避免调用方越过受控流程。
 def _normalized_sql(sql: str) -> str:
     return " ".join(sql.strip().split()).rstrip(";")
 
@@ -574,6 +593,7 @@ def _impact_preview(conn: sqlite3.Connection, sql: str) -> dict[str, Any]:
     }
 
 
+# 作用：说明函数 create_approval 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_approval(requester: str, sql: str, reason: str) -> str:
     approval_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
@@ -587,10 +607,12 @@ def create_approval(requester: str, sql: str, reason: str) -> str:
     return approval_id
 
 
+# 作用：说明函数 _is_approval_expired 的输入、输出与安全边界，避免调用方越过受控流程。
 def _is_approval_expired(row: sqlite3.Row) -> bool:
     return bool(row["expires_at"]) and datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) <= datetime.now(timezone.utc)
 
 
+# 作用：说明函数 _expire_pending_approvals 的输入、输出与安全边界，避免调用方越过受控流程。
 def _expire_pending_approvals(conn: sqlite3.Connection) -> None:
     pending = conn.execute("SELECT id, expires_at FROM approvals WHERE status = 'pending' AND expires_at IS NOT NULL").fetchall()
     expired = [row["id"] for row in pending if datetime.fromisoformat(row["expires_at"]).astimezone(timezone.utc) <= datetime.now(timezone.utc)]
@@ -601,6 +623,7 @@ def _expire_pending_approvals(conn: sqlite3.Connection) -> None:
         )
 
 
+# 作用：说明函数 approve 的输入、输出与安全边界，避免调用方越过受控流程。
 def approve(approval_id: str, decided_by: str, comment: str = "") -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
@@ -622,6 +645,7 @@ def approve(approval_id: str, decided_by: str, comment: str = "") -> dict[str, A
     return dict(row)
 
 
+# 作用：说明函数 reject_approval 的输入、输出与安全边界，避免调用方越过受控流程。
 def reject_approval(approval_id: str, decided_by: str, comment: str = "") -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
@@ -698,6 +722,7 @@ def execute_approved(approval_id: str, allow_writes: bool) -> dict[str, Any] | N
 
 # ---------- Agent 聊天会话与上下文记忆 ----------
 
+# 作用：说明函数 save_memory 的输入、输出与安全边界，避免调用方越过受控流程。
 def save_memory(requester: str, role: str, content: str) -> None:
     with connect() as conn:
         conn.execute(
@@ -706,6 +731,7 @@ def save_memory(requester: str, role: str, content: str) -> None:
         )
 
 
+# 作用：说明函数 recent_memory 的输入、输出与安全边界，避免调用方越过受控流程。
 def recent_memory(requester: str, limit: int = 6) -> list[dict[str, str]]:
     with connect() as conn:
         rows = conn.execute(
@@ -715,6 +741,7 @@ def recent_memory(requester: str, limit: int = 6) -> list[dict[str, str]]:
     return [dict(row) for row in reversed(rows)]
 
 
+# 作用：说明函数 create_chat_conversation 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_chat_conversation(requester: str, title: str = "新对话") -> dict[str, Any]:
     conversation_id, timestamp = str(uuid4()), utc_now()
     with connect() as conn:
@@ -725,6 +752,7 @@ def create_chat_conversation(requester: str, title: str = "新对话") -> dict[s
     return {"id": conversation_id, "requester": requester, "title": title.strip()[:48] or "新对话", "created_at": timestamp, "updated_at": timestamp}
 
 
+# 作用：说明函数 list_chat_conversations 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_chat_conversations(requester: str, limit: int = 100) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
@@ -734,6 +762,7 @@ def list_chat_conversations(requester: str, limit: int = 100) -> list[dict[str, 
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 get_chat_messages 的输入、输出与安全边界，避免调用方越过受控流程。
 def get_chat_messages(conversation_id: str, requester: str) -> list[dict[str, str]] | None:
     with connect() as conn:
         conversation = conn.execute("SELECT 1 FROM chat_conversations WHERE id = ? AND requester = ?", (conversation_id, requester)).fetchone()
@@ -745,6 +774,7 @@ def get_chat_messages(conversation_id: str, requester: str) -> list[dict[str, st
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 add_chat_message 的输入、输出与安全边界，避免调用方越过受控流程。
 def add_chat_message(conversation_id: str, requester: str, role: str, content: str) -> dict[str, str] | None:
     if role not in {"user", "assistant"}:
         raise ValueError("unsupported chat role")
@@ -766,6 +796,7 @@ def add_chat_message(conversation_id: str, requester: str, role: str, content: s
     return {"role": role, "content": content, "created_at": timestamp}
 
 
+# 作用：说明函数 delete_chat_conversation 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_chat_conversation(conversation_id: str, requester: str) -> bool:
     with connect() as conn:
         exists = conn.execute("SELECT 1 FROM chat_conversations WHERE id = ? AND requester = ?", (conversation_id, requester)).fetchone()
@@ -778,6 +809,7 @@ def delete_chat_conversation(conversation_id: str, requester: str) -> bool:
 
 # ---------- 监控、指标和知识库查询 ----------
 
+# 作用：说明函数 system_metrics 的输入、输出与安全边界，避免调用方越过受控流程。
 def system_metrics() -> dict[str, int | bool]:
     with connect() as conn:
         table_count = conn.execute(
@@ -792,6 +824,7 @@ def system_metrics() -> dict[str, int | bool]:
     return {"demo_tables": table_count, "knowledge_documents": knowledge_count, "metric_definitions": metric_count, "imported_metric_definitions": imported_metric_count, "metric_imports": import_count, "audit_events": audit_count, "approved_actions": approval_count}
 
 
+# 作用：说明函数 list_metric_definitions 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_metric_definitions(keyword: str = "", category: str = "", limit: int = 60) -> list[dict[str, Any]]:
     clauses, params = [], []
     if keyword:
@@ -809,6 +842,7 @@ def list_metric_definitions(keyword: str = "", category: str = "", limit: int = 
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 metric_trend 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_trend(metric_id: int, points: int = 24) -> dict[str, Any] | None:
     with connect() as conn:
         definition = conn.execute(
@@ -823,6 +857,7 @@ def metric_trend(metric_id: int, points: int = 24) -> dict[str, Any] | None:
     return {**dict(definition), "points": list(reversed([dict(row) for row in rows]))}
 
 
+# 作用：说明函数 list_metric_imports 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_metric_imports(limit: int = 8) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
@@ -832,12 +867,14 @@ def list_metric_imports(limit: int = 8) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 knowledge_document_count 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_document_count(tag: str = "", status: str = "") -> int:
     with connect() as conn:
         where, params = _knowledge_where(tag, status)
         return conn.execute("SELECT COUNT(*) FROM knowledge_documents" + where, params).fetchone()[0]
 
 
+# 作用：说明函数 _knowledge_where 的输入、输出与安全边界，避免调用方越过受控流程。
 def _knowledge_where(tag: str = "", status: str = "") -> tuple[str, list[str]]:
     clauses, params = [], []
     if tag:
@@ -848,6 +885,7 @@ def _knowledge_where(tag: str = "", status: str = "") -> tuple[str, list[str]]:
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), params
 
 
+# 作用：说明函数 list_knowledge_documents 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_knowledge_documents(limit: int = 100, offset: int = 0, tag: str = "", status: str = "") -> list[dict[str, Any]]:
     with connect() as conn:
         where, params = _knowledge_where(tag, status)
@@ -861,6 +899,7 @@ def list_knowledge_documents(limit: int = 100, offset: int = 0, tag: str = "", s
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 add_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def add_knowledge_document(title: str, content: str, tags: str, expires_at: str | None = None) -> dict[str, Any]:
     now = utc_now()
     with connect() as conn:
@@ -876,6 +915,7 @@ def add_knowledge_document(title: str, content: str, tags: str, expires_at: str 
     return document
 
 
+# 作用：说明函数 update_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def update_knowledge_document(document_id: int, title: str, content: str, tags: str, expires_at: str | None = None) -> dict[str, Any] | None:
     now = utc_now()
     with connect() as conn:
@@ -899,6 +939,7 @@ def update_knowledge_document(document_id: int, title: str, content: str, tags: 
     return document
 
 
+# 作用：说明函数 list_knowledge_versions 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_knowledge_versions(document_id: int) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
@@ -908,6 +949,7 @@ def list_knowledge_versions(document_id: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 rollback_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def rollback_knowledge_document(document_id: int, version: int) -> dict[str, Any] | None:
     with connect() as conn:
         selected = conn.execute("SELECT title, content, tags FROM knowledge_versions WHERE document_id = ? AND version = ?", (document_id, version)).fetchone()
@@ -917,6 +959,7 @@ def rollback_knowledge_document(document_id: int, version: int) -> dict[str, Any
     return update_knowledge_document(document_id, selected["title"], selected["content"], selected["tags"], current["expires_at"])
 
 
+# 作用：说明函数 delete_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_knowledge_document(document_id: int) -> bool:
     with connect() as conn:
         conn.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
@@ -925,16 +968,19 @@ def delete_knowledge_document(document_id: int) -> bool:
     return cursor.rowcount == 1
 
 
+# 作用：说明函数 knowledge_tags 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_tags() -> list[str]:
     return sorted({tag.strip() for row in list_knowledge_documents(limit=1000) for tag in row["tags"].replace("，", ",").split(",") if tag.strip()})
 
 
+# 作用：说明函数 document_chunks 的输入、输出与安全边界，避免调用方越过受控流程。
 def document_chunks(document_id: int) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT chunk_index, content, token_count FROM knowledge_chunks WHERE document_id = ? ORDER BY chunk_index", (document_id,)).fetchall()
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 _split_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def _split_knowledge(content: str, size: int = 180, overlap: int = 30) -> list[str]:
     normalized = " ".join(content.split())
     if len(normalized) <= size:
@@ -953,6 +999,7 @@ def _split_knowledge(content: str, size: int = 180, overlap: int = 30) -> list[s
     return chunks
 
 
+# 作用：说明函数 index_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def index_knowledge_document(document_id: int) -> int:
     with connect() as conn:
         document = conn.execute("SELECT content FROM knowledge_documents WHERE id = ?", (document_id,)).fetchone()
@@ -967,12 +1014,14 @@ def index_knowledge_document(document_id: int) -> int:
     return len(chunks)
 
 
+# 作用：说明函数 rebuild_knowledge_index 的输入、输出与安全边界，避免调用方越过受控流程。
 def rebuild_knowledge_index() -> int:
     with connect() as conn:
         ids = [row["id"] for row in conn.execute("SELECT id FROM knowledge_documents").fetchall()]
     return sum(index_knowledge_document(document_id) for document_id in ids)
 
 
+# 作用：说明函数 knowledge_chunks 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_chunks() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
@@ -984,6 +1033,7 @@ def knowledge_chunks() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+# 作用：说明函数 save_knowledge_evaluation_feedback 的输入、输出与安全边界，避免调用方越过受控流程。
 def save_knowledge_evaluation_feedback(evaluation_id: str, question: str, score: int, comment: str, requester: str) -> dict[str, Any]:
     created_at = utc_now()
     with connect() as conn:
@@ -994,6 +1044,7 @@ def save_knowledge_evaluation_feedback(evaluation_id: str, question: str, score:
     return {"id": cursor.lastrowid, "evaluation_id": evaluation_id, "question": question.strip(), "score": score, "comment": comment.strip(), "requester": requester, "created_at": created_at}
 
 
+# 作用：说明函数 knowledge_evaluation_feedback_summary 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_evaluation_feedback_summary(evaluation_id: str) -> dict[str, Any]:
     with connect() as conn:
         row = conn.execute(
@@ -1017,6 +1068,7 @@ def _approval_status_clause(status: str) -> tuple[str, tuple[str, ...]]:
     return " WHERE status = ?", (status,)
 
 
+# 作用：说明函数 list_approvals 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[dict[str, Any]]:
     with connect() as conn:
         _expire_pending_approvals(conn)
@@ -1037,6 +1089,7 @@ def list_approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[
     return result
 
 
+# 作用：说明函数 monitoring_overview 的输入、输出与安全边界，避免调用方越过受控流程。
 def monitoring_overview() -> dict[str, Any]:
     with connect() as conn:
         asset_states = [dict(row) for row in conn.execute(
@@ -1093,17 +1146,20 @@ def monitoring_overview() -> dict[str, Any]:
     }
 
 
+# 作用：说明函数 list_audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def list_audit(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
     return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
 
 
+# 作用：说明函数 audit_count 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit_count() -> int:
     with connect() as conn:
         return conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]
 
 
+# 作用：说明函数 approval_count 的输入、输出与安全边界，避免调用方越过受控流程。
 def approval_count(status: str = "") -> int:
     with connect() as conn:
         _expire_pending_approvals(conn)

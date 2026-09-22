@@ -11,12 +11,14 @@ from app.tool_registry import definition, invoke
 
 
 @dataclass(frozen=True, slots=True)
+# 作用：说明类 ToolSelection 的输入、输出与安全边界，避免调用方越过受控流程。
 class ToolSelection:
     name: str
     reason: str
 
 
 @dataclass(frozen=True, slots=True)
+# 作用：说明类 ModelToolCall 的输入、输出与安全边界，避免调用方越过受控流程。
 class ModelToolCall:
     name: str
     arguments: dict[str, Any]

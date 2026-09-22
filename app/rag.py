@@ -20,6 +20,7 @@ def _tokens(text: str) -> list[str]:
     return english + grams
 
 
+# 作用：说明函数 _embedding 的输入、输出与安全边界，避免调用方越过受控流程。
 def _embedding(tokens: list[str], dimensions: int = 64) -> list[float]:
     vector = [0.0] * dimensions
     for token, count in Counter(tokens).items():
@@ -29,6 +30,7 @@ def _embedding(tokens: list[str], dimensions: int = 64) -> list[float]:
     return [value / length for value in vector]
 
 
+# 作用：说明函数 _cosine 的输入、输出与安全边界，避免调用方越过受控流程。
 def _cosine(left: list[float], right: list[float]) -> float:
     return sum(a * b for a, b in zip(left, right))
 

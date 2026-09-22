@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 
 
 @dataclass(frozen=True, slots=True)
+# 作用：说明类 Role 的输入、输出与安全边界，避免调用方越过受控流程。
 class Role:
     id: str
     label: str
@@ -20,20 +21,24 @@ ROLES = (
 )
 
 
+# 作用：说明函数 role_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def role_catalog() -> list[dict]:
     return [{**asdict(role), "permissions": list(role.permissions)} for role in ROLES]
 
 
+# 作用：说明函数 role_by_id 的输入、输出与安全边界，避免调用方越过受控流程。
 def role_by_id(role_id: str) -> Role | None:
     return next((role for role in ROLES if role.id == role_id), None)
 
 
+# 作用：说明函数 permitted 的输入、输出与安全边界，避免调用方越过受控流程。
 def permitted(role_id: str, permission: str) -> bool:
     # 页面只负责展示，真正授权以这里的服务端判断为准。
     role = role_by_id(role_id)
     return bool(role and permission in role.permissions)
 
 
+# 作用：说明函数 policy_summary 的输入、输出与安全边界，避免调用方越过受控流程。
 def policy_summary() -> list[dict[str, str]]:
     return [
         {"operation": "只读 SQL / RAG / 自动工具", "tier": "AUTO", "required_permission": "read"},

@@ -23,6 +23,7 @@ def _load_local_env() -> None:
 _load_local_env()
 
 
+# 作用：说明函数 _flag 的输入、输出与安全边界，避免调用方越过受控流程。
 def _flag(name: str, default: bool = False) -> bool:
     # 将 .env 中常见的字符串布尔值统一转换为 Python bool。
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}

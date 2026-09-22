@@ -9,6 +9,7 @@ from app.database import execute_readonly, list_approvals, list_audit, list_know
 
 
 @dataclass(frozen=True, slots=True)
+# 作用：说明类 ToolDefinition 的输入、输出与安全边界，避免调用方越过受控流程。
 class ToolDefinition:
     name: str
     description: str
@@ -32,15 +33,18 @@ TOOLS = (
 )
 
 
+# 作用：说明函数 catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def catalog() -> list[dict[str, str]]:
     # 前端工具中心和模型 Function Calling 都从同一份目录生成。
     return [asdict(tool) for tool in TOOLS]
 
 
+# 作用：说明函数 definition 的输入、输出与安全边界，避免调用方越过受控流程。
 def definition(name: str) -> ToolDefinition | None:
     return next((tool for tool in TOOLS if tool.name == name), None)
 
 
+# 作用：说明函数 invoke 的输入、输出与安全边界，避免调用方越过受控流程。
 def invoke(name: str, query: str = "") -> dict[str, Any]:
     # 工具调用只允许走这里，AUTO 读操作和 MANUAL/BLOCKED 结果均可审计。
     readonly_queries = {

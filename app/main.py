@@ -28,6 +28,7 @@ from app.policy import permitted, policy_summary, role_catalog
 
 
 @asynccontextmanager
+# 作用：说明函数 lifespan 的输入、输出与安全边界，避免调用方越过受控流程。
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # 服务启动时确保 SQLite、演示数据和可重建的知识索引处于可用状态。
     initialize()
@@ -66,54 +67,65 @@ class KnowledgeDocumentRequest(BaseModel):
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
+# 作用：说明类 KnowledgeUploadRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class KnowledgeUploadRequest(KnowledgeDocumentRequest):
     content: str = Field(min_length=10, max_length=100000)
     filename: str = Field(min_length=1, max_length=180)
 
 
+# 作用：说明类 MutationActorRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class MutationActorRequest(BaseModel):
     role: str = Field(default="operator", min_length=1, max_length=32)
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
+# 作用：说明类 AuditDeleteRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class AuditDeleteRequest(MutationActorRequest):
     confirm: bool = False
 
 
+# 作用：说明类 AuditCleanupRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class AuditCleanupRequest(MutationActorRequest):
     start: str = Field(min_length=10, max_length=40)
     end: str = Field(min_length=10, max_length=40)
     confirm: bool = False
 
 
+# 作用：说明类 ToolInvokeRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ToolInvokeRequest(MutationActorRequest):
     pass
 
 
+# 作用：说明类 SkillRunRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class SkillRunRequest(MutationActorRequest):
     user_input: str = Field(default="", max_length=500)
 
 
+# 作用：说明类 ChatConversationRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ChatConversationRequest(MutationActorRequest):
     title: str = Field(default="新对话", max_length=48)
 
 
+# 作用：说明类 ChatTurnRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ChatTurnRequest(MutationActorRequest):
     content: str = Field(min_length=1, max_length=4000)
 
 
+# 作用：说明类 ApprovalActionRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ApprovalActionRequest(BaseModel):
     role: str = Field(default="approver", min_length=1, max_length=32)
     actor: str = Field(default="Lenovo", min_length=1, max_length=64)
     comment: str = Field(default="", max_length=500)
 
 
+# 作用：说明类 EvaluationCaseRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class EvaluationCaseRequest(MutationActorRequest):
     name: str = Field(min_length=2, max_length=80)
     question: str = Field(min_length=2, max_length=500)
     expected_status: str = Field(default="completed", min_length=1, max_length=32)
 
 
+# 作用：说明类 EvaluationRunRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class EvaluationRunRequest(BaseModel):
     scope: str = Field(default="baseline", pattern="^(baseline|all|selected)$")
     case_ids: list[str] = Field(default_factory=list, max_length=100)
@@ -121,6 +133,7 @@ class EvaluationRunRequest(BaseModel):
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
+# 作用：说明类 KnowledgeEvaluationFeedbackRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class KnowledgeEvaluationFeedbackRequest(MutationActorRequest):
     evaluation_id: str = Field(min_length=1, max_length=64)
     question: str = Field(min_length=2, max_length=500)
@@ -131,16 +144,19 @@ class KnowledgeEvaluationFeedbackRequest(MutationActorRequest):
 # ---------- Agent 聊天：会话、历史消息和流式回复 ----------
 
 @app.get("/health")
+# 作用：说明函数 health 的输入、输出与安全边界，避免调用方越过受控流程。
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.get("/", include_in_schema=False)
+# 作用：说明函数 console 的输入、输出与安全边界，避免调用方越过受控流程。
 def console() -> FileResponse:
     return FileResponse(WEB_DIR / "index.html")
 
 
 @app.post("/api/v1/chat/conversations")
+# 作用：说明函数 create_chat_conversation 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_chat_conversation(request: ChatConversationRequest) -> dict:
     # 聊天会话创建先走 RBAC，再写入会话审计事件。
     if not permitted(request.role, "read"):
@@ -151,6 +167,7 @@ def create_chat_conversation(request: ChatConversationRequest) -> dict:
 
 
 @app.get("/api/v1/chat/conversations")
+# 作用：说明函数 chat_conversations 的输入、输出与安全边界，避免调用方越过受控流程。
 def chat_conversations(requester: str = "Lenovo", role: str = "viewer") -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
@@ -158,6 +175,7 @@ def chat_conversations(requester: str = "Lenovo", role: str = "viewer") -> list[
 
 
 @app.get("/api/v1/chat/conversations/{conversation_id}/messages")
+# 作用：说明函数 chat_messages 的输入、输出与安全边界，避免调用方越过受控流程。
 def chat_messages(conversation_id: str, requester: str = "Lenovo", role: str = "viewer") -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
@@ -168,6 +186,7 @@ def chat_messages(conversation_id: str, requester: str = "Lenovo", role: str = "
 
 
 @app.delete("/api/v1/chat/conversations/{conversation_id}")
+# 作用：说明函数 delete_chat 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_chat(conversation_id: str, request: MutationActorRequest) -> dict:
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
@@ -178,6 +197,7 @@ def delete_chat(conversation_id: str, request: MutationActorRequest) -> dict:
 
 
 @app.post("/api/v1/chat/conversations/{conversation_id}/messages")
+# 作用：说明函数 chat_turn 的输入、输出与安全边界，避免调用方越过受控流程。
 def chat_turn(conversation_id: str, request: ChatTurnRequest) -> dict:
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
@@ -235,11 +255,13 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
 # ---------- 智能查询：同步结果与 SSE 工作流轨迹 ----------
 
 @app.post("/api/v1/query")
+# 作用：说明函数 query 的输入、输出与安全边界，避免调用方越过受控流程。
 def query(request: QueryRequest) -> dict:
     return workflow.run(request.question, request.requester, request.role, use_model_tools=settings.model_tool_planner_enabled).to_dict()
 
 
 @app.post("/api/v1/query/stream")
+# 作用：说明函数 stream_query 的输入、输出与安全边界，避免调用方越过受控流程。
 def stream_query(request: QueryRequest) -> StreamingResponse:
     def event_stream() -> Iterator[str]:
         queue: Queue[tuple[str, dict]] = Queue()
@@ -265,6 +287,7 @@ def stream_query(request: QueryRequest) -> StreamingResponse:
 
 
 @app.post("/api/v1/approvals/{approval_id}/approve")
+# 作用：说明函数 approve_request 的输入、输出与安全边界，避免调用方越过受控流程。
 def approve_request(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="当前角色无审批权限。请切换到值班负责人。")
@@ -289,6 +312,7 @@ def approve_request(approval_id: str, request: ApprovalActionRequest = ApprovalA
 
 
 @app.post("/api/v1/approvals/{approval_id}/reject")
+# 作用：说明函数 reject_request 的输入、输出与安全边界，避免调用方越过受控流程。
 def reject_request(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="当前角色无审批权限。请切换到值班负责人。")
@@ -302,6 +326,7 @@ def reject_request(approval_id: str, request: ApprovalActionRequest = ApprovalAc
 
 
 @app.delete("/api/v1/approvals/{approval_id}")
+# 作用：说明函数 remove_approval 的输入、输出与安全边界，避免调用方越过受控流程。
 def remove_approval(approval_id: str, request: ApprovalActionRequest = ApprovalActionRequest()) -> dict:
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="当前角色无删除审批记录权限。请切换到值班负责人。")
@@ -318,11 +343,13 @@ def remove_approval(approval_id: str, request: ApprovalActionRequest = ApprovalA
 
 
 @app.get("/api/v1/audit")
+# 作用：说明函数 audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit(limit: int = 50, offset: int = 0) -> list[dict]:
     return list_audit(min(max(limit, 1), 200), max(offset, 0))
 
 
 @app.get("/api/v1/audit/cleanup-preview")
+# 作用：说明函数 audit_cleanup_check 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit_cleanup_check(start: str, end: str, role: str = "viewer") -> dict:
     if not permitted(role, "approve_change"):
         raise HTTPException(status_code=403, detail="只有值班负责人可以预览审计清理范围。")
@@ -333,6 +360,7 @@ def audit_cleanup_check(start: str, end: str, role: str = "viewer") -> dict:
 
 
 @app.delete("/api/v1/audit/range")
+# 作用：说明函数 cleanup_audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def cleanup_audit(request: AuditCleanupRequest) -> dict:
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="只有值班负责人可以清理审计记录。")
@@ -345,6 +373,7 @@ def cleanup_audit(request: AuditCleanupRequest) -> dict:
 
 
 @app.delete("/api/v1/audit/{event_id}")
+# 作用：说明函数 delete_audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_audit(event_id: str, request: AuditDeleteRequest) -> dict:
     if not permitted(request.role, "approve_change"):
         raise HTTPException(status_code=403, detail="只有值班负责人可以删除审计记录。")
@@ -357,6 +386,7 @@ def delete_audit(event_id: str, request: AuditDeleteRequest) -> dict:
 
 
 @app.get("/api/v1/audit/integrity")
+# 作用：说明函数 verify_audit_integrity 的输入、输出与安全边界，避免调用方越过受控流程。
 def verify_audit_integrity(scope: str = "full") -> dict:
     if scope not in {"full", "recent_100"}:
         raise HTTPException(status_code=400, detail="校验范围必须是 full 或 recent_100")
@@ -364,6 +394,7 @@ def verify_audit_integrity(scope: str = "full") -> dict:
 
 
 @app.get("/api/v1/audit/summary")
+# 作用：说明函数 audit_summary 的输入、输出与安全边界，避免调用方越过受控流程。
 def audit_summary() -> dict:
     return {"total": audit_count()}
 
@@ -371,6 +402,7 @@ def audit_summary() -> dict:
 # ---------- 数据浏览器、Skills 和知识库 ----------
 
 @app.get("/api/v1/data/tables")
+# 作用：说明函数 explorer_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def explorer_catalog(role: str = "viewer") -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无数据浏览权限。")
@@ -378,6 +410,7 @@ def explorer_catalog(role: str = "viewer") -> list[dict]:
 
 
 @app.get("/api/v1/data/tables/{table_name}")
+# 作用：说明函数 explorer_table 的输入、输出与安全边界，避免调用方越过受控流程。
 def explorer_table(table_name: str, role: str = "viewer", limit: int = 30, offset: int = 0) -> dict:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无数据浏览权限。")
@@ -389,12 +422,14 @@ def explorer_table(table_name: str, role: str = "viewer", limit: int = 30, offse
 
 
 @app.get("/api/v1/skills")
+# 作用：说明函数 skills 的输入、输出与安全边界，避免调用方越过受控流程。
 def skills() -> list[dict]:
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
     return [{"name": item.name, "description": item.description, "category": item.category, "risk": item.risk, "suggestions": list(item.suggestions), "runnable": item.runnable} for item in registry.load()]
 
 
 @app.get("/api/v1/skills/history")
+# 作用：说明函数 skills_history 的输入、输出与安全边界，避免调用方越过受控流程。
 def skills_history(role: str = "viewer", limit: int = 8) -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Skill 运行记录查看权限。")
@@ -402,6 +437,7 @@ def skills_history(role: str = "viewer", limit: int = 8) -> list[dict]:
 
 
 @app.get("/api/v1/skills/{skill_name}")
+# 作用：说明函数 skill_detail 的输入、输出与安全边界，避免调用方越过受控流程。
 def skill_detail(skill_name: str) -> dict[str, str]:
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
     for item in registry.load():
@@ -411,6 +447,7 @@ def skill_detail(skill_name: str) -> dict[str, str]:
 
 
 @app.post("/api/v1/skills/{skill_name}/run")
+# 作用：说明函数 execute_skill 的输入、输出与安全边界，避免调用方越过受控流程。
 def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Skill 运行权限。")
@@ -426,6 +463,7 @@ def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
 
 
 @app.get("/api/v1/knowledge")
+# 作用：说明函数 knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge(role: str = "viewer", limit: int = 5, offset: int = 0, tag: str = "", status: str = "") -> dict:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
@@ -440,6 +478,7 @@ def knowledge(role: str = "viewer", limit: int = 5, offset: int = 0, tag: str = 
 
 
 @app.get("/api/v1/knowledge/tags")
+# 作用：说明函数 knowledge_tag_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_tag_catalog(role: str = "viewer") -> list[str]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
@@ -447,6 +486,7 @@ def knowledge_tag_catalog(role: str = "viewer") -> list[str]:
 
 
 @app.get("/api/v1/knowledge/{document_id}/chunks")
+# 作用：说明函数 knowledge_document_chunks 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_document_chunks(document_id: int, role: str = "viewer") -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库查看权限。")
@@ -454,6 +494,7 @@ def knowledge_document_chunks(document_id: int, role: str = "viewer") -> list[di
 
 
 @app.get("/api/v1/knowledge/{document_id}/versions")
+# 作用：说明函数 knowledge_document_versions 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_document_versions(document_id: int, role: str = "viewer") -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识库版本查看权限。")
@@ -461,6 +502,7 @@ def knowledge_document_versions(document_id: int, role: str = "viewer") -> list[
 
 
 @app.get("/api/v1/knowledge/search")
+# 作用：说明函数 search_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def search_knowledge(query: str, limit: int = 3, role: str = "viewer") -> list[dict]:
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无知识检索权限。")
@@ -468,6 +510,7 @@ def search_knowledge(query: str, limit: int = 3, role: str = "viewer") -> list[d
 
 
 @app.get("/api/v1/knowledge/chroma")
+# 作用：说明函数 knowledge_chroma 的输入、输出与安全边界，避免调用方越过受控流程。
 def knowledge_chroma(role: str = "viewer") -> dict:
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无知识向量索引查看权限。")
@@ -478,6 +521,7 @@ def knowledge_chroma(role: str = "viewer") -> dict:
 
 
 @app.get("/api/v1/chroma/collections")
+# 作用：说明函数 chroma_collections 的输入、输出与安全边界，避免调用方越过受控流程。
 def chroma_collections(role: str = "viewer") -> list[dict]:
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无 Chroma 集合查看权限。")
@@ -488,6 +532,7 @@ def chroma_collections(role: str = "viewer") -> list[dict]:
 
 
 @app.get("/api/v1/chroma/collections/{collection_name}")
+# 作用：说明函数 chroma_collection 的输入、输出与安全边界，避免调用方越过受控流程。
 def chroma_collection(collection_name: str, limit: int = 100, offset: int = 0, role: str = "viewer") -> list[dict]:
     if not permitted(role, "rag"):
         raise HTTPException(status_code=403, detail="当前角色无 Chroma 数据查看权限。")
@@ -500,6 +545,7 @@ def chroma_collection(collection_name: str, limit: int = 100, offset: int = 0, r
 
 
 @app.post("/api/v1/knowledge/evaluation")
+# 作用：说明函数 evaluate_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluate_knowledge(request: MutationActorRequest) -> dict:
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无知识检索评测权限。")
@@ -509,6 +555,7 @@ def evaluate_knowledge(request: MutationActorRequest) -> dict:
 
 
 @app.post("/api/v1/knowledge/evaluation/feedback")
+# 作用：说明函数 evaluate_knowledge_feedback 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluate_knowledge_feedback(request: KnowledgeEvaluationFeedbackRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无提交知识库人工评分权限。")
@@ -519,6 +566,7 @@ def evaluate_knowledge_feedback(request: KnowledgeEvaluationFeedbackRequest) -> 
 
 
 @app.post("/api/v1/knowledge/reindex")
+# 作用：说明函数 reindex_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def reindex_knowledge(request: MutationActorRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
@@ -529,6 +577,7 @@ def reindex_knowledge(request: MutationActorRequest) -> dict:
 
 
 @app.post("/api/v1/knowledge", status_code=201)
+# 作用：说明函数 create_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
@@ -539,6 +588,7 @@ def create_knowledge(request: KnowledgeDocumentRequest) -> dict:
 
 
 @app.post("/api/v1/knowledge/upload", status_code=201)
+# 作用：说明函数 upload_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def upload_knowledge(request: KnowledgeUploadRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
@@ -552,6 +602,7 @@ def upload_knowledge(request: KnowledgeUploadRequest) -> dict:
 
 
 @app.put("/api/v1/knowledge/{document_id}")
+# 作用：说明函数 edit_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def edit_knowledge(document_id: int, request: KnowledgeDocumentRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
@@ -564,6 +615,7 @@ def edit_knowledge(document_id: int, request: KnowledgeDocumentRequest) -> dict:
 
 
 @app.post("/api/v1/knowledge/{document_id}/rollback/{version}")
+# 作用：说明函数 rollback_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def rollback_knowledge(document_id: int, version: int, request: MutationActorRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
@@ -576,6 +628,7 @@ def rollback_knowledge(document_id: int, version: int, request: MutationActorReq
 
 
 @app.delete("/api/v1/knowledge/{document_id}")
+# 作用：说明函数 delete_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def delete_knowledge(document_id: int, request: MutationActorRequest) -> None:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="当前角色无知识库维护权限。")
@@ -588,11 +641,13 @@ def delete_knowledge(document_id: int, request: MutationActorRequest) -> None:
 # ---------- 指标、工具、记忆和离线评测 ----------
 
 @app.get("/api/v1/metrics")
+# 作用：说明函数 metrics 的输入、输出与安全边界，避免调用方越过受控流程。
 def metrics() -> dict:
     return {**system_metrics(), "llm_enabled": settings.llm_enabled, "approved_writes_enabled": settings.allow_approved_writes}
 
 
 @app.get("/api/v1/approvals")
+# 作用：说明函数 approvals 的输入、输出与安全边界，避免调用方越过受控流程。
 def approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[dict]:
     if status and status not in APPROVAL_STATUSES:
         raise HTTPException(status_code=400, detail="不支持的审批状态筛选")
@@ -600,6 +655,7 @@ def approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[dict]
 
 
 @app.get("/api/v1/approvals/summary")
+# 作用：说明函数 approval_summary 的输入、输出与安全边界，避免调用方越过受控流程。
 def approval_summary(status: str = "") -> dict:
     if status and status not in APPROVAL_STATUSES:
         raise HTTPException(status_code=400, detail="不支持的审批状态筛选")
@@ -607,11 +663,13 @@ def approval_summary(status: str = "") -> dict:
 
 
 @app.get("/api/v1/policies")
+# 作用：说明函数 policies 的输入、输出与安全边界，避免调用方越过受控流程。
 def policies() -> dict:
     return {"roles": role_catalog(), "policies": policy_summary()}
 
 
 @app.get("/api/v1/monitoring/overview")
+# 作用：说明函数 monitoring 的输入、输出与安全边界，避免调用方越过受控流程。
 def monitoring() -> dict:
     overview = monitoring_overview()
     try:
@@ -623,11 +681,13 @@ def monitoring() -> dict:
 
 
 @app.get("/api/v1/metric-definitions")
+# 作用：说明函数 metric_definitions 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_definitions(keyword: str = "", category: str = "", limit: int = 60) -> list[dict]:
     return list_metric_definitions(keyword.strip(), category.strip(), min(max(limit, 1), 100))
 
 
 @app.get("/api/v1/metric-definitions/{metric_id}/trend")
+# 作用：说明函数 metric_definition_trend 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_definition_trend(metric_id: int, points: int = 24) -> dict:
     trend = metric_trend(metric_id, min(max(points, 2), 48))
     if trend is None:
@@ -636,6 +696,7 @@ def metric_definition_trend(metric_id: int, points: int = 24) -> dict:
 
 
 @app.get("/api/v1/metrics/import-template")
+# 作用：说明函数 metric_import_template 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_import_template() -> PlainTextResponse:
     return PlainTextResponse(
         metric_csv_template(),
@@ -645,6 +706,7 @@ def metric_import_template() -> PlainTextResponse:
 
 
 @app.get("/api/v1/metrics/imports")
+# 作用：说明函数 metric_imports 的输入、输出与安全边界，避免调用方越过受控流程。
 def metric_imports(role: str = "viewer") -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无指标导入记录查看权限。")
@@ -652,6 +714,7 @@ def metric_imports(role: str = "viewer") -> list[dict]:
 
 
 @app.post("/api/v1/metrics/import", status_code=201)
+# 作用：说明函数 import_metrics_csv 的输入、输出与安全边界，避免调用方越过受控流程。
 async def import_metrics_csv(request: Request, filename: str = "metrics.csv", role: str = "operator", requester: str = "Lenovo") -> dict:
     if not permitted(role, "request_change"):
         write_audit(requester, "metric_import_denied", {"filename": filename[:180], "role": role})
@@ -674,11 +737,13 @@ async def import_metrics_csv(request: Request, filename: str = "metrics.csv", ro
 
 
 @app.get("/api/v1/tools")
+# 作用：说明函数 tools_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def tools_catalog() -> list[dict[str, str]]:
     return catalog()
 
 
 @app.get("/api/v1/tools/history")
+# 作用：说明函数 tools_history 的输入、输出与安全边界，避免调用方越过受控流程。
 def tools_history(role: str = "viewer", limit: int = 8) -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无工具调用记录查看权限。")
@@ -687,6 +752,7 @@ def tools_history(role: str = "viewer", limit: int = 8) -> list[dict]:
 
 
 @app.post("/api/v1/tools/{tool_name}/invoke")
+# 作用：说明函数 invoke_tool 的输入、输出与安全边界，避免调用方越过受控流程。
 def invoke_tool(tool_name: str, request: ToolInvokeRequest = ToolInvokeRequest(role="viewer", requester="Lenovo")) -> dict:
     tool = definition(tool_name)
     if tool is None:
@@ -705,11 +771,13 @@ def invoke_tool(tool_name: str, request: ToolInvokeRequest = ToolInvokeRequest(r
 
 
 @app.get("/api/v1/memory/{requester}")
+# 作用：说明函数 memory 的输入、输出与安全边界，避免调用方越过受控流程。
 def memory(requester: str, limit: int = 6) -> list[dict[str, str]]:
     return recent_memory(requester, min(max(limit, 1), 30))
 
 
 @app.get("/api/v1/evaluations/cases")
+# 作用：说明函数 evaluation_cases 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluation_cases(role: str = "viewer") -> list[dict]:
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无评测用例查看权限。")
@@ -717,6 +785,7 @@ def evaluation_cases(role: str = "viewer") -> list[dict]:
 
 
 @app.post("/api/v1/evaluations/cases", status_code=201)
+# 作用：说明函数 create_evaluation_case 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_evaluation_case(request: EvaluationCaseRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="观察者角色不能新增评测用例。")
@@ -729,6 +798,7 @@ def create_evaluation_case(request: EvaluationCaseRequest) -> dict:
 
 
 @app.delete("/api/v1/evaluations/cases/{case_id}")
+# 作用：说明函数 remove_evaluation_case 的输入、输出与安全边界，避免调用方越过受控流程。
 def remove_evaluation_case(case_id: str, request: MutationActorRequest) -> dict:
     if not permitted(request.role, "request_change"):
         raise HTTPException(status_code=403, detail="观察者角色不能删除评测用例。")
@@ -739,6 +809,7 @@ def remove_evaluation_case(case_id: str, request: MutationActorRequest) -> dict:
 
 
 @app.post("/api/v1/evaluations/run")
+# 作用：说明函数 evaluate 的输入、输出与安全边界，避免调用方越过受控流程。
 def evaluate(request: EvaluationRunRequest = EvaluationRunRequest()) -> dict:
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无运行评测权限。")

@@ -30,6 +30,7 @@ COLLECTION_NAMES = {
 _client: chromadb.ClientAPI | None = None
 
 
+# 作用：说明函数 _get_client 的输入、输出与安全边界，避免调用方越过受控流程。
 def _get_client() -> chromadb.ClientAPI:
     # 延迟创建持久化客户端，避免导入模块时立即创建数据目录。
     global _client
@@ -46,6 +47,7 @@ def _get_client() -> chromadb.ClientAPI:
     return _client
 
 
+# 作用：说明函数 _get_collection 的输入、输出与安全边界，避免调用方越过受控流程。
 def _get_collection(name: str):
     return _get_client().get_or_create_collection(
         name=name,
@@ -54,6 +56,7 @@ def _get_collection(name: str):
     )
 
 
+# 作用：说明函数 _replace_collection 的输入、输出与安全边界，避免调用方越过受控流程。
 def _replace_collection(name: str, rows: list[dict[str, Any]]) -> int:
     # 集合是可重建索引：先清理旧内容，再从 SQLite 事实表完整写入。
     collection = _get_collection(name)
@@ -115,6 +118,7 @@ def rebuild_chroma_index() -> dict[str, Any]:
     return {"status": "ready", "path": str(CHROMA_DIR), "model": VECTOR_MODEL, "dimensions": VECTOR_DIMENSIONS, "collections": counts, "total": sum(counts.values())}
 
 
+# 作用：说明函数 chroma_stats 的输入、输出与安全边界，避免调用方越过受控流程。
 def chroma_stats() -> dict[str, Any]:
     client = _get_client()
     collections = {}
@@ -126,6 +130,7 @@ def chroma_stats() -> dict[str, Any]:
     return {"status": "ready", "storage": "Chroma PersistentClient", "path": str(CHROMA_DIR), "model": VECTOR_MODEL, "dimensions": VECTOR_DIMENSIONS, "collections": collections, "total": sum(collections.values())}
 
 
+# 作用：说明函数 chroma_collection_catalog 的输入、输出与安全边界，避免调用方越过受控流程。
 def chroma_collection_catalog() -> list[dict[str, Any]]:
     client = _get_client()
     result = []
@@ -136,6 +141,7 @@ def chroma_collection_catalog() -> list[dict[str, Any]]:
     return sorted(result, key=lambda item: item["name"])
 
 
+# 作用：说明函数 chroma_collection_records 的输入、输出与安全边界，避免调用方越过受控流程。
 def chroma_collection_records(collection_name: str, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     # 只允许浏览项目定义的集合，防止把 Chroma 当成任意数据库入口。
     allowed = set(COLLECTION_NAMES.values())
@@ -156,6 +162,7 @@ def chroma_collection_records(collection_name: str, limit: int = 100, offset: in
     ]
 
 
+# 作用：说明函数 search_knowledge 的输入、输出与安全边界，避免调用方越过受控流程。
 def search_knowledge(query: str, top_k: int = 3) -> list[dict[str, Any]]:
     # 将 Chroma 距离转换为前端可解释的语义得分，并保留来源元数据。
     collection = _get_collection(COLLECTION_NAMES["knowledge"])

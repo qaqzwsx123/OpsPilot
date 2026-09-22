@@ -13,6 +13,7 @@ from app.sql_agent import MetadataRetriever, RiskAssessor, SqlFixer, SqlReviewer
 from app.tool_planner import ToolPlanner
 
 
+# 作用：说明类 SqlAgentWorkflow 的输入、输出与安全边界，避免调用方越过受控流程。
 class SqlAgentWorkflow:
     def __init__(self) -> None:
         self.retriever = MetadataRetriever()

@@ -13,6 +13,7 @@ from app.sql_agent import RiskAssessor
 
 
 @dataclass(slots=True)
+# 作用：说明类 Skill 的输入、输出与安全边界，避免调用方越过受控流程。
 class Skill:
     name: str
     description: str
@@ -23,6 +24,7 @@ class Skill:
     runnable: bool = False
 
 
+# 作用：说明类 SkillRegistry 的输入、输出与安全边界，避免调用方越过受控流程。
 class SkillRegistry:
     def __init__(self, root: Path):
         self.root = root

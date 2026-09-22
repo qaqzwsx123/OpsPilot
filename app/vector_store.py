@@ -25,6 +25,7 @@ def tokens(text: str) -> list[str]:
     return english + grams
 
 
+# 作用：说明函数 embed 的输入、输出与安全边界，避免调用方越过受控流程。
 def embed(text: str, dimensions: int = VECTOR_DIMENSIONS) -> list[float]:
     # 通过稳定哈希生成稀疏向量；生产环境可替换为真实 embedding。
     vector = [0.0] * dimensions
@@ -35,10 +36,12 @@ def embed(text: str, dimensions: int = VECTOR_DIMENSIONS) -> list[float]:
     return [round(value / length, 8) for value in vector]
 
 
+# 作用：说明函数 cosine 的输入、输出与安全边界，避免调用方越过受控流程。
 def cosine(left: list[float], right: list[float]) -> float:
     # 余弦相似度用于比较查询向量与文档向量的方向。
     return sum(a * b for a, b in zip(left, right))
 
 
+# 作用：说明函数 content_hash 的输入、输出与安全边界，避免调用方越过受控流程。
 def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()

@@ -158,6 +158,7 @@ class RuleBasedSqlWriter:
         return None
 
 
+# 作用：说明类 SqlReviewer 的输入、输出与安全边界，避免调用方越过受控流程。
 class SqlReviewer:
     forbidden = re.compile(r"\b(insert|update|delete|drop|alter|create|attach|detach|pragma|vacuum|replace)\b", re.I)
     table_re = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.I)
@@ -201,11 +202,13 @@ class SqlFixer:
 
 
 @dataclass(slots=True)
+# 作用：说明类 RiskDecision 的输入、输出与安全边界，避免调用方越过受控流程。
 class RiskDecision:
     mode: ExecutionMode
     reason: str
 
 
+# 作用：说明类 RiskAssessor 的输入、输出与安全边界，避免调用方越过受控流程。
 class RiskAssessor:
     def assess(self, sql: str) -> RiskDecision:
         # 风险分级决定自动执行、进入审批，还是直接阻断。

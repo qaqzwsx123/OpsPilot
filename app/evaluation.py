@@ -9,6 +9,7 @@ from app.workflow import SqlAgentWorkflow
 
 
 @dataclass(frozen=True, slots=True)
+# 作用：说明类 EvaluationCase 的输入、输出与安全边界，避免调用方越过受控流程。
 class EvaluationCase:
     id: str
     name: str
@@ -26,6 +27,7 @@ CASES = (
 )
 
 
+# 作用：说明函数 available_evaluation_cases 的输入、输出与安全边界，避免调用方越过受控流程。
 def available_evaluation_cases() -> list[dict[str, str]]:
     # 基线用例和数据库中维护的自定义用例合并后供审计中心选择。
     baseline = [{"id": item.id, "name": item.name, "question": item.question, "expected_status": item.expected_status, "source": item.source} for item in CASES]
@@ -33,6 +35,7 @@ def available_evaluation_cases() -> list[dict[str, str]]:
     return baseline + custom
 
 
+# 作用：说明函数 run_evaluation 的输入、输出与安全边界，避免调用方越过受控流程。
 def run_evaluation(scope: str = "baseline", case_ids: list[str] | None = None) -> dict:
     # 评测复用真实工作流，因此结果反映当前权限、RAG 和 SQL 策略。
     all_cases = available_evaluation_cases()

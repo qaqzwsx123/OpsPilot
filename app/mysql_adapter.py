@@ -25,6 +25,7 @@ def _connect():
     )
 
 
+# 作用：说明函数 execute_readonly 的输入、输出与安全边界，避免调用方越过受控流程。
 def execute_readonly(sql: str) -> list[dict]:
     # 只暴露只读查询，连接失败时由上层切回 SQLite/规则路径。
     with _connect() as conn:

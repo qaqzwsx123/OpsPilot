@@ -19,6 +19,7 @@ CASES = (
     ("高优工单什么时候响应", "工单优先级规范"),
 )
 
+# 作用：说明函数 run_knowledge_evaluation 的输入、输出与安全边界，避免调用方越过受控流程。
 def run_knowledge_evaluation() -> dict:
     # 每条问题都要求期望文档出现在 Top-3 中，并记录排名作为证据。
     rag = KnowledgeRag(); results = []; evaluation_id = str(uuid4())
