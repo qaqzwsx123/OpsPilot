@@ -17,6 +17,7 @@ VECTOR_DIMENSIONS = 64
 
 
 def tokens(text: str) -> list[str]:
+    # 中文按字符/词片段切分，英文和数字按连续片段切分，保证无额外依赖。
     """Tokenize English terms and overlapping Chinese n-grams."""
     english = re.findall(r"[a-z0-9_/-]+", text.lower())
     chinese = "".join(re.findall(r"[\u4e00-\u9fff]", text))
@@ -25,6 +26,7 @@ def tokens(text: str) -> list[str]:
 
 
 def embed(text: str, dimensions: int = VECTOR_DIMENSIONS) -> list[float]:
+    # 通过稳定哈希生成稀疏向量；生产环境可替换为真实 embedding。
     vector = [0.0] * dimensions
     for token, count in Counter(tokens(text)).items():
         bucket = int(hashlib.sha256(token.encode("utf-8")).hexdigest()[:8], 16) % dimensions
@@ -34,6 +36,7 @@ def embed(text: str, dimensions: int = VECTOR_DIMENSIONS) -> list[float]:
 
 
 def cosine(left: list[float], right: list[float]) -> float:
+    # 余弦相似度用于比较查询向量与文档向量的方向。
     return sum(a * b for a, b in zip(left, right))
 
 

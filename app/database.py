@@ -1,3 +1,5 @@
+"""SQLite 事实库：业务数据、知识版本、聊天记忆、审批和审计持久化。"""
+
 from __future__ import annotations
 
 import csv
@@ -38,6 +40,8 @@ EXPLORER_TABLES = {
     "chat_messages": "Agent 聊天消息",
 }
 
+
+# ---------- 连接与初始化 ----------
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -181,6 +185,8 @@ def initialize() -> None:
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_metric_samples_metric_time ON metric_samples(metric_id, observed_at)")
         _backfill_audit_hashes(conn)
 
+
+# ---------- 演示数据和指标 CSV ----------
 
 def seed_demo_data() -> None:
     initialize()
@@ -400,6 +406,8 @@ def import_metric_csv(content: str, filename: str, requester: str) -> dict[str, 
 EVALUATION_STATUSES = {"completed", "answered_by_rag", "approval_required", "blocked"}
 
 
+# ---------- 评测用例与只读 SQL ----------
+
 def list_evaluation_cases() -> list[dict[str, str]]:
     with connect() as conn:
         rows = conn.execute(
@@ -436,6 +444,8 @@ def execute_readonly(sql: str) -> list[dict[str, Any]]:
         rows = conn.execute(sql).fetchall()
     return [dict(row) for row in rows]
 
+
+# ---------- 审计哈希链与按时间清理 ----------
 
 def _canonical_payload(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -531,6 +541,8 @@ def delete_audit_range(start: str, end: str, deleted_by: str) -> dict[str, Any]:
         )
     return {"deleted": True, "deleted_count": len(rows), "start": normalized_start, "end": normalized_end, "maintenance_logged": True, "action_counts": action_counts}
 
+
+# ---------- 审批、影响预估与受控执行 ----------
 
 def _normalized_sql(sql: str) -> str:
     return " ".join(sql.strip().split()).rstrip(";")
@@ -684,6 +696,8 @@ def execute_approved(approval_id: str, allow_writes: bool) -> dict[str, Any] | N
     return {**dict(updated), "outcome": "executed"}
 
 
+# ---------- Agent 聊天会话与上下文记忆 ----------
+
 def save_memory(requester: str, role: str, content: str) -> None:
     with connect() as conn:
         conn.execute(
@@ -761,6 +775,8 @@ def delete_chat_conversation(conversation_id: str, requester: str) -> bool:
         conn.execute("DELETE FROM chat_conversations WHERE id = ?", (conversation_id,))
     return True
 
+
+# ---------- 监控、指标和知识库查询 ----------
 
 def system_metrics() -> dict[str, int | bool]:
     with connect() as conn:
@@ -989,6 +1005,8 @@ def knowledge_evaluation_feedback_summary(evaluation_id: str) -> dict[str, Any]:
 
 APPROVAL_STATUSES = {"pending", "approved", "approved_safe_mode", "executed", "rejected", "expired"}
 
+
+# ---------- 页面列表、分页统计和数据浏览器 ----------
 
 def _approval_status_clause(status: str) -> tuple[str, tuple[str, ...]]:
     """Build a fixed, parameterized status predicate for approval list views."""

@@ -1,3 +1,8 @@
+/*
+ * OpsPilot 前端控制器。
+ * 负责页面切换、API 请求、SSE 工作流轨迹、弹窗以及各业务页渲染；
+ * 业务权限和数据校验仍由 FastAPI 后端负责，浏览器只做交互和展示。
+ */
 const $ = (selector) => document.querySelector(selector);
 let latestSql = "";
 let latestApprovalId = "";
@@ -18,8 +23,10 @@ const recordPageSize = 10;
 const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
 
+// 将后端工作流阶段名转换成界面上的可读名称。
 const stageNames = { context: "Context Memory", tool_plan: "Tool Planner", tool: "Tool Runner", tool_summary: "Agent Summary", recall: "Recall", writer: "Writer", reviewer: "Reviewer", fix: "Fix", risk: "Risk Guard", runner: "Runner", rag: "Agentic RAG" };
 let selectedTraceIndex = -1;
+// 各页面使用说明和可操作示例集中配置，避免把说明散落在多个页面模板里。
 const pageGuides = {
   agent: { eyebrow:"SAFE SQL WORKFLOW", title:"智能查询使用说明", lead:"这里把自然语言运维问题转换为受控查询。系统优先查询授权的结构化数据，无法生成可靠 SQL 时才使用知识库回答。", sections:[
     { title:"如何使用", text:"输入问题后点击“运行查询”。可直接使用示例问题，例如查询 P1 告警、离线设备或未关闭工单。" },
@@ -92,6 +99,7 @@ const guideExamples = {
   tools: { title:"示例：比较只读工具与变更工具", steps:["点击 <code>alert_query</code> 的“试运行工具”，会立刻返回未关闭告警的结构化结果并写审计。", "点击 <code>close_alert</code> 的“试运行工具”，不会关闭告警，而是创建审批单。", "点击 <code>database_maintenance</code> 会被直接拒绝；系统没有任意数据库命令执行入口。"] }
 };
 
+// 所有后端或用户输入在拼接 HTML 前统一转义，避免演示页面产生 XSS。
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (character) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "'":"&#39;", '"':"&quot;" })[character]);
 }
@@ -155,6 +163,7 @@ function renderTraceInspector(events, index) {
   target.innerHTML = '<span class="trace-inspector-kicker">' + escapeHtml(stageNames[event.stage] || event.stage) + ' · 实际输出</span><strong>' + escapeHtml(event.message) + '</strong>' + (entries.length ? '<div class="trace-evidence">' + entries.map(([key, value]) => '<span><b>' + escapeHtml(key) + '</b>' + escapeHtml(formatTraceValue(key, value)) + '</span>').join("") + '</div>' : '<p>该步骤没有额外参数，但已记录其决策结论。</p>');
 }
 
+// 渲染实时工作流轨迹，并把节点详情绑定到右侧证据检查器。
 function setTrace(events, status) {
   const trace = $("#trace-list");
   $("#trace-count").textContent = events.length + " 个节点";
@@ -260,6 +269,7 @@ function renderResult(result) {
   updateGuard(result);
 }
 
+// 发起智能查询 SSE：阶段事件更新轨迹，最终 result 事件更新结果和护栏。
 async function runQuery() {
   const question = $("#question").value.trim(); if (!question) return toast("请先输入一个运维问题");
   const button = $("#run-query"); button.disabled = true; button.textContent = "分析中…";
@@ -284,6 +294,7 @@ async function runQuery() {
   finally { button.disabled = false; button.innerHTML = "运行查询 <span>↗</span>"; }
 }
 
+// 审计中心按 10 条分页加载，并显示总数、完整性操作和时间清理入口。
 async function loadAudit() {
   const target = $("#audit-list");
   try {
@@ -429,6 +440,7 @@ function renderKnowledge(documents, total) {
   $("#next-knowledge").disabled = knowledgeOffset + knowledgePageSize >= total;
 }
 
+// 知识库按 5 条分页加载，同时维护标签、版本、分块和过期状态。
 async function loadKnowledge() {
   try {
     if (!$("#run-knowledge-evaluation")) { const button = document.createElement("button"); button.id = "run-knowledge-evaluation"; button.className = "text-button"; button.textContent = "运行检索评测"; button.addEventListener("click", runKnowledgeEvaluation); document.querySelector(".knowledge-actions").prepend(button); }
@@ -505,6 +517,7 @@ async function loadChromaCollectionRecords(collectionName) {
   }
 }
 
+// 执行检索评测并渲染 Recall、Hit、MRR、引用准确率和人工评分入口。
 async function runKnowledgeEvaluation() {
   const button = $("#run-knowledge-evaluation"); button.disabled = true; button.textContent = "评测中…";
   try { const response = await fetch("/api/v1/knowledge/evaluation", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({role:currentRole(), requester:"Lenovo"})}); const report = await response.json(); if (!response.ok) throw new Error(report.detail); const target = $("#knowledge-search-result"); target.hidden = false; target.innerHTML = '<div class="rag-evaluation"><div class="rag-evaluation-heading"><strong>RAG 检索质量评测</strong><small>' + report.total + ' 条用例 · 评测 ID ' + escapeHtml(report.evaluation_id.slice(0, 8)) + '…</small></div><div class="rag-eval-metrics"><span>Recall@3<strong>' + report.recall_at_3 + '%</strong></span><span>Hit@1<strong>' + report.hit_at_1 + '%</strong></span><span>MRR<strong>' + report.mrr + '</strong></span><span>引用准确率<strong>' + report.citation_accuracy + '%</strong></span><span>证据覆盖率<strong>' + report.evidence_coverage + '%</strong></span><span>通过<strong>' + report.passed + '/' + report.total + '</strong></span></div><div class="rag-eval-results">' + report.results.map((item, index) => '<div class="rag-eval-case ' + (item.passed ? 'passed' : 'failed') + '"><div><b>' + (item.passed ? '✓' : '×') + ' ' + escapeHtml(item.question) + '</b><small>期望：' + escapeHtml(item.expected) + ' · 命中位置：' + (item.rank ? 'Top-' + item.rank : '未命中') + ' · Top 分数：' + item.top_score + '</small><small>证据：' + (item.evidence || []).map((e) => 'Top-' + e.rank + ' ' + escapeHtml(e.title) + '（' + e.score + '）').join('；') + '</small></div><button class="text-button rag-feedback" data-eval-id="' + escapeHtml(report.evaluation_id) + '" data-eval-question="' + escapeHtml(item.question) + '">人工评分</button></div>').join('') + '</div><div class="rag-manual-summary" id="rag-manual-summary">人工评分：尚未评分</div></div>'; document.querySelectorAll(".rag-feedback").forEach((feedbackButton) => feedbackButton.addEventListener("click", () => submitKnowledgeFeedback(feedbackButton))); toast("RAG 检索评测已完成"); loadAudit(); } catch (error) { toast(error.message || "检索评测失败"); } finally { button.disabled = false; button.textContent = "运行检索评测"; }
@@ -951,6 +964,7 @@ async function deleteChat(conversationId) {
   } catch (error) { toast(error.message || "删除对话失败"); }
 }
 
+// Agent 聊天通过 SSE 接收 plan/stage/token/done 事件，实现真正的流式回复。
 async function sendChat() {
   const content = $("#chat-input").value.trim(); if (!content) return;
   if (!chatConversationId) { await createChat(); if (!chatConversationId) return; }
@@ -1090,6 +1104,7 @@ function renderMonitorHealth(checks) {
   target.innerHTML = (checks || []).map((check) => `<div class="health-probe ${escapeHtml(check.status)}"><span>${check.status === "healthy" ? "✓" : "!"}</span><div><strong>${escapeHtml(check.name)}</strong><small>${escapeHtml(labels[check.status] || check.status)} · ${escapeHtml(check.detail || "")}</small></div></div>`).join("");
 }
 
+// 监控中心加载真实指标趋势、告警趋势和服务健康探针结果。
 async function loadMonitoring() {
   try {
     const response = await fetch("/api/v1/monitoring/overview"); const data = await response.json();
@@ -1162,6 +1177,7 @@ async function loadToolHistory() {
   } catch { $("#tool-history-list").innerHTML = "<div class='empty-state'><strong>无法加载工具调用记录</strong></div>"; }
 }
 
+// 工具中心展示后端白名单，并区分 AUTO、MANUAL 与 BLOCKED 风险等级。
 async function loadTools() {
   try {
     const response = await fetch("/api/v1/tools"); allTools = await response.json();

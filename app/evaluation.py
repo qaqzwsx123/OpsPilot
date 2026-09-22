@@ -1,3 +1,5 @@
+"""SQL Agent 离线评测：执行基线或自定义用例并汇总状态。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,12 +27,14 @@ CASES = (
 
 
 def available_evaluation_cases() -> list[dict[str, str]]:
+    # 基线用例和数据库中维护的自定义用例合并后供审计中心选择。
     baseline = [{"id": item.id, "name": item.name, "question": item.question, "expected_status": item.expected_status, "source": item.source} for item in CASES]
     custom = [{**item, "source": "custom"} for item in list_evaluation_cases()]
     return baseline + custom
 
 
 def run_evaluation(scope: str = "baseline", case_ids: list[str] | None = None) -> dict:
+    # 评测复用真实工作流，因此结果反映当前权限、RAG 和 SQL 策略。
     all_cases = available_evaluation_cases()
     if scope == "baseline":
         selected = [case for case in all_cases if case["source"] == "baseline"]

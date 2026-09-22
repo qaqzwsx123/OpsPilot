@@ -1,3 +1,5 @@
+"""可选 MySQL 只读适配器；默认演示环境仍使用本地 SQLite。"""
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -24,6 +26,7 @@ def _connect():
 
 
 def execute_readonly(sql: str) -> list[dict]:
+    # 只暴露只读查询，连接失败时由上层切回 SQLite/规则路径。
     with _connect() as conn:
         with conn.cursor() as cursor:
             cursor.execute(sql)
@@ -32,6 +35,7 @@ def execute_readonly(sql: str) -> list[dict]:
 
 @lru_cache(maxsize=1)
 def introspect_schema() -> dict[str, dict[str, object]]:
+    # 将 MySQL 表结构转换成 SQL Agent 使用的统一 schema 形态。
     """Loads table/column metadata once for three-way recall in a real MySQL deployment."""
     query = """
         SELECT table_name, column_name

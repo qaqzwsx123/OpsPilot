@@ -1,3 +1,5 @@
+"""Skills 注册与运行层：把重复运维经验封装为可审计的只读能力。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -26,6 +28,7 @@ class SkillRegistry:
         self.root = root
 
     def load(self) -> list[Skill]:
+        # 每次从 skills/*/SKILL.md 读取，便于新增 SOP 后无需改后端注册表。
         skills: list[Skill] = []
         for path in sorted(self.root.glob("*/SKILL.md")):
             content = path.read_text(encoding="utf-8")
@@ -58,6 +61,7 @@ class SkillRegistry:
 
 def run_skill(name: str, user_input: str = "") -> dict[str, Any]:
     """Deterministic, auditable skill runtimes. Skills never mutate business data."""
+    # 运行时按 Skill 名称路由到固定实现，Skill 不拥有任意 SQL 或写库权限。
     text = user_input.strip()
     if name == "incident_triage":
         severity = (re.search(r"P[123]", text.upper()) or ["P1"])[0]

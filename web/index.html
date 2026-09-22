@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
+  <!-- 左侧导航只负责切换视图；每个业务动作仍通过后端 API 完成权限校验。 -->
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">✦</span><span>OpsPilot</span></div>
@@ -30,12 +31,14 @@
       </div>
     </aside>
 
+    <!-- 主区域包含智能查询、聊天、监控、知识库、审批和工具等业务页面。 -->
     <main class="main-content">
       <header class="topbar">
         <div><p class="eyebrow">AI OPERATIONS CONSOLE</p><h1 id="page-title">智能运维查询</h1></div>
         <div class="header-actions"><span class="system-live"><i></i> 系统运行正常</span><button id="show-system-info" class="icon-button" title="运行配置">⌁</button><button id="show-help" class="icon-button" title="操作说明">?</button></div>
       </header>
 
+      <!-- 智能查询：SQL 工作流、工作流轨迹、执行结果和安全护栏。 -->
       <section id="agent-page" class="page active-page">
         <section class="hero">
           <div><span class="pill">SQL WORKFLOW + AGENTIC RAG</span><button class="page-help-button hero-help" data-guide="agent">使用说明 ?</button><h2>把运维经验，变成每个人都能安全调用的能力。</h2><p>结构化数据优先查询，知识库按需兜底。每一步都有审查、授权与审计。</p></div>
@@ -90,6 +93,7 @@
         </section>
       </section>
 
+      <!-- Agent 聊天：本地 DeepSeek 多轮会话与 SSE 流式输出。 -->
       <section id="chat-page" class="page">
         <div class="section-intro"><span class="pill">LOCAL DEEPSEEK CHAT</span><button class="page-help-button" data-guide="chat">使用说明 ?</button><h2>Agent 聊天</h2><p>与本地部署的 DeepSeek 对话；聊天记录保存在本地 SQLite。聊天只提供讨论与建议，不会直接执行 SQL、工具或变更。</p></div>
         <div class="chat-layout">
@@ -98,6 +102,7 @@
         </div>
       </section>
 
+      <!-- 审计中心：分页事件、哈希链校验和按时间范围清理。 -->
       <section id="audit-page" class="page">
         <div class="section-intro"><span class="pill">AUDITABLE BY DEFAULT</span><button class="page-help-button" data-guide="audit">使用说明 ?</button><h2>每次决策，都有迹可循。</h2><p>记录用户问题、执行 SQL、风险判断和最终结果，方便故障复盘与合规审计。</p></div>
         <article class="card audit-card"><div class="card-heading"><div><p class="section-label">RECENT ACTIVITIES</p><h3>审计记录</h3></div><div class="audit-actions"><button id="verify-audit" class="text-button">验证完整性</button><button id="run-evaluation" class="text-button">运行评测</button><button id="cleanup-audit" class="text-button danger-text-button">按时间范围清理</button><button id="refresh-audit" class="text-button">刷新记录</button></div></div><div id="evaluation-result" class="evaluation-result" hidden></div><div id="audit-list" class="audit-list"></div><div class="record-pagination"><button id="prev-audit" class="text-button">← 上一页</button><span id="audit-page-note">第 1 页</span><button id="next-audit" class="text-button">下一页 →</button></div></article>
@@ -111,6 +116,7 @@
         <article class="card capability-history"><div class="card-heading"><div><p class="section-label">SKILL RUN HISTORY</p><h3>最近运行记录</h3></div><button id="refresh-skill-history" class="text-button">刷新</button></div><div id="skill-history-list" class="capability-history-list"></div></article>
       </section>
 
+      <!-- 知识库：文档版本、分块预览、RAG 检索和 Chroma 索引状态。 -->
       <section id="knowledge-page" class="page">
         <div class="section-intro"><span class="pill">KNOWLEDGE IN, RAG OUT</span><button class="page-help-button" data-guide="knowledge">使用说明 ?</button><h2>把排障经验沉淀进知识库。</h2><p>保存后立即可被 Agentic RAG 检索，用于回答 SOP、排障步骤和规范类问题。</p></div>
         <div class="knowledge-layout">
@@ -166,6 +172,7 @@
       </section>
     </main>
   </div>
+  <!-- 通用说明、确认和审计操作弹窗由 app.js 按当前页面动态填充。 -->
   <div id="tool-help-modal" class="modal-backdrop" hidden role="presentation">
     <section class="tool-help-modal" role="dialog" aria-modal="true" aria-labelledby="tool-help-title">
       <div id="guide-modal-content"></div>

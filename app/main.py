@@ -1,3 +1,5 @@
+"""FastAPI 应用入口：提供页面 API、SSE 流式接口和权限边界。"""
+
 from __future__ import annotations
 
 import json
@@ -27,6 +29,7 @@ from app.policy import permitted, policy_summary, role_catalog
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    # 服务启动时确保 SQLite、演示数据和可重建的知识索引处于可用状态。
     initialize()
     seed_demo_data()
     seed_metric_demo_data()
@@ -47,12 +50,14 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
 class QueryRequest(BaseModel):
+    """智能查询请求：问题、请求人和后端实际校验的角色。"""
     question: str = Field(min_length=2, max_length=500)
     requester: str = Field(default="anonymous", min_length=1, max_length=64)
     role: str = Field(default="operator", min_length=1, max_length=32)
 
 
 class KnowledgeDocumentRequest(BaseModel):
+    """知识文档新增/编辑请求，限制长度以保护本地演示服务。"""
     title: str = Field(min_length=2, max_length=100)
     content: str = Field(min_length=10, max_length=4000)
     tags: str = Field(default="未分类", max_length=200)
@@ -123,6 +128,8 @@ class KnowledgeEvaluationFeedbackRequest(MutationActorRequest):
     comment: str = Field(default="", max_length=1000)
 
 
+# ---------- Agent 聊天：会话、历史消息和流式回复 ----------
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -135,6 +142,7 @@ def console() -> FileResponse:
 
 @app.post("/api/v1/chat/conversations")
 def create_chat_conversation(request: ChatConversationRequest) -> dict:
+    # 聊天会话创建先走 RBAC，再写入会话审计事件。
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
     conversation = create_chat_conversation_record(request.requester, request.title)
@@ -223,6 +231,8 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+
+# ---------- 智能查询：同步结果与 SSE 工作流轨迹 ----------
 
 @app.post("/api/v1/query")
 def query(request: QueryRequest) -> dict:
@@ -357,6 +367,8 @@ def verify_audit_integrity(scope: str = "full") -> dict:
 def audit_summary() -> dict:
     return {"total": audit_count()}
 
+
+# ---------- 数据浏览器、Skills 和知识库 ----------
 
 @app.get("/api/v1/data/tables")
 def explorer_catalog(role: str = "viewer") -> list[dict]:
@@ -572,6 +584,8 @@ def delete_knowledge(document_id: int, request: MutationActorRequest) -> None:
     rebuild_chroma_index()
     write_audit(request.requester, "knowledge_deleted", {"document_id": document_id, "role": request.role})
 
+
+# ---------- 指标、工具、记忆和离线评测 ----------
 
 @app.get("/api/v1/metrics")
 def metrics() -> dict:

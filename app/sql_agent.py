@@ -1,3 +1,5 @@
+"""SQL Agent 核心组件：元数据召回、SQL 生成、审查、修复和风险判断。"""
+
 from __future__ import annotations
 
 import re
@@ -57,6 +59,7 @@ class MetadataRetriever:
     """Three-way recall: schema words, business aliases and description semantics."""
 
     def retrieve(self, question: str, top_k: int = 3) -> list[CandidateTable]:
+        # 使用表名、字段名、业务别名和描述做轻量召回，限制后续模型可见表范围。
         normalized = question.lower()
         candidates: list[CandidateTable] = []
         for table, meta in active_schema().items():
@@ -86,6 +89,7 @@ class RuleBasedSqlWriter:
     """Offline provider. Replace it with an LLM provider in production."""
 
     def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
+        # 离线规则只生成项目白名单表上的示例 SQL，不能替代 Reviewer。
         q = question.lower()
         # Knowledge-seeking questions should not be forced into a database query merely
         # because they mention a severity such as P1. They are handled by the RAG route.
@@ -159,6 +163,7 @@ class SqlReviewer:
     table_re = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.I)
 
     def review(self, sql: str, allowed_tables: list[str]) -> ReviewResult:
+        # 先拒绝写入/DDL/多语句，再核对表白名单，最后补充 LIMIT。
         normalized = " ".join(sql.strip().split())
         if not normalized.lower().startswith("select"):
             return ReviewResult(False, ["只允许 SELECT 查询"], normalized)
@@ -203,6 +208,7 @@ class RiskDecision:
 
 class RiskAssessor:
     def assess(self, sql: str) -> RiskDecision:
+        # 风险分级决定自动执行、进入审批，还是直接阻断。
         lowered = sql.lower()
         if re.search(r"\b(drop|alter|attach|pragma|vacuum)\b", lowered):
             return RiskDecision(ExecutionMode.BLOCKED, "包含不可在 Agent 中执行的高危数据库指令")

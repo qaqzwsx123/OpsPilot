@@ -1,3 +1,5 @@
+"""Agent 工具白名单：统一定义工具描述、风险等级和受控执行入口。"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -31,6 +33,7 @@ TOOLS = (
 
 
 def catalog() -> list[dict[str, str]]:
+    # 前端工具中心和模型 Function Calling 都从同一份目录生成。
     return [asdict(tool) for tool in TOOLS]
 
 
@@ -39,6 +42,7 @@ def definition(name: str) -> ToolDefinition | None:
 
 
 def invoke(name: str, query: str = "") -> dict[str, Any]:
+    # 工具调用只允许走这里，AUTO 读操作和 MANUAL/BLOCKED 结果均可审计。
     readonly_queries = {
         "asset_lookup": "SELECT id, name, region, status, owner, updated_at FROM assets WHERE status != 'online' ORDER BY updated_at DESC LIMIT 20;",
         "alert_query": "SELECT id, severity, title, status, created_at FROM alerts WHERE status != 'closed' ORDER BY created_at DESC LIMIT 20;",

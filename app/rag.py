@@ -1,3 +1,5 @@
+"""知识检索层：优先查询 Chroma，失败时使用本地轻量向量检索。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -35,6 +37,7 @@ class KnowledgeRag:
     """Dependency-free hybrid RAG: chunking, lexical recall, hash-vector recall and reranking."""
 
     def search(self, question: str, top_k: int = 3) -> list[dict[str, Any]]:
+        # Chroma 是可重建索引；SQLite 中的知识分块是不可丢失的事实来源。
         try:
             chroma_hits = chroma_search_knowledge(question, top_k)
         except Exception:

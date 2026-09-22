@@ -1,3 +1,5 @@
+"""应用配置：加载本地环境变量并集中暴露运行参数。"""
+
 from __future__ import annotations
 
 import os
@@ -22,6 +24,7 @@ _load_local_env()
 
 
 def _flag(name: str, default: bool = False) -> bool:
+    # 将 .env 中常见的字符串布尔值统一转换为 Python bool。
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 

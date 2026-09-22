@@ -1,3 +1,5 @@
+"""核心回归测试：覆盖工作流、权限、工具、知识库和审计关键路径。"""
+
 from __future__ import annotations
 
 import unittest
@@ -24,6 +26,7 @@ class WorkflowTests(unittest.TestCase):
         seed_metric_demo_data()
 
     def test_p1_alert_query_completes(self) -> None:
+        # 基础查询应完成，并且走只读安全路径。
         result = SqlAgentWorkflow().run("查询最近的 P1 告警", "test-user")
         self.assertEqual(result.status, "completed")
         self.assertEqual(len(result.rows), 2)

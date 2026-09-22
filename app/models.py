@@ -1,3 +1,5 @@
+"""Agent 工作流共享的数据模型和枚举。"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -58,4 +60,3 @@ class QueryResult:
         result = asdict(self)
         result["events"] = [event.to_dict() for event in self.events]
         return result
-

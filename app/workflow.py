@@ -1,3 +1,5 @@
+"""SQL Agent 工作流门面：组装依赖并调用 LangGraph。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -33,6 +35,7 @@ class SqlAgentWorkflow:
         ).graph
 
     def run(self, question: str, requester: str, role: str = "operator", on_event: EventHandler | None = None, use_model_tools: bool = False) -> QueryResult:
+        # 外部接口只面对一个 run 方法，复杂的节点流转由 SqlAgentGraph 负责。
         state = {
             "question": question,
             "requester": requester,

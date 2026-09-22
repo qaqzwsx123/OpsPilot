@@ -1,3 +1,5 @@
+"""模型供应商适配层：优先本地 DeepSeek，失败时回退规则 SQL 生成器。"""
+
 from __future__ import annotations
 
 import json
@@ -14,6 +16,7 @@ class OpenAICompatibleSqlWriter:
     """Calls an OpenAI-compatible /chat/completions endpoint with strict JSON output."""
 
     def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
+        # 让模型只输出结构化 JSON，后续仍必须经过 Reviewer 和 RiskAssessor。
         schema = [{"table": item.name, "columns": item.columns} for item in tables]
         prompt = (
             "你是受控 SQL 规划器。只根据给定表生成单条 SQL；若问题属于 SOP/解释类或信息不足，返回 null。"
@@ -62,6 +65,7 @@ class ResilientSqlWriter:
         self.last_provider = "rule_based"
 
     def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
+        # 模型不可用时保留可运行的离线演示能力，同时记录实际 provider。
         if self.llm:
             generated = self.llm.generate(question, tables, tool_context)
             if generated:

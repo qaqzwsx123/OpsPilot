@@ -1,3 +1,5 @@
+"""RBAC 与工具风险等级策略：权限判断必须在后端完成。"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -27,6 +29,7 @@ def role_by_id(role_id: str) -> Role | None:
 
 
 def permitted(role_id: str, permission: str) -> bool:
+    # 页面只负责展示，真正授权以这里的服务端判断为准。
     role = role_by_id(role_id)
     return bool(role and permission in role.permissions)
 

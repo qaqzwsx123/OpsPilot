@@ -1,3 +1,5 @@
+"""知识库检索评测集：验证命中率、召回率和引用准确性。"""
+
 from uuid import uuid4
 
 from app.rag import KnowledgeRag
@@ -18,6 +20,7 @@ CASES = (
 )
 
 def run_knowledge_evaluation() -> dict:
+    # 每条问题都要求期望文档出现在 Top-3 中，并记录排名作为证据。
     rag = KnowledgeRag(); results = []; evaluation_id = str(uuid4())
     for question, expected in CASES:
         hits = rag.search(question, 3); titles = [item["title"] for item in hits]

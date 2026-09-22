@@ -31,6 +31,7 @@ _client: chromadb.ClientAPI | None = None
 
 
 def _get_client() -> chromadb.ClientAPI:
+    # 延迟创建持久化客户端，避免导入模块时立即创建数据目录。
     global _client
     if _client is None:
         CHROMA_DIR.mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,7 @@ def _get_collection(name: str):
 
 
 def _replace_collection(name: str, rows: list[dict[str, Any]]) -> int:
+    # 集合是可重建索引：先清理旧内容，再从 SQLite 事实表完整写入。
     collection = _get_collection(name)
     existing = collection.get(include=[]).get("ids", [])
     if existing:
@@ -135,6 +137,7 @@ def chroma_collection_catalog() -> list[dict[str, Any]]:
 
 
 def chroma_collection_records(collection_name: str, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    # 只允许浏览项目定义的集合，防止把 Chroma 当成任意数据库入口。
     allowed = set(COLLECTION_NAMES.values())
     if collection_name not in allowed:
         raise ValueError("不支持的 Chroma 集合")
@@ -154,6 +157,7 @@ def chroma_collection_records(collection_name: str, limit: int = 100, offset: in
 
 
 def search_knowledge(query: str, top_k: int = 3) -> list[dict[str, Any]]:
+    # 将 Chroma 距离转换为前端可解释的语义得分，并保留来源元数据。
     collection = _get_collection(COLLECTION_NAMES["knowledge"])
     if not collection.count():
         return []
