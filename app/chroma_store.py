@@ -19,6 +19,7 @@ from app.vector_store import VECTOR_DIMENSIONS, VECTOR_MODEL, embed
 
 ROOT = Path(__file__).resolve().parent.parent
 CHROMA_DIR = ROOT / "data" / "chroma"
+# Chroma 集合名称固定，避免页面、重建任务和检索器各自创建不同集合。
 COLLECTION_NAMES = {
     "knowledge": "ops_knowledge",
     "assets": "ops_assets",

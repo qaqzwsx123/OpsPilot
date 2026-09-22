@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from app.rag import KnowledgeRag
 
+# 每项为（用户问题、期望命中的文档标题）；结果会计算 Hit@1、Hit@3、MRR 和引用准确性。
 CASES = (
     ("P1 告警如何升级处理", "P1 告警处置 SOP"),
     ("设备离线应该检查什么", "设备离线排障手册"),

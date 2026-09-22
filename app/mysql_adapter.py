@@ -10,7 +10,11 @@ from app.config import settings
 
 
 def _connect():
-    """Create a short-lived MySQL connection from mysql://user:password@host:3306/database."""
+    """创建短生命周期的 MySQL 连接。
+
+    该适配器只用于真实库的元数据读取和只读查询，连接不复用到跨请求状态中，
+    也不会把密码写入审计日志。
+    """
     try:
         import pymysql
     except ImportError as exc:
@@ -36,6 +40,7 @@ def execute_readonly(sql: str) -> list[dict]:
 
 @lru_cache(maxsize=1)
 def introspect_schema() -> dict[str, dict[str, object]]:
+    """读取当前数据库表结构，转换为元数据召回器统一使用的 schema 形态。"""
     # 将 MySQL 表结构转换成 SQL Agent 使用的统一 schema 形态。
     """Loads table/column metadata once for three-way recall in a real MySQL deployment."""
     query = """

@@ -19,7 +19,11 @@ SYSTEM_PROMPT = """你是 OpsPilot 的 Agent 聊天助手，服务于运维团�
 
 
 class AgentChatService:
-    """OpenAI-compatible local chat adapter with an honest offline fallback."""
+    """Agent 聊天适配器。
+
+    负责会话消息到本地 OpenAI 兼容 DeepSeek 的请求转换、流式 SSE 增量解析和离线兜底。
+    聊天服务只解释问题、维护多轮上下文和给出流程建议，不直接调用写操作工具。
+    """
 
     def reply(self, messages: list[dict[str, str]]) -> tuple[str, str]:
         # 非流式接口主要用于兼容简单调用；正式聊天页面使用 stream_reply。

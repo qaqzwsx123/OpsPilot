@@ -15,11 +15,16 @@ from uuid import uuid4
 
 from app.config import settings
 
+# 所有本地持久化文件都位于项目根目录 data/，便于演示环境备份和迁移。
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
+# SQLite 事实库：业务表、知识库、会话、审批和审计都从这里读取。
 DB_PATH = DATA_DIR / "agent_demo.db"
+# 审批执行前生成的 SQLite 备份目录。
 BACKUP_DIR = DATA_DIR / "backups"
+# 待审批变更的默认有效期，过期后不可继续审批执行。
 APPROVAL_TTL = timedelta(minutes=30)
+# 数据浏览器允许展示的表白名单；它不是任意 SQL 执行入口。
 EXPLORER_TABLES = {
     "assets": "设备资产",
     "alerts": "监控告警",
@@ -58,6 +63,11 @@ def connect() -> sqlite3.Connection:
 
 # 作用：说明函数 initialize 的输入、输出与安全边界，避免调用方越过受控流程。
 def initialize() -> None:
+    """幂等创建表结构并执行轻量迁移。
+
+    初始化不会删除已有数据；只补建缺少的表、索引和历史版本字段，并为旧审计记录补齐哈希链。
+    因此服务每次启动都可以安全调用该函数。
+    """
     with connect() as conn:
         conn.executescript(
             """
@@ -241,7 +251,7 @@ def seed_demo_data() -> None:
 
 
 def seed_knowledge_library() -> None:
-    """Add the operational baseline library without replacing user-authored documents."""
+    """补充内置运维知识库，不覆盖用户创建或编辑的文档。"""
     documents = [
         ("告警确认与分级 SOP", "收到告警后先确认告警时间、影响资源、持续时长和是否存在关联告警。P1 需要在 5 分钟内确认并通知值班负责人；P2 在 30 分钟内完成初步定位；P3 纳入工作日排期。告警关闭前必须记录根因、处理动作和验证证据。", "告警,分级,确认,SOP"),
         ("网络链路丢包与延迟排障", "发现链路丢包或延迟升高时，先比对同区域和跨区域指标，再检查网关端口错误、带宽利用率、路由变更和 DNS 解析。单节点异常优先检查设备与接入链路；多节点同时异常升级网络值班，并保留 ping、traceroute 和监控截图。", "网络,丢包,延迟,链路,排障"),
@@ -263,7 +273,7 @@ def seed_knowledge_library() -> None:
 
 
 def seed_metric_demo_data() -> None:
-    """Creates a deterministic local metric catalog and samples for UI demonstrations."""
+    """创建确定性的本地指标目录和 24 小时样本，仅用于无真实数据时的页面演示。"""
     initialize()
     with connect() as conn:
         if conn.execute("SELECT COUNT(*) FROM metric_definitions").fetchone()[0]:
@@ -303,6 +313,7 @@ def seed_metric_demo_data() -> None:
         )
 
 
+# 真实 CSV 导入允许的中英文列名别名；左侧是内部统一字段名。
 CSV_HEADER_ALIASES = {
     "metric_name": ("metric_name", "name", "指标名称", "指标名"),
     "category": ("category", "分类"),
@@ -312,6 +323,7 @@ CSV_HEADER_ALIASES = {
     "value": ("value", "指标值", "数值", "值"),
     "description": ("description", "描述", "说明"),
 }
+# 单次导入上限，防止本地服务被异常大文件耗尽内存。
 MAX_METRIC_IMPORT_ROWS = 50_000
 
 
@@ -410,6 +422,7 @@ def import_metric_csv(content: str, filename: str, requester: str) -> dict[str, 
     return {"import_id": import_id, "total_rows": len(parsed_rows), "sample_count": len(parsed_rows), "created_metrics": created_metrics, "updated_metrics": len(metric_ids) - created_metrics}
 
 
+# 评测结果只比较业务状态，避免把模型自然语言微小差异误判为失败。
 EVALUATION_STATUSES = {"completed", "answered_by_rag", "approval_required", "blocked"}
 
 
@@ -447,6 +460,7 @@ def delete_evaluation_case(case_id: str) -> bool:
 
 # 作用：说明函数 execute_readonly 的输入、输出与安全边界，避免调用方越过受控流程。
 def execute_readonly(sql: str) -> list[dict[str, Any]]:
+    """执行已通过上层审查的只读 SQL，并把 Row 转成前端可序列化字典。"""
     if settings.mysql_enabled:
         from app.mysql_adapter import execute_readonly as execute_mysql_readonly
 
@@ -483,6 +497,7 @@ def _backfill_audit_hashes(conn: sqlite3.Connection) -> None:
 
 # 作用：说明函数 write_audit 的输入、输出与安全边界，避免调用方越过受控流程。
 def write_audit(requester: str, action: str, payload: dict[str, Any]) -> None:
+    """写入带前置哈希和当前哈希的审计事件，形成可校验的链式留痕。"""
     event_id, created_at = str(uuid4()), utc_now()
     canonical_payload = _canonical_payload(payload)
     with connect() as conn:
@@ -496,6 +511,7 @@ def write_audit(requester: str, action: str, payload: dict[str, Any]) -> None:
 
 
 def delete_audit_event(event_id: str, deleted_by: str) -> dict[str, Any] | None:
+    """删除指定审计事件，并在独立维护表中记录删除动作。"""
     """Delete one audit row and record maintenance metadata outside audit_logs."""
     with connect() as conn:
         row = conn.execute("SELECT id, created_at, requester, action FROM audit_logs WHERE id = ?", (event_id,)).fetchone()
@@ -542,6 +558,11 @@ def audit_cleanup_preview(start: str, end: str) -> dict[str, Any]:
 
 
 def delete_audit_range(start: str, end: str, deleted_by: str) -> dict[str, Any]:
+    """按包含起止边界的时间窗口批量删除审计事件。
+
+    删除范围只作用于 audit_logs；维护日志保留在 audit_maintenance_logs，避免把“删除留痕”
+    混回普通业务审计列表。调用方应先执行 audit_cleanup_preview 再确认。
+    """
     """Delete audit rows in a time range and store cleanup metadata separately."""
     normalized_start, normalized_end = _normalize_audit_range(start, end)
     with connect() as conn:
@@ -595,6 +616,7 @@ def _impact_preview(conn: sqlite3.Connection, sql: str) -> dict[str, Any]:
 
 # 作用：说明函数 create_approval 的输入、输出与安全边界，避免调用方越过受控流程。
 def create_approval(requester: str, sql: str, reason: str) -> str:
+    """创建只读影响预估已完成、但尚未执行的人工审批单。"""
     approval_id = str(uuid4())
     created_at = datetime.now(timezone.utc)
     with connect() as conn:
@@ -684,6 +706,7 @@ def _create_pre_execution_backup(conn: sqlite3.Connection, approval_id: str) -> 
 
 
 def execute_approved(approval_id: str, allow_writes: bool) -> dict[str, Any] | None:
+    """执行已批准变更；默认安全模式只记录审批结果，不真正写业务数据。"""
     """Executes only the explicitly allow-listed local Demo operation after approval."""
     with connect() as conn:
         row = conn.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
@@ -724,6 +747,7 @@ def execute_approved(approval_id: str, allow_writes: bool) -> dict[str, Any] | N
 
 # 作用：说明函数 save_memory 的输入、输出与安全边界，避免调用方越过受控流程。
 def save_memory(requester: str, role: str, content: str) -> None:
+    """保存一条会话记忆，供下一轮 Agent 上下文加载。"""
     with connect() as conn:
         conn.execute(
             "INSERT INTO conversation_memory VALUES (?, ?, ?, ?, ?)",
@@ -776,6 +800,7 @@ def get_chat_messages(conversation_id: str, requester: str) -> list[dict[str, st
 
 # 作用：说明函数 add_chat_message 的输入、输出与安全边界，避免调用方越过受控流程。
 def add_chat_message(conversation_id: str, requester: str, role: str, content: str) -> dict[str, str] | None:
+    """向属于 requester 的会话追加 user/assistant 消息并更新时间。"""
     if role not in {"user", "assistant"}:
         raise ValueError("unsupported chat role")
     timestamp = utc_now()
@@ -901,6 +926,7 @@ def list_knowledge_documents(limit: int = 100, offset: int = 0, tag: str = "", s
 
 # 作用：说明函数 add_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def add_knowledge_document(title: str, content: str, tags: str, expires_at: str | None = None) -> dict[str, Any]:
+    """新增知识文档、初始版本和分块，并返回可用于前端刷新的记录。"""
     now = utc_now()
     with connect() as conn:
         cursor = conn.execute(
@@ -917,6 +943,7 @@ def add_knowledge_document(title: str, content: str, tags: str, expires_at: str 
 
 # 作用：说明函数 update_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def update_knowledge_document(document_id: int, title: str, content: str, tags: str, expires_at: str | None = None) -> dict[str, Any] | None:
+    """更新知识文档并递增版本；旧版本保存在 knowledge_versions 供对比和回滚。"""
     now = utc_now()
     with connect() as conn:
         current = conn.execute("SELECT * FROM knowledge_documents WHERE id = ?", (document_id,)).fetchone()
@@ -951,6 +978,7 @@ def list_knowledge_versions(document_id: int) -> list[dict[str, Any]]:
 
 # 作用：说明函数 rollback_knowledge_document 的输入、输出与安全边界，避免调用方越过受控流程。
 def rollback_knowledge_document(document_id: int, version: int) -> dict[str, Any] | None:
+    """将文档恢复到指定历史版本，并以新版本记录这次回滚操作。"""
     with connect() as conn:
         selected = conn.execute("SELECT title, content, tags FROM knowledge_versions WHERE document_id = ? AND version = ?", (document_id, version)).fetchone()
         current = conn.execute("SELECT expires_at FROM knowledge_documents WHERE id = ?", (document_id,)).fetchone()
@@ -1016,6 +1044,7 @@ def index_knowledge_document(document_id: int) -> int:
 
 # 作用：说明函数 rebuild_knowledge_index 的输入、输出与安全边界，避免调用方越过受控流程。
 def rebuild_knowledge_index() -> int:
+    """从 SQLite 文档事实表重新生成全部知识分块，保证索引可丢失、可重建。"""
     with connect() as conn:
         ids = [row["id"] for row in conn.execute("SELECT id FROM knowledge_documents").fetchall()]
     return sum(index_knowledge_document(document_id) for document_id in ids)
@@ -1054,6 +1083,7 @@ def knowledge_evaluation_feedback_summary(evaluation_id: str) -> dict[str, Any]:
     return {"count": row["count"], "average_score": round(row["average_score"], 2) if row["average_score"] is not None else None}
 
 
+# 审批状态机：pending 可批准/拒绝；approved 可执行；过期后只读展示。
 APPROVAL_STATUSES = {"pending", "approved", "approved_safe_mode", "executed", "rejected", "expired"}
 
 
@@ -1091,6 +1121,7 @@ def list_approvals(limit: int = 100, offset: int = 0, status: str = "") -> list[
 
 # 作用：说明函数 monitoring_overview 的输入、输出与安全边界，避免调用方越过受控流程。
 def monitoring_overview() -> dict[str, Any]:
+    """聚合监控首页所需的健康探针、告警趋势和关键指标摘要。"""
     with connect() as conn:
         asset_states = [dict(row) for row in conn.execute(
             "SELECT status, COUNT(*) AS count FROM assets GROUP BY status ORDER BY count DESC"
@@ -1211,6 +1242,7 @@ def table_snapshot(table_name: str, limit: int = 30, offset: int = 0) -> dict[st
 
 
 def audit_integrity(limit: int | None = None) -> dict[str, Any]:
+    """校验审计哈希链的连续性，并返回断点、检查数量和整体状态。"""
     """Verify all or a bounded tail of the local audit hash chain."""
     with connect() as conn:
         total = conn.execute("SELECT COUNT(*) FROM audit_logs").fetchone()[0]

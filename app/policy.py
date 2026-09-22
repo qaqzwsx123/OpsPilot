@@ -6,14 +6,23 @@ from dataclasses import asdict, dataclass
 
 
 @dataclass(frozen=True, slots=True)
-# 作用：说明类 Role 的输入、输出与安全边界，避免调用方越过受控流程。
 class Role:
+    """前端身份对应的后端权限集合。
+
+    角色只描述能力边界，是否允许某次具体操作还要结合工具风险等级、SQL 审查和审批状态。
+    """
+
+    # 稳定的机器可读角色 ID，写入请求和审计记录。
     id: str
+    # 页面展示名称。
     label: str
+    # 给用户解释该角色能做什么。
     description: str
+    # 权限字符串集合，例如 read、rag、request_change、approve_change。
     permissions: tuple[str, ...]
 
 
+# 角色目录是后端 RBAC 的单一事实来源，页面只能展示不能自行放权。
 ROLES = (
     Role("viewer", "观察者", "只读查看数据、指标和知识库，不能发起变更。", ("read", "rag")),
     Role("operator", "运维工程师", "可执行只读查询，能够发起需要审批的变更申请。", ("read", "rag", "request_change")),

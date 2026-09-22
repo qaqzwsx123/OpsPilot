@@ -7,10 +7,16 @@ from pathlib import Path
 
 
 class ContextCompressor:
-    """Four-step compacting: persist → archive pointer → retain result → concise summary."""
+    """面向 Agent 的本地上下文压缩器。
+
+    先估算输入 Token，超预算时把完整文本落盘，再把短摘要和归档文件名交给后续节点。
+    这样既减少模型上下文，也保留了故障复盘所需的原始证据；它不删除业务数据。
+    """
 
     def __init__(self, directory: Path, token_budget: int = 180):
+        # 归档目录，保存超长工具结果或工作流上下文的完整副本。
         self.directory = directory
+        # 后续模型步骤允许携带的估算 Token 上限。
         self.token_budget = token_budget
 
     @staticmethod

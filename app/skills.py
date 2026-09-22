@@ -13,20 +13,34 @@ from app.sql_agent import RiskAssessor
 
 
 @dataclass(slots=True)
-# 作用：说明类 Skill 的输入、输出与安全边界，避免调用方越过受控流程。
 class Skill:
+    """从 ``skills/*/SKILL.md`` 加载的一条运维 SOP 能力定义。"""
+
+    # Skill 的稳定名称，也是运行时路由键。
     name: str
+    # 列表卡片和 Agent 选择时展示的简要说明。
     description: str
+    # 完整 SOP 文本，既可供 RAG 检索也可供用户阅读。
     content: str
+    # 页面筛选用的业务分类。
     category: str = "通用"
+    # auto 只读、manual 需审批；Skill 本身不获得任意写库权限。
     risk: str = "auto"
+    # 从 SOP 元数据解析出的推荐提问示例。
     suggestions: tuple[str, ...] = ()
+    # 是否有对应的确定性运行器，而不是只作为规范文档存在。
     runnable: bool = False
 
 
-# 作用：说明类 SkillRegistry 的输入、输出与安全边界，避免调用方越过受控流程。
 class SkillRegistry:
+    """Skill 文件系统注册表。
+
+    每次读取目录而不是把内容硬编码在 Python 中，因此新增或编辑 SOP 后可以直接刷新；
+    注册表只负责发现和解析，真正执行仍由 ``run_skill`` 的固定白名单路由完成。
+    """
+
     def __init__(self, root: Path):
+        # skills 根目录，例如项目根目录下的 skills/。
         self.root = root
 
     def load(self) -> list[Skill]:

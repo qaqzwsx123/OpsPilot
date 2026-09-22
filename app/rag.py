@@ -36,7 +36,12 @@ def _cosine(left: list[float], right: list[float]) -> float:
 
 
 class KnowledgeRag:
-    """Dependency-free hybrid RAG: chunking, lexical recall, hash-vector recall and reranking."""
+    """轻量混合 RAG 检索器。
+
+    SQLite 保存文档和分块这一事实源，Chroma 作为可重建的向量索引优先参与召回；Chroma 不可用时
+    自动回退到本地分词、哈希向量和余弦相似度。最终分数由词法命中、语义相似度和标题标签加权组成，
+    每条证据保留文档标题、分块编号和评分，便于前端引用与评测。
+    """
 
     def search(self, question: str, top_k: int = 3) -> list[dict[str, Any]]:
         # Chroma 是可重建索引；SQLite 中的知识分块是不可丢失的事实来源。

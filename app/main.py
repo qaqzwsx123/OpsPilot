@@ -51,93 +51,141 @@ app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
 class QueryRequest(BaseModel):
-    """智能查询请求：问题、请求人和后端实际校验的角色。"""
+    """智能查询入口的请求体。
+
+    前端传入的 role 只是一项请求声明，最终权限仍由后端 RBAC、工具风险和 SQL 审查共同决定。
+    """
+    # 用户自然语言问题，进入 LangGraph 的 question 状态。
     question: str = Field(min_length=2, max_length=500)
+    # 审计记录和会话记忆使用的请求者标识。
     requester: str = Field(default="anonymous", min_length=1, max_length=64)
+    # 当前身份，用于决定是否可发起变更或审批。
     role: str = Field(default="operator", min_length=1, max_length=32)
 
 
 class KnowledgeDocumentRequest(BaseModel):
-    """知识文档新增/编辑请求，限制长度以保护本地演示服务。"""
+    """知识库文档新增或编辑请求。"""
+    # 文档标题，也是检索结果和引用证据的主要显示名称。
     title: str = Field(min_length=2, max_length=100)
+    # 文档正文，保存后会重新分块并写入 SQLite/Chroma 索引。
     content: str = Field(min_length=10, max_length=4000)
+    # 逗号分隔标签，用于筛选、检索增强和过期治理。
     tags: str = Field(default="未分类", max_length=200)
+    # 可选的过期日期，格式由前端约束为 YYYY-MM-DD。
     expires_at: str = Field(default="", max_length=10)
+    # 发起新增或编辑的角色，服务端会校验写权限。
     role: str = Field(default="operator", min_length=1, max_length=32)
+    # 审计中记录的操作者。
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
 # 作用：说明类 KnowledgeUploadRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class KnowledgeUploadRequest(KnowledgeDocumentRequest):
+    """上传文档的请求体；上传正文允许比普通编辑更长。"""
+    # 上传文件的原始名称，仅用于显示和审计，不作为本地路径执行。
     content: str = Field(min_length=10, max_length=100000)
     filename: str = Field(min_length=1, max_length=180)
 
 
 # 作用：说明类 MutationActorRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class MutationActorRequest(BaseModel):
+    """所有会产生副作用的 API 共用的操作者信息。"""
+    # 后端权限检查使用的角色 ID。
     role: str = Field(default="operator", min_length=1, max_length=32)
+    # 审计日志中的操作者名称。
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
 # 作用：说明类 AuditDeleteRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class AuditDeleteRequest(MutationActorRequest):
+    """删除单条审计记录时的二次确认。"""
+    # 必须显式传 true，避免误触发不可逆删除。
     confirm: bool = False
 
 
 # 作用：说明类 AuditCleanupRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class AuditCleanupRequest(MutationActorRequest):
+    """按起止时间批量清理审计记录的请求体。"""
+    # 清理窗口的起始时间，包含边界。
     start: str = Field(min_length=10, max_length=40)
+    # 清理窗口的结束时间，包含边界。
     end: str = Field(min_length=10, max_length=40)
+    # 必须显式确认后才会执行预览结果对应的删除。
     confirm: bool = False
 
 
 # 作用：说明类 ToolInvokeRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ToolInvokeRequest(MutationActorRequest):
+    """工具中心试运行请求；工具名来自 URL，权限和风险仍由后端判断。"""
     pass
 
 
 # 作用：说明类 SkillRunRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class SkillRunRequest(MutationActorRequest):
+    """运行一个固定 Skill 时传入的补充上下文。"""
+    # 例如 P1、区域或指标编号，交给固定 Skill 解析而非拼接任意 SQL。
     user_input: str = Field(default="", max_length=500)
 
 
 # 作用：说明类 ChatConversationRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ChatConversationRequest(MutationActorRequest):
+    """创建 Agent 聊天会话的请求体。"""
+    # 左侧历史会话显示名称。
     title: str = Field(default="新对话", max_length=48)
 
 
 # 作用：说明类 ChatTurnRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ChatTurnRequest(MutationActorRequest):
+    """向已有会话追加一轮用户消息。"""
+    # 当前轮的自然语言内容，聊天服务会结合历史上下文调用模型。
     content: str = Field(min_length=1, max_length=4000)
 
 
 # 作用：说明类 ApprovalActionRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class ApprovalActionRequest(BaseModel):
+    """审批人对一张变更审批单的处理意见。"""
+    # 必须拥有 approve_change 权限。
     role: str = Field(default="approver", min_length=1, max_length=32)
+    # 审批记录中的实际处理人。
     actor: str = Field(default="Lenovo", min_length=1, max_length=64)
+    # 同意或拒绝时附带的业务理由。
     comment: str = Field(default="", max_length=500)
 
 
 # 作用：说明类 EvaluationCaseRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class EvaluationCaseRequest(MutationActorRequest):
+    """新增一条可重复运行的 Agent 评测用例。"""
+    # 用例展示名称。
     name: str = Field(min_length=2, max_length=80)
+    # 送入真实工作流的用户问题。
     question: str = Field(min_length=2, max_length=500)
+    # 期望的业务状态，例如 completed、answered_by_rag 或 approval_required。
     expected_status: str = Field(default="completed", min_length=1, max_length=32)
 
 
 # 作用：说明类 EvaluationRunRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class EvaluationRunRequest(BaseModel):
+    """评测运行范围选择。"""
+    # baseline 只跑内置用例，all 包含用户自定义用例，selected 只跑 case_ids。
     scope: str = Field(default="baseline", pattern="^(baseline|all|selected)$")
+    # scope=selected 时要执行的用例 ID 列表。
     case_ids: list[str] = Field(default_factory=list, max_length=100)
+    # 评测请求使用的角色，默认采用只读观察者。
     role: str = Field(default="viewer", min_length=1, max_length=32)
+    # 评测审计记录中的请求者。
     requester: str = Field(default="Lenovo", min_length=1, max_length=64)
 
 
 # 作用：说明类 KnowledgeEvaluationFeedbackRequest 的输入、输出与安全边界，避免调用方越过受控流程。
 class KnowledgeEvaluationFeedbackRequest(MutationActorRequest):
+    """人工对一次知识检索结果进行评分的请求。"""
+    # 评测运行或单条结果的关联 ID。
     evaluation_id: str = Field(min_length=1, max_length=64)
+    # 被评审的原始问题。
     question: str = Field(min_length=2, max_length=500)
+    # 1 到 5 分的人工相关性评分。
     score: int = Field(ge=1, le=5)
+    # 可选的具体改进建议。
     comment: str = Field(default="", max_length=1000)
 
 

@@ -11,23 +11,35 @@ from app.tool_registry import definition, invoke
 
 
 @dataclass(frozen=True, slots=True)
-# 作用：说明类 ToolSelection 的输入、输出与安全边界，避免调用方越过受控流程。
 class ToolSelection:
+    """规划器最终接受的一次工具选择。"""
+
+    # 被白名单接受的工具名。
     name: str
+    # 模型或规则解释为什么需要这个工具，展示在工作流轨迹中。
     reason: str
 
 
 @dataclass(frozen=True, slots=True)
-# 作用：说明类 ModelToolCall 的输入、输出与安全边界，避免调用方越过受控流程。
 class ModelToolCall:
+    """OpenAI Function Calling 返回的候选调用，在执行前还要过白名单校验。"""
+
+    # 模型请求调用的工具名，可能是不合法值，不能直接执行。
     name: str
+    # 模型生成的 JSON 参数，如 query 或筛选条件。
     arguments: dict[str, Any]
+    # 模型给出的调用理由。
     reason: str
 
 
 class ToolPlanner:
-    """Model-first Function Calling planner with a deterministic safe fallback."""
+    """模型优先、规则兜底的只读工具编排器。
 
+    第一轮默认只允许一次工具调用；只有工具返回 ``needs_followup`` 时才进入第二轮。
+    无论模型如何选择，最终都必须经过工具存在性、风险等级、重复调用和最大次数校验。
+    """
+
+    # 规则兜底目录：工具名、触发词、审计轨迹中的选择理由。
     rules = (
         ("alert_query", ("告警", "报警", "p1", "p2", "p3"), "问题涉及告警级别、状态或影响范围"),
         ("asset_lookup", ("设备", "资产", "网关", "离线", "在线", "维护", "机器人"), "问题涉及设备资产或运行状态"),

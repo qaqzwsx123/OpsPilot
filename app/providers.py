@@ -13,7 +13,11 @@ from app.sql_agent import RuleBasedSqlWriter
 
 
 class OpenAICompatibleSqlWriter:
-    """Calls an OpenAI-compatible /chat/completions endpoint with strict JSON output."""
+    """调用 OpenAI 兼容的 Chat Completions 接口生成结构化 SQL。
+
+    模型只负责提出候选 SQL；表白名单、只读约束、LIMIT、风险分级和审批都在本地后端完成，
+    因此模型不可用或返回不合法 JSON 时可以安全回退。
+    """
 
     def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
         # 让模型只输出结构化 JSON，后续仍必须经过 Reviewer 和 RiskAssessor。
@@ -57,11 +61,18 @@ class OpenAICompatibleSqlWriter:
 
 
 class ResilientSqlWriter:
-    """Uses a configured LLM first, then an offline deterministic fallback."""
+    """可恢复的 SQL Writer 门面。
+
+    如果配置了可用的 LLM，先尝试模型生成；网络、超时、解析或模型拒答时使用确定性规则生成器，
+    保证本地演示仍能运行，同时通过 last_provider 暴露本次实际使用的提供方。
+    """
 
     def __init__(self) -> None:
+        # 可选模型适配器；未配置完整连接信息时保持 None。
         self.llm = OpenAICompatibleSqlWriter() if settings.llm_enabled else None
+        # 离线规则生成器，保证无模型时仍能覆盖核心演示问题。
         self.fallback = RuleBasedSqlWriter()
+        # 最近一次 generate 使用的提供方，供调试和工作流轨迹展示。
         self.last_provider = "rule_based"
 
     def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:

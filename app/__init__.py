@@ -1,2 +1,5 @@
-"""Safe SQL Agent application package."""
+"""OpsPilot 后端应用包。
 
+``app`` 下的模块按职责拆分为配置、持久化、LangGraph 工作流、RAG、工具白名单、
+审批审计以及 FastAPI 接口；各模块通过明确的数据模型连接，避免页面直接操作数据库。
+"""

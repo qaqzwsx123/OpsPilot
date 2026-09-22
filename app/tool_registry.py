@@ -9,14 +9,25 @@ from app.database import execute_readonly, list_approvals, list_audit, list_know
 
 
 @dataclass(frozen=True, slots=True)
-# 作用：说明类 ToolDefinition 的输入、输出与安全边界，避免调用方越过受控流程。
 class ToolDefinition:
+    """Agent 可见的工具白名单条目。
+
+    这里的定义同时驱动工具中心卡片、模型 Function Calling schema、规划器校验和后端执行入口。
+    risk 不是 UI 标签，而是后端 invoke 的强制安全边界。
+    """
+
+    # 稳定的工具函数名，必须能在 invoke 中找到对应实现。
     name: str
+    # 给用户和模型看的能力描述。
     description: str
+    # auto 只读、manual 进入审批、blocked 直接拒绝。
     risk: str
+    # 工具中心的分组名称。
     category: str
 
 
+# 当前白名单共 12 个工具：9 个 AUTO 只读、2 个 MANUAL 需审批、1 个 BLOCKED。
+# 新增工具必须同时补齐定义、执行分支、权限审计和前端使用说明。
 TOOLS = (
     ToolDefinition("asset_lookup", "查询离线与维护中的设备资产", "auto", "资产"),
     ToolDefinition("alert_query", "查询最近的未关闭告警", "auto", "告警"),

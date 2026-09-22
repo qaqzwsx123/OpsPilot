@@ -12,7 +12,9 @@ import math
 import re
 from collections import Counter
 
+# 当前演示使用的确定性哈希向量模型名称，写入 Chroma 元数据便于识别索引版本。
 VECTOR_MODEL = "local-hash-bow-v1"
+# 向量维度；变更后需要重建 SQLite/Chroma 中的全部索引。
 VECTOR_DIMENSIONS = 64
 
 

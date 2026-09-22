@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from app.models import CandidateTable, ExecutionMode, GeneratedSql, ReviewResult
 
 
+# 本地演示库的可召回元数据。每张表都明确列、业务别名和用途，避免模型看到未知字段。
+# 配置 MySQL 后 active_schema 会以实时 introspection 结果替代这份静态目录。
 SCHEMA: dict[str, dict[str, object]] = {
     "assets": {
         "columns": ["id", "name", "region", "status", "owner", "updated_at"],
@@ -56,7 +58,11 @@ def active_schema() -> dict[str, dict[str, object]]:
 
 
 class MetadataRetriever:
-    """Three-way recall: schema words, business aliases and description semantics."""
+    """元数据召回器。
+
+    通过表名/字段名、中文业务别名和表描述三类信号计算轻量分数，输出候选表及命中依据。
+    候选结果既用于限制 SQL Writer 的上下文，也用于向用户解释查询为什么命中了这些表。
+    """
 
     def retrieve(self, question: str, top_k: int = 3) -> list[CandidateTable]:
         # 使用表名、字段名、业务别名和描述做轻量召回，限制后续模型可见表范围。
@@ -86,7 +92,11 @@ class MetadataRetriever:
 
 
 class RuleBasedSqlWriter:
-    """Offline provider. Replace it with an LLM provider in production."""
+    """离线确定性 SQL Writer。
+
+    它只覆盖演示项目中已知的查询意图，并且输出仍必须经过 SqlReviewer 和 RiskAssessor；
+    它的作用是模型服务不可用时保持系统可演示，而不是绕过安全链路。
+    """
 
     def generate(self, question: str, tables: list[CandidateTable], tool_context: list[dict] | None = None) -> GeneratedSql | None:
         # 离线规则只生成项目白名单表上的示例 SQL，不能替代 Reviewer。
@@ -158,9 +168,16 @@ class RuleBasedSqlWriter:
         return None
 
 
-# 作用：说明类 SqlReviewer 的输入、输出与安全边界，避免调用方越过受控流程。
 class SqlReviewer:
+    """只读 SQL 静态审查器。
+
+    forbidden 检查写入和 DDL 关键字，table_re 提取 FROM/JOIN 表名；审查还会拒绝多语句、
+    未授权表并补充默认 LIMIT。通过审查只说明“可以进入风险判断”，不代表可以直接写库。
+    """
+
+    # 写入、DDL、外部挂载和 SQLite 维护关键字全部进入阻断或审批链路。
     forbidden = re.compile(r"\b(insert|update|delete|drop|alter|create|attach|detach|pragma|vacuum|replace)\b", re.I)
+    # 只提取 FROM/JOIN 后的简单表名，用于和 allowed_tables 做白名单比较。
     table_re = re.compile(r"\b(?:from|join)\s+([a-zA-Z_][a-zA-Z0-9_]*)", re.I)
 
     def review(self, sql: str, allowed_tables: list[str]) -> ReviewResult:
@@ -184,7 +201,11 @@ class SqlReviewer:
 
 
 class SqlFixer:
-    """Conservative deterministic repair. It only narrows read queries; it never repairs writes."""
+    """保守 SQL 修复器。
+
+    只处理多余分号和缺失 LIMIT 等可证明安全的只读问题；涉及未知表、未识别表或非 SELECT 时
+    返回 None，让工作流进入修复失败或风险处理分支，而不是擅自改写用户意图。
+    """
 
     def fix(self, sql: str, issues: list[str], allowed_tables: list[str]) -> str | None:
         normalized = " ".join(sql.strip().split())
@@ -202,14 +223,18 @@ class SqlFixer:
 
 
 @dataclass(slots=True)
-# 作用：说明类 RiskDecision 的输入、输出与安全边界，避免调用方越过受控流程。
 class RiskDecision:
+    """风险评估节点的结果。"""
+
+    # 最终执行模式，决定自动运行、创建审批或直接阻断。
     mode: ExecutionMode
+    # 面向用户和审计中心的风险解释。
     reason: str
 
 
-# 作用：说明类 RiskAssessor 的输入、输出与安全边界，避免调用方越过受控流程。
 class RiskAssessor:
+    """SQL 风险分级器，始终在后端执行。"""
+
     def assess(self, sql: str) -> RiskDecision:
         # 风险分级决定自动执行、进入审批，还是直接阻断。
         lowered = sql.lower()
