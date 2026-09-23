@@ -1,15 +1,15 @@
 ---
 name: capacity_review
-description: 容量巡检：结合非在线资产与 CPU 指标趋势，输出容量风险、验证重点和后续建议。
+description: 容量巡检：检索容量规范，结合非在线资产与 CPU 指标趋势，输出容量风险、验证重点和后续建议。
 category: 容量管理
 risk: auto
 runnable: true
 suggestions: 早间容量巡检|检查 CPU 与离线资产
 triggers: 容量巡检|容量风险评估|早间容量检查
-tools: asset_lookup|metric_catalog|latest_metric_samples
+tools: knowledge_search|asset_lookup|metric_catalog|latest_metric_samples
 input: 可选区域或关注指标；默认检查 CPU 和非在线资产
-steps: 汇总非在线资产|读取 CPU 指标趋势|区分当前异常与持续风险|生成验证建议
-output: 非在线资产清单、指标趋势摘要、容量风险和后续检查建议
+steps: 检索容量与指标排查规范|汇总非在线资产|读取 CPU 指标趋势|区分当前异常与持续风险|结合规范生成验证建议
+output: 非在线资产清单、指标趋势摘要、知识库来源、容量风险和后续检查建议
 ---
 
 # 容量巡检 SOP

@@ -21,6 +21,7 @@
 from __future__ import annotations  # 延迟解析类型注解，提升兼容性并避免运行时求值
 
 import json  # 构造请求 payload 和解析模型返回的 JSON
+from concurrent.futures import ThreadPoolExecutor  # 混合问题并行检索知识文档和业务数据
 from urllib.error import HTTPError, URLError  # 捕获网络层错误
 from urllib.request import Request, urlopen  # 使用标准库 HTTP 客户端，避免额外依赖
 from dataclasses import dataclass  # 声明不可变的数据结构
@@ -78,6 +79,40 @@ class ModelToolCall:
     reason: str
 
 
+def classify_query_intent(question: str) -> tuple[bool, bool]:
+    """返回 (需要知识检索, 需要实时业务数据) 两个可解释的意图标记。"""
+    text = "".join(question.casefold().split())
+    knowledge_terms = (
+        "sop", "知识库", "规范", "操作手册", "手册", "怎么", "如何", "怎么办",
+        "排查", "排障", "处置", "步骤", "流程", "应急", "故障原因", "原因",
+        "为什么", "解决方法", "处理办法", "解释", "介绍", "是什么意思", "原则", "要求",
+    )
+    data_terms = (
+        "告警", "报警", "设备", "资产", "工单", "作业", "指标", "审批", "审计",
+    )
+    data_request_terms = (
+        "查询", "查一下", "查下", "查", "列出", "有哪些", "多少", "几条", "统计", "分布",
+        "当前", "现在", "最新", "最近", "状态", "数据", "显示", "展示", "未关闭", "待处理",
+    )
+    data_request_text = text.replace("排查", "")
+    needs_knowledge = any(term in text for term in knowledge_terms)
+    needs_data = (
+        any(term in text for term in data_terms)
+        and any(term in data_request_text for term in data_request_terms)
+    )
+    return needs_knowledge, needs_data
+
+
+def prefer_standalone_knowledge(question: str) -> bool:
+    """知识问题优先独立检索；只有明确要求运行流程时才让流程接管。"""
+    needs_knowledge, needs_data = classify_query_intent(question)
+    text = "".join(question.casefold().split())
+    explicit_run = any(term in text for term in (
+        "运行", "执行", "生成", "开展", "做一次", "帮我做", "帮我运行", "启动流程",
+    ))
+    return needs_knowledge and not needs_data and not explicit_run
+
+
 class ToolPlanner:
     """模型优先、规则兜底的只读工具编排器。
 
@@ -124,7 +159,14 @@ class ToolPlanner:
         ("system_health", ("系统状态", "服务状态", "健康检查", "健康"), "问题涉及 Agent 或数据接入健康状态"),
     )
 
-    def plan(self, question: str, max_tools: int = 3) -> list[ToolSelection]:
+    def plan(
+        self,
+        question: str,
+        max_tools: int = 3,
+        *,
+        include_knowledge: bool = True,
+        knowledge_first: bool = False,
+    ) -> list[ToolSelection]:
         """基于规则匹配问题，返回选中的工具列表。
 
         参数：
@@ -146,6 +188,8 @@ class ToolPlanner:
 
         # 按 rules 顺序遍历，命中触发词即选中。
         for name, triggers, reason in self.rules:
+            if name == "knowledge_search" and not include_knowledge:
+                continue
             # 校验工具存在且为只读工具。
             tool = definition(name)
             if tool is None or tool.risk != "auto":
@@ -158,9 +202,25 @@ class ToolPlanner:
             # 达到上限时提前退出。
             if len(selected) >= max_tools:
                 break
+        if knowledge_first and include_knowledge:
+            selected = [item for item in selected if item.name != "knowledge_search"]
+            knowledge_tool = definition("knowledge_search")
+            if knowledge_tool and knowledge_tool.risk == "auto":
+                selected.insert(0, ToolSelection(
+                    "knowledge_search", "问题要求处置规范；优先检索知识库证据",
+                ))
+                selected = selected[:max_tools]
         return selected
 
-    def execute(self, question: str) -> tuple[list[ToolSelection], list[dict[str, Any]]]:
+    def execute(
+        self,
+        question: str,
+        *,
+        include_knowledge: bool = True,
+        knowledge_first: bool = False,
+        knowledge_only: bool = False,
+        parallel: bool = False,
+    ) -> tuple[list[ToolSelection], list[dict[str, Any]]]:
         """仅用规则路径执行工具，返回选择列表和证据列表。
 
         参数：
@@ -174,7 +234,44 @@ class ToolPlanner:
         安全边界：
         - 工具执行失败时记录失败证据，不向上抛出，避免影响主流程。
         """
-        selections = self.plan(question)
+        if knowledge_only:
+            selections = [ToolSelection("knowledge_search", "问题询问规范或处置方法，检索知识库")]
+        else:
+            selections = self.plan(
+                question, include_knowledge=include_knowledge, knowledge_first=knowledge_first,
+            )
+        return selections, self.execute_selections(question, selections, parallel=parallel)
+
+    def execute_for_intent(
+        self, question: str,
+    ) -> tuple[list[ToolSelection], list[dict[str, Any]], str, str, tuple[bool, bool]]:
+        """按知识/数据/混合意图确定所需工具，避免模型漏掉必需知识证据。"""
+        needs_knowledge, needs_data = classify_query_intent(question)
+        if needs_knowledge and not needs_data:
+            selections, evidence = self.execute(question, knowledge_only=True)
+            mode = "knowledge_intent"
+        elif needs_knowledge and needs_data:
+            selections, evidence = self.execute(
+                question, include_knowledge=True, knowledge_first=True, parallel=True,
+            )
+            mode = "mixed_knowledge_and_data_intent"
+        else:
+            selections, evidence = self.execute(question, include_knowledge=False)
+            mode = "data_intent" if needs_data else "no_retrieval_intent"
+        return selections, evidence, self._fallback_summary(evidence), mode, (needs_knowledge, needs_data)
+
+    def execute_selections(
+        self, question: str, selections: list[ToolSelection], *, parallel: bool = False,
+    ) -> list[dict[str, Any]]:
+        """按已确定且经过白名单验证的工具选择执行，并压缩返回证据。"""
+        if parallel and len(selections) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(selections), 4)) as executor:
+                futures = [
+                    executor.submit(self.execute_selections, question, [selection])
+                    for selection in selections
+                ]
+                return [future.result()[0] for future in futures]
+
         evidence: list[dict[str, Any]] = []
 
         for selection in selections:
@@ -192,13 +289,15 @@ class ToolPlanner:
                     "sample": [],
                     "summary": f"工具执行失败：{type(exc).__name__}",
                 })
-        return selections, evidence
+        return evidence
 
     def execute_agent(
         self,
         question: str,
         max_rounds: int = 2,
         max_tools: int = 2,
+        *,
+        allow_knowledge: bool = True,
     ) -> tuple[list[ToolSelection], list[dict[str, Any]], str, str]:
         """Let the local model choose one tool first, then continue only on explicit follow-up evidence.
 
@@ -240,7 +339,7 @@ class ToolPlanner:
         # 逐轮尝试模型选择。
         for round_number in range(1, max_rounds + 1):
             # 让模型选择工具；返回 None 表示模型不可用或解析失败。
-            calls = self._model_choose(question, evidence, used, max_calls=1)
+            calls = self._model_choose(question, evidence, used, max_calls=1, allow_knowledge=allow_knowledge)
             if calls is None:
                 # 模型不可用：切换到规则兜底模式，跳出模型轮次。
                 mode = "rule_based_allowlist_fallback"
@@ -314,7 +413,7 @@ class ToolPlanner:
 
         # 模型路径完全没选中任何工具时，回退到规则路径。
         if not selections:
-            selections, evidence = self.execute(question)
+            selections, evidence = self.execute(question, include_knowledge=allow_knowledge)
             mode = "rule_based_allowlist_fallback"
 
         # 生成摘要文本。
@@ -327,6 +426,7 @@ class ToolPlanner:
         evidence: list[dict[str, Any]],
         used: set[str],
         max_calls: int = 1,
+        allow_knowledge: bool = True,
     ) -> list[ModelToolCall] | None:
         """调用模型 Function Calling 让模型选择工具。
 
@@ -353,6 +453,7 @@ class ToolPlanner:
         available = [
             tool for tool in catalog()
             if tool["risk"] == "auto" and tool["name"] not in used
+            and (allow_knowledge or tool["name"] != "knowledge_search")
         ]
 
         # 构造 OpenAI Function Calling 的 tools 规范。
@@ -554,10 +655,22 @@ class ToolPlanner:
             f"{item['tool']} 返回 {item.get('result_count', 0)} 条"
             for item in evidence
         )
-        return (
+        summary = (
             "Agent 已完成只读工具编排：" + details +
             "。详细结果见工作流轨迹；涉及变更的操作仍需进入审批流程。"
         )
+        for item in evidence:
+            if item.get("tool") != "knowledge_search":
+                continue
+            for document in item.get("sample", [])[:3]:
+                if not isinstance(document, dict):
+                    continue
+                title = document.get("title", "知识库文档")
+                chunk = document.get("chunk_index")
+                citation = f"{title} · 片段 {int(chunk) + 1}" if isinstance(chunk, int) else str(title)
+                content = str(document.get("content", "")).strip()
+                summary += f"\n知识库证据：{content[:360]} [来源：{citation}]"
+        return summary
 
     @staticmethod
     def _compact(selection: ToolSelection, result: dict[str, Any]) -> dict[str, Any]:

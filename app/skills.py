@@ -258,39 +258,66 @@ def run_skill(name: str, user_input: str = "") -> dict[str, Any]:
             alert["asset_name"] = alert.get("asset_name") or asset.get("name")
             alert["region"] = alert.get("region") or asset.get("region")
             alert["asset_status"] = alert.get("asset_status") or asset.get("status")
-        data = {"alerts": alerts, "severity": severity, "region": region[0] if region else None}
+        knowledge_sources = results.get("knowledge_search", {}).get("documents", [])
+        data = {
+            "alerts": alerts, "severity": severity, "region": region[0] if region else None,
+            "knowledge_sources": knowledge_sources[:5] if isinstance(knowledge_sources, list) else [],
+        }
         summary = f"识别到 {len(alerts)} 条符合条件的未关闭 {severity} 告警。"
     elif name == "metric_diagnosis":
         trend = results.get("metric_catalog", {}).get("trend")
+        knowledge_sources = results.get("knowledge_search", {}).get("documents", [])
         points = (trend or {}).get("points", [])
         values = [float(point["value"]) for point in points if point.get("value") is not None]
         if not trend or not values:
-            status, summary, data, next_steps = "not_found", "未找到该指标或没有可用样本。", [], []
+            status, summary, next_steps = "not_found", "未找到该指标或没有可用样本。", []
+            data = {
+                "knowledge_sources": knowledge_sources[:5] if isinstance(knowledge_sources, list) else [],
+            }
         else:
             average, latest = sum(values) / len(values), values[-1]
             deviation = round((latest - average) / average * 100, 1) if average else 0
             direction = "高于" if deviation > 15 else "低于" if deviation < -15 else "接近"
             summary = f"{trend['name']} 当前值 {latest}{trend['unit']}，{direction} 24 小时均值 {average:.2f}{trend['unit']}（偏差 {deviation}%）。"
-            data = {"metric": trend["name"], "latest": latest, "average": round(average, 2), "minimum": min(values), "maximum": max(values), "points": len(values)}
+            data = {
+                "metric": trend["name"], "latest": latest, "average": round(average, 2),
+                "minimum": min(values), "maximum": max(values), "points": len(values),
+                "knowledge_sources": knowledge_sources[:5] if isinstance(knowledge_sources, list) else [],
+            }
     elif name == "ticket_handoff":
         tickets, unassigned = rows("ticket_query"), rows("unassigned_tickets")
         high_count = sum(row.get("priority") == "high" for row in tickets)
-        data = {"tickets": tickets, "unassigned": unassigned}
+        knowledge_sources = results.get("knowledge_search", {}).get("documents", [])
+        data = {
+            "tickets": tickets, "unassigned": unassigned,
+            "knowledge_sources": knowledge_sources[:5] if isinstance(knowledge_sources, list) else [],
+        }
         summary = f"当前有 {len(tickets)} 个未关闭工单，其中高优 {high_count} 个、未分配 {len(unassigned)} 个。"
     elif name == "oncall_briefing":
         alerts, tickets, work_orders = rows("alert_query"), rows("ticket_query"), rows("work_order_query")
         approvals = [row for row in results.get("approval_queue", {}).get("approvals", []) if row.get("status") == "pending"]
         p1_count = sum(row.get("severity") == "P1" for row in alerts)
-        data = {"alerts": alerts, "tickets": tickets, "work_orders": work_orders, "pending_approvals": approvals}
+        knowledge_sources = results.get("knowledge_search", {}).get("documents", [])
+        data = {
+            "alerts": alerts, "tickets": tickets, "work_orders": work_orders,
+            "pending_approvals": approvals,
+            "knowledge_sources": knowledge_sources[:5] if isinstance(knowledge_sources, list) else [],
+        }
         summary = f"值班简报：{len(alerts)} 条未关闭告警（P1 {p1_count} 条）、{len(tickets)} 个工单、{len(work_orders)} 个待执行作业、{len(approvals)} 张待审批单。"
     elif name == "capacity_review":
         assets = rows("asset_lookup")
+        knowledge_sources = results.get("knowledge_search", {}).get("documents", [])
         trend = results.get("metric_catalog", {}).get("trend")
         points = (trend or {}).get("points", [])
         values = [float(point["value"]) for point in points if point.get("value") is not None]
         latest = values[-1] if values else None
         average = round(sum(values) / len(values), 2) if values else None
-        data = {"non_online_assets": assets, "metric": trend.get("name") if trend else None, "latest": latest, "average": average, "peak": max(values) if values else None, "recent_samples": rows("latest_metric_samples")}
+        data = {
+            "non_online_assets": assets, "metric": trend.get("name") if trend else None,
+            "latest": latest, "average": average, "peak": max(values) if values else None,
+            "recent_samples": rows("latest_metric_samples"),
+            "knowledge_sources": knowledge_sources[:5] if isinstance(knowledge_sources, list) else [],
+        }
         summary = f"容量巡检发现 {len(assets)} 台非在线资产；{data['metric'] or '指标'}当前值 {latest if latest is not None else '—'}，24 小时均值 {average if average is not None else '—'}。"
     else:
         data = {tool_name: result for tool_name, result in results.items()}

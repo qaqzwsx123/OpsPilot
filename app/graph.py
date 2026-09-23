@@ -16,7 +16,7 @@ from app.providers import ResilientSqlWriter
 from app.rag import KnowledgeRag
 from app.sql_agent import MetadataRetriever, RiskAssessor, SqlFixer, SqlReviewer
 from app.skills import SkillRegistry, run_skill
-from app.tool_planner import ToolPlanner, ToolSelection
+from app.tool_planner import ToolPlanner, ToolSelection, classify_query_intent, prefer_standalone_knowledge
 
 
 # 事件处理器类型：接收一个 WorkflowEvent，无返回值。
@@ -116,7 +116,11 @@ class SqlAgentGraph:
             {"prepare": "prepare", "finalize": "finalize"},
         )
 
-        builder.add_edge("prepare", "recall")    # 准备完成后召回
+        builder.add_conditional_edges(
+            "prepare",
+            self._route_prepared,
+            {"recall": "recall", "finalize": "finalize"},
+        )
         builder.add_edge("recall", "generate")   # 召回完成后生成 SQL
 
         # 生成后：如果生成失败则走 rag，否则进入 review_node
@@ -219,7 +223,7 @@ class SqlAgentGraph:
         save_memory(requester, "user", question)  # 保存用户问题
 
         planner_started = time.perf_counter()  # 开始计时
-        skill = self.skill_registry.match(question)
+        skill = None if prefer_standalone_knowledge(question) else self.skill_registry.match(question)
         active_skill = skill.name if skill else ""
         if skill:
             # 明确匹配到复合流程时，流程负责按元数据顺序调用它声明的只读工具。
@@ -227,18 +231,44 @@ class SqlAgentGraph:
             tool_context = skill_result.get("tool_evidence", [])
             selections = [ToolSelection(item["tool"], item["reason"]) for item in tool_context]
             tool_summary = skill_result.get("summary", "")
+            if any(item.get("tool") == "knowledge_search" for item in tool_context):
+                source_summary = self.tool_planner._fallback_summary(tool_context)
+                if source_summary:
+                    tool_summary += "\n" + source_summary
             selection_mode = "skill_workflow"
             write_audit(requester, "skill_run", {
                 "skill": skill.name, "input": question[:160], "status": skill_result.get("status"),
                 "tools": skill_result.get("tools_used", []), "source": "intelligent_query", "role": state["role"],
             })
-        elif state.get("use_model_tools", False):
-            # 普通查询交由本地 LLM 从工具白名单中选择。
-            selections, tool_context, tool_summary, selection_mode = self.tool_planner.execute_agent(question)
         else:
-            # 使用规则白名单兜底
-            selections, tool_context = self.tool_planner.execute(question)
-            tool_summary, selection_mode = "", "rule_based_allowlist"
+            needs_knowledge, needs_data = classify_query_intent(question)
+            if needs_knowledge and not needs_data:
+                events = self._emit(state, "knowledge", "知识问题优先检索知识库")
+                answer, sources = self.rag.answer(question)
+                events = self._emit(
+                    {**state, "events": events}, "knowledge",
+                    "知识库检索完成并附带文档来源", sources=sources,
+                )
+                write_audit(requester, "knowledge_searched", {
+                    "question": question[:160], "sources": sources,
+                    "surface": "intelligent_query", "role": state["role"],
+                })
+                return {
+                    "route": "knowledge_only",
+                    "result": QueryResult("answered_by_rag", answer, sources=sources, events=events),
+                    "events": events,
+                    "memory": memory,
+                }
+            if needs_knowledge and needs_data:
+                selections, tool_context, tool_summary, selection_mode, _ = self.tool_planner.execute_for_intent(question)
+            elif state.get("use_model_tools", False):
+                # 纯实时数据问题不向规划模型暴露知识检索工具，避免无关 SOP 混入结果。
+                selections, tool_context, tool_summary, selection_mode = self.tool_planner.execute_agent(
+                    question, allow_knowledge=False,
+                )
+            else:
+                selections, tool_context = self.tool_planner.execute(question, include_knowledge=False)
+                tool_summary, selection_mode = self.tool_planner._fallback_summary(tool_context), "rule_based_allowlist"
         planner_latency_ms = round((time.perf_counter() - planner_started) * 1000)  # 计算耗时
         planner_name = "运维流程" if active_skill else ("本地 LLM Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底")
         role = state["role"]
@@ -325,7 +355,12 @@ class SqlAgentGraph:
         如果生成失败（返回 None），则走 RAG 兜底，直接构造 answered_by_rag 结果。
         如果成功，发送 writer 事件，返回生成的 SQL 对象，并设置路由为 review。
         """
-        generated = self.writer.generate(state["question"], state["candidates"], state.get("tool_context", []))
+        # 知识库原文只用于检索证据与最终解释，不送入 SQL 生成器，避免文档指令影响 SQL 规划。
+        writer_context = [
+            item for item in state.get("tool_context", [])
+            if item.get("tool") != "knowledge_search"
+        ]
+        generated = self.writer.generate(state["question"], state["candidates"], writer_context)
         if generated is None:
             # 无法生成可靠 SQL，切换到运维知识库
             events = self._emit(state, "rag", "无法生成可靠 SQL，切换到运维知识库")
@@ -490,6 +525,11 @@ class SqlAgentGraph:
     def _route_access(state: WorkflowState) -> Literal["prepare", "finalize"]:
         """权限检查后的路由：如果 route 是 finalize 则去 finalize，否则去 prepare。"""
         return "finalize" if state.get("route") == "finalize" else "prepare"
+
+    @staticmethod
+    def _route_prepared(state: WorkflowState) -> Literal["recall", "finalize"]:
+        """纯知识问题已经完成 RAG 回答，跳过无关的 SQL 召回与生成步骤。"""
+        return "finalize" if state.get("route") == "knowledge_only" else "recall"
 
     @staticmethod
     def _route_generated(state: WorkflowState) -> Literal["review", "rag"]:

@@ -84,7 +84,7 @@ TOOLS = (
     ToolDefinition("alert_query", "查询最近的未关闭告警及关联设备编号", "auto", "告警"),
     ToolDefinition("ticket_query", "查询当前未关闭运维工单", "auto", "工单"),
     ToolDefinition("work_order_query", "查询待执行运维作业", "auto", "作业"),
-    ToolDefinition("knowledge_search", "查看当前知识库文档索引", "auto", "知识库"),
+    ToolDefinition("knowledge_search", "按用户问题语义检索知识库中的 SOP、规范、故障原因和处置文档，返回带标题及片段编号的证据；不负责查询实时业务数据", "auto", "知识库"),
     ToolDefinition("system_health", "读取 Agent 服务与数据接入状态", "auto", "系统"),
     ToolDefinition("approval_queue", "查看待处理和最近审批单状态", "auto", "审批"),
     ToolDefinition("audit_recent", "查看最近关键操作的审计轨迹", "auto", "审计"),

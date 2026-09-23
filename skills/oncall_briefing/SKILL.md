@@ -6,10 +6,10 @@ risk: auto
 runnable: true
 suggestions: 当前值班简报|华东夜班交接
 triggers: 值班简报|值班交接简报|生成交接报告
-tools: alert_query|ticket_query|work_order_query|approval_queue
+tools: knowledge_search|alert_query|ticket_query|work_order_query|approval_queue
 input: 可选值班区域或班次说明
-steps: 汇总未关闭告警|汇总未关闭工单和待执行作业|汇总待审批事项|按风险生成交接清单
-output: 告警、工单、作业、待审批摘要和交接优先级
+steps: 检索值班交接规范|汇总未关闭告警|汇总未关闭工单和待执行作业|汇总待审批事项|结合规范按风险生成交接清单
+output: 告警、工单、作业、待审批摘要、交接规范来源和交接优先级
 ---
 
 # 值班简报 SOP

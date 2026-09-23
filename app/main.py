@@ -92,7 +92,7 @@ from app.chat_service import AgentChatService  # Agent 聊天服务
 from app.evaluation import available_evaluation_cases, run_evaluation  # SQL Agent 离线评测
 from app.skills import SkillRegistry, run_skill  # Skill 注册表和运行入口
 from app.tool_registry import catalog, definition, invoke  # 工具目录、定义、调用
-from app.tool_planner import ToolPlanner  # Agent 聊天中的只读工具规划
+from app.tool_planner import ToolPlanner, classify_query_intent, prefer_standalone_knowledge  # Agent 聊天中的只读工具规划和意图分类
 from app.workflow import SqlAgentWorkflow  # SQL Agent 工作流
 from app.rag import KnowledgeRag  # RAG 检索
 from app.chroma_store import (
@@ -270,7 +270,7 @@ def _bounded_context_value(value: Any, list_limit: int = 3) -> Any:
 def _prepare_chat_automation(question: str, plan: dict[str, Any], requester: str, role: str) -> dict[str, Any]:
     """优先路由可执行流程；普通查询再由只读工具规划器提供真实数据证据。"""
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
-    skill = registry.match(question)
+    skill = None if prefer_standalone_knowledge(question) else registry.match(question)
     if skill:
         result = run_skill(skill.name, question)
         plan.update({
@@ -281,6 +281,7 @@ def _prepare_chat_automation(question: str, plan: dict[str, Any], requester: str
             "automation_context": json.dumps(_bounded_context_value({
                 "summary": result.get("summary"), "data": result.get("data"),
                 "next_steps": result.get("next_steps"), "tools_used": result.get("tools_used"),
+                "tool_evidence": result.get("tool_evidence", []),
             }), ensure_ascii=False, default=str)[:9000],
         })
         write_audit(requester, "skill_run", {
@@ -295,21 +296,24 @@ def _prepare_chat_automation(question: str, plan: dict[str, Any], requester: str
             })
         return {"type": "skill", "name": skill.name, "tools": result.get("tools_used", [])}
 
-    # 涉及运维数据或 SOP 的聊天请求可以直接取得真实只读工具证据。
-    if plan.get("route") in {"智能查询建议", "知识库检索建议"}:
+    # 先判断知识、数据或混合意图，强制保证规范类请求查知识，纯数据请求不额外查 SOP。
+    needs_knowledge, needs_data = classify_query_intent(question)
+    if needs_knowledge or needs_data or plan.get("route") in {"智能查询建议", "知识库检索建议"}:
         planner = ToolPlanner()
-        if settings.model_tool_planner_enabled:
-            selections, evidence, summary, mode = planner.execute_agent(question)
+        if needs_knowledge:
+            selections, evidence, summary, mode, _ = planner.execute_for_intent(question)
+        elif settings.model_tool_planner_enabled:
+            selections, evidence, summary, mode = planner.execute_agent(question, allow_knowledge=False)
         else:
-            selections, evidence = planner.execute(question)
-            summary, mode = "", "rule_based_allowlist"
+            selections, evidence = planner.execute(question, include_knowledge=False)
+            summary, mode = planner._fallback_summary(evidence), "rule_based_allowlist"
         plan["automation_context"] = json.dumps({"summary": summary, "evidence": evidence}, ensure_ascii=False, default=str)[:9000]
         plan["automation_type"] = "tools" if selections else "none"
         plan["automation_name"] = "、".join(item.name for item in selections)
         if selections:
             write_audit(requester, "agent_tool_plan", {
                 "tools": [{"name": item.name, "reason": item.reason} for item in selections],
-                "selection_mode": mode, "planner": "Agent 聊天只读工具规划", "role": role,
+                "selection_mode": mode, "planner": "Agent 聊天意图路由", "role": role,
             })
             for item in evidence:
                 write_audit(requester, "agent_tool_invoked", {
