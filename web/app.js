@@ -416,10 +416,13 @@ async function loadSkills() {
 
 async function viewSkill(name) {
   try {
-    const skill = await (await fetch(`/api/v1/skills/${encodeURIComponent(name)}`)).json();
+    const response = await fetch(`/api/v1/skills/${encodeURIComponent(name)}`);
+    const skill = await response.json();
+    if (!response.ok) throw new Error(skill.detail || "流程定义读取失败（HTTP " + response.status + "）");
+    if (typeof skill.content !== "string") throw new Error("后端没有返回流程正文，请重启服务后重试");
     $("#skill-content").textContent = skill.content; $("#skill-detail").hidden = false;
     $("#skill-detail").scrollIntoView({ behavior:"smooth", block:"start" });
-  } catch { toast("无法读取流程定义"); }
+  } catch (error) { toast(error.message || "无法读取流程定义"); }
 }
 
 function runSkill(name, suggestedInput) {

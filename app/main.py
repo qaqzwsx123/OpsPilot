@@ -938,7 +938,7 @@ def skills_history(role: str = "viewer", limit: int = 8) -> list[dict]:
 
 
 @app.get("/api/v1/skills/{skill_name}")
-def skill_detail(skill_name: str) -> dict[str, str]:
+def skill_detail(skill_name: str) -> dict[str, Any]:
     """返回指定 Skill 的名称、描述和完整内容。"""
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
     for item in registry.load():
