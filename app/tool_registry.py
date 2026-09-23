@@ -74,9 +74,9 @@ class ToolDefinition:
     custom: bool = False
 
 
-# 当前内置白名单共 12 个工具；用户自定义查询工具保存在 SQLite 中，与内置目录动态合并。
+# 当前内置白名单共 20 个工具；用户自定义查询工具保存在 SQLite 中，与内置目录动态合并。
 TOOLS = (
-    # ---------- AUTO 只读工具（9 个）----------
+    # ---------- AUTO 只读工具（17 个）----------
     # 只读查询，可直接执行，不改变任何业务状态。
     ToolDefinition("asset_lookup", "查询离线与维护中的设备资产", "auto", "资产"),
     ToolDefinition("alert_query", "查询最近的未关闭告警", "auto", "告警"),
@@ -87,6 +87,14 @@ TOOLS = (
     ToolDefinition("approval_queue", "查看待处理和最近审批单状态", "auto", "审批"),
     ToolDefinition("audit_recent", "查看最近关键操作的审计轨迹", "auto", "审计"),
     ToolDefinition("metric_catalog", "检索已接入的指标定义与数据来源", "auto", "可观测性"),
+    ToolDefinition("asset_status_summary", "统计各区域设备状态分布", "auto", "资产"),
+    ToolDefinition("asset_owner_summary", "统计各负责人名下的设备数量", "auto", "资产"),
+    ToolDefinition("alert_severity_summary", "统计不同级别和状态的告警数量", "auto", "告警"),
+    ToolDefinition("recent_p1_alerts", "查看最近的 P1 级告警", "auto", "告警"),
+    ToolDefinition("ticket_priority_summary", "统计各优先级和状态的工单数量", "auto", "工单"),
+    ToolDefinition("unassigned_tickets", "查看尚未分配负责人的未关闭工单", "auto", "工单"),
+    ToolDefinition("work_order_status_summary", "统计运维作业的状态和类型分布", "auto", "作业"),
+    ToolDefinition("latest_metric_samples", "查看最近采集的指标样本", "auto", "可观测性"),
 
     # ---------- MANUAL 工具（2 个）----------
     # 会改变生产状态，必须走审批流程，不能在 Agent 中直接执行。
@@ -215,6 +223,40 @@ def invoke(name: str, query: str = "", arguments: dict[str, Any] | None = None) 
         "work_order_query": (
             "SELECT id, asset_id, action, status, created_at FROM work_orders "
             "WHERE status != 'completed' ORDER BY created_at DESC LIMIT 20;"
+        ),
+        "asset_status_summary": (
+            "SELECT region, status, COUNT(*) AS asset_count FROM assets "
+            "GROUP BY region, status ORDER BY region, status;"
+        ),
+        "asset_owner_summary": (
+            "SELECT owner, COUNT(*) AS asset_count FROM assets "
+            "GROUP BY owner ORDER BY asset_count DESC, owner LIMIT 100;"
+        ),
+        "alert_severity_summary": (
+            "SELECT severity, status, COUNT(*) AS alert_count FROM alerts "
+            "GROUP BY severity, status ORDER BY severity, status;"
+        ),
+        "recent_p1_alerts": (
+            "SELECT id, severity, title, status, created_at FROM alerts "
+            "WHERE UPPER(severity) = 'P1' ORDER BY created_at DESC LIMIT 20;"
+        ),
+        "ticket_priority_summary": (
+            "SELECT priority, status, COUNT(*) AS ticket_count FROM tickets "
+            "GROUP BY priority, status ORDER BY priority, status;"
+        ),
+        "unassigned_tickets": (
+            "SELECT id, priority, title, status, created_at FROM tickets "
+            "WHERE status != 'closed' AND (assignee IS NULL OR TRIM(assignee) = '') "
+            "ORDER BY created_at DESC LIMIT 20;"
+        ),
+        "work_order_status_summary": (
+            "SELECT status, action, COUNT(*) AS work_order_count FROM work_orders "
+            "GROUP BY status, action ORDER BY status, action;"
+        ),
+        "latest_metric_samples": (
+            "SELECT md.id AS metric_id, md.name, md.category, md.unit, ms.observed_at, ms.value "
+            "FROM metric_samples AS ms JOIN metric_definitions AS md ON md.id = ms.metric_id "
+            "ORDER BY ms.observed_at DESC LIMIT 20;"
         ),
     }
 

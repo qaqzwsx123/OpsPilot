@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpsPilot · 安全可控 SQL Agent</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260923-tool-category-select" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260923-tools-20-pagination" />
 </head>
 <body>
   <!-- 左侧导航只负责切换视图；每个业务动作仍通过后端 API 完成权限校验。 -->
@@ -184,6 +184,11 @@
           <pre id="tool-result" class="tool-result"></pre>
         </section>
         <div id="tool-list" class="tool-grid"></div>
+        <div id="tool-pagination" class="tool-pagination" hidden>
+          <button id="prev-tools" class="text-button" type="button">← 上一页</button>
+          <span id="tool-page-note">—</span>
+          <button id="next-tools" class="text-button" type="button">下一页 →</button>
+        </div>
         <article class="card capability-history"><div class="card-heading"><div><p class="section-label">TOOL ACTIVITY</p><h3>最近工具调用</h3></div><button id="refresh-tool-history" class="text-button">刷新</button></div><div id="tool-history-list" class="capability-history-list"></div></article>
       </section>
     </main>
@@ -208,6 +213,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260923-tool-category-select"></script>
+  <script src="/static/app.js?v=20260923-tools-20-pagination"></script>
 </body>
 </html>

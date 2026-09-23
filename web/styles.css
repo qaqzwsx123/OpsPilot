@@ -63,3 +63,6 @@
 .audit-row:not(.selectable){grid-template-columns:minmax(190px,220px) minmax(0,1fr) minmax(160px,170px) 52px;grid-template-areas:"action payload time delete"}.audit-row:not(.selectable) .audit-select-cell{display:none}
 @media(max-width:680px){.audit-row:not(.selectable){grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"action action" "payload payload" "time delete"}}
 .tool-result-panel{margin:0 0 16px;border:1px solid #dfe3ef;border-radius:11px;overflow:hidden;background:#fff}.tool-result-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 13px;color:#526078;font-size:11px}.tool-result-heading .text-button{margin:0}.tool-result-panel .tool-result{max-height:min(62vh,680px);overflow:auto;margin:0;border-radius:0;overscroll-behavior:contain}.tool-result-panel.collapsed .tool-result{display:none}.tool-result-panel[hidden]{display:none}
+.tool-pagination{display:flex;align-items:center;justify-content:flex-end;gap:13px;margin:0 0 18px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;color:var(--muted)}.tool-pagination[hidden]{display:none}.tool-pagination button:disabled{opacity:.4;cursor:not-allowed}
+@media(max-width:1050px){.tool-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){.tool-grid{grid-template-columns:1fr}.tool-pagination{gap:8px;font-size:10px}}

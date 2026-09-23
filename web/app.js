@@ -22,6 +22,8 @@ let allSkills = [];
 let allTools = [];
 let customToolSchema = [];
 const recordPageSize = 10;
+const toolPageSize = 6;
+let toolPage = 0;
 const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
 
@@ -922,8 +924,10 @@ $("#browse-chroma").addEventListener("click", openChromaBrowser);
 $("#skill-filter").addEventListener("change", renderSkills);
 $("#skill-risk-filter").addEventListener("change", renderSkills);
 $("#refresh-skill-history").addEventListener("click", loadSkillHistory);
-$("#tool-category-filter").addEventListener("change", renderTools);
-$("#tool-risk-filter").addEventListener("change", renderTools);
+$("#tool-category-filter").addEventListener("change", () => { toolPage = 0; renderTools(); });
+$("#tool-risk-filter").addEventListener("change", () => { toolPage = 0; renderTools(); });
+$("#prev-tools").addEventListener("click", () => { toolPage = Math.max(0, toolPage - 1); renderTools(); });
+$("#next-tools").addEventListener("click", () => { toolPage += 1; renderTools(); });
 $("#refresh-tool-history").addEventListener("click", loadToolHistory);
 $("#toggle-tool-result").addEventListener("click", toggleToolResult);
 $("#add-custom-tool").addEventListener("click", openCustomToolForm);
@@ -1318,7 +1322,16 @@ function renderTools() {
   const risk = $("#tool-risk-filter").value;
   const tools = allTools.filter((tool) => (!category || tool.category === category) && (!risk || tool.risk === risk));
   $("#tool-count-note").textContent = "显示 " + tools.length + " / " + allTools.length + " 个工具";
-  target.innerHTML = tools.map((tool) => {
+  const pageCount = Math.max(1, Math.ceil(tools.length / toolPageSize));
+  toolPage = Math.min(toolPage, pageCount - 1);
+  const start = toolPage * toolPageSize;
+  const pageTools = tools.slice(start, start + toolPageSize);
+  const pagination = $("#tool-pagination");
+  pagination.hidden = tools.length <= toolPageSize;
+  $("#tool-page-note").textContent = "第 " + (toolPage + 1) + " 页 / 共 " + pageCount + " 页 · 显示 " + (tools.length ? start + 1 : 0) + "–" + Math.min(start + toolPageSize, tools.length) + " / " + tools.length + " 个";
+  $("#prev-tools").disabled = toolPage === 0;
+  $("#next-tools").disabled = toolPage >= pageCount - 1;
+  target.innerHTML = pageTools.map((tool) => {
     const filterInputs = tool.custom ? '<div class="tool-run-fields">' + (tool.filters || []).map((filter) => '<label>' + escapeHtml(filter.column) + '<span><select data-tool-operator="' + escapeHtml(filter.column) + '">' + filter.operators.map((operator) => '<option value="' + escapeHtml(operator) + '">' + escapeHtml(operator === "contains" ? "包含" : operator) + '</option>').join("") + '</select><input data-tool-value="' + escapeHtml(filter.column) + '" placeholder="可选" /></span></label>').join("") + '</div>' : '';
     const deleteAction = tool.custom && currentRole() === "approver" ? '<button class="text-button custom-tool-delete" data-delete-custom-tool="' + escapeHtml(tool.name) + '">删除定义</button>' : '';
     return '<article class="card tool-card' + (tool.custom ? ' custom-tool-card' : '') + '"><span class="risk ' + escapeHtml(tool.risk) + '">' + escapeHtml(tool.risk.toUpperCase()) + '</span><p class="section-label">' + escapeHtml(tool.category) + (tool.custom ? ' · 自定义' : '') + '</p><h3>' + escapeHtml(tool.name) + '</h3><p>' + escapeHtml(tool.description) + '</p>' + filterInputs + '<div class="tool-card-actions"><button class="text-button" data-tool="' + escapeHtml(tool.name) + '">试运行工具</button>' + deleteAction + '</div></article>';
@@ -1352,6 +1365,7 @@ async function loadTools() {
     $("#add-custom-tool").hidden = currentRole() !== "approver";
     const categories = [...new Set(allTools.map((tool) => tool.category))];
     $("#tool-category-filter").innerHTML = '<option value="">全部分类</option>' + categories.map((item) => '<option value="' + escapeHtml(item) + '">' + escapeHtml(item) + '</option>').join("");
+    toolPage = 0;
     renderToolSummary(); renderTools(); loadToolHistory();
   } catch { $("#tool-list").innerHTML = '<div class="empty-state"><strong>工具中心加载失败</strong></div>'; }
 }
