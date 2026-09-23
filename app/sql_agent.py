@@ -221,8 +221,50 @@ class RuleBasedSqlWriter:
         if any(phrase in q for phrase in ["如何处理", "怎么处理", "处理流程", "sop", "排障步骤", "规范"]):
             return None
 
-        # 写操作意图：返回示例 DELETE，由 Reviewer 和审批流程拦截。
-        if any(word in q for word in ["删除", "清空", "更新", "修改", "写入"]):
+        # 明确写操作意图优先于 SQL 生成；避免把“最近更新的工单”等只读问题误判为写入。
+        explicit_assignment = re.search(
+            r"(?:将|把).{0,35}(?:标记为|设为|设成|设置为|改为|改成|更新为|设置成)", q,
+        )
+        direct_status_change = re.search(
+            r"(?:更新|修改|更改).{0,18}(?:状态|字段|数据|为|成)|"
+            r"^(?:请|帮我|帮忙)?(?:关闭|完成|启用|禁用)(?:工单|告警|设备|资产)|"
+            r"(?:将|把).{0,35}(?:关闭|完成|启用|禁用)", q,
+        )
+        if "删除" in q or "清空" in q or explicit_assignment or direct_status_change:
+            if "工单" in q:
+                ticket_id = re.search(r"工单\s*#?\s*(\d+)", question)
+                where = f"id = {ticket_id.group(1)}" if ticket_id else "status != 'closed'"
+                if "删除" in q or "清空" in q:
+                    return GeneratedSql(
+                        f"DELETE FROM tickets WHERE {where};",
+                        "write_request", 0.9, ["tickets"],
+                    )
+                status = "closed" if any(word in q for word in ["关闭", "完成"]) else "in_progress"
+                return GeneratedSql(
+                    f"UPDATE tickets SET status = '{status}' WHERE {where};",
+                    "write_request", 0.9, ["tickets"],
+                )
+            if "设备" in q or "资产" in q:
+                if "删除" in q or "清空" in q:
+                    return GeneratedSql(
+                        "DELETE FROM assets WHERE status != 'online';",
+                        "write_request", 0.85, ["assets"],
+                    )
+                status = "offline" if any(word in q for word in ["离线", "下线"]) else "maintenance"
+                return GeneratedSql(
+                    f"UPDATE assets SET status = '{status}' WHERE status != '{status}';",
+                    "write_request", 0.85, ["assets"],
+                )
+            if "告警" in q or "报警" in q:
+                if "删除" in q or "清空" in q:
+                    return GeneratedSql(
+                        "DELETE FROM alerts WHERE status = 'closed';",
+                        "write_request", 0.85, ["alerts"],
+                    )
+                return GeneratedSql(
+                    "UPDATE alerts SET status = 'closed' WHERE status != 'closed';",
+                    "write_request", 0.85, ["alerts"],
+                )
             return GeneratedSql(
                 "DELETE FROM alerts WHERE status = 'closed';",
                 "write_request", 0.75, ["alerts"],
@@ -239,11 +281,28 @@ class RuleBasedSqlWriter:
                 "metric_trend", 0.9, ["metric_definitions", "metric_samples"],
             )
 
+        # 最近指标样本查询，先于通用指标目录意图识别。
+        if "指标" in q and any(word in q for word in ["最近", "最新", "样本", "采集", "趋势"]):
+            return GeneratedSql(
+                "SELECT md.id AS metric_id, md.name, md.category, md.unit, ms.observed_at, ms.value "
+                "FROM metric_samples AS ms JOIN metric_definitions AS md ON md.id = ms.metric_id "
+                "ORDER BY ms.observed_at DESC LIMIT 20;",
+                "latest_metric_samples", 0.88, ["metric_definitions", "metric_samples"],
+            )
+
         # 指标目录查询。
         if "指标目录" in q or ("指标" in q and "查询" in q):
             return GeneratedSql(
                 "SELECT id, name, category, unit, asset_scope FROM metric_definitions ORDER BY id LIMIT 30;",
                 "metric_catalog", 0.84, ["metric_definitions"],
+            )
+
+        # 设备状态/区域汇总。
+        if any(word in q for word in ["设备", "资产"]) and any(word in q for word in ["统计", "汇总", "分布"]) and any(word in q for word in ["状态", "区域", "在线", "离线"]):
+            return GeneratedSql(
+                "SELECT region, status, COUNT(*) AS asset_count FROM assets "
+                "GROUP BY region, status ORDER BY region, status LIMIT 100;",
+                "asset_status_summary", 0.88, ["assets"],
             )
 
         # 各区域离线设备统计：必须在通用离线查询之前判断，避免被后者覆盖。
@@ -303,6 +362,15 @@ class RuleBasedSqlWriter:
                 f"SELECT id, priority, title, status, assignee, created_at FROM tickets{clause} "
                 "ORDER BY created_at DESC LIMIT 20;",
                 "list_tickets", 0.88, ["tickets"],
+            )
+
+        # 运维作业列表，结构与 work_order_query 工具保持一致。
+        if "作业" in q or "待执行" in q:
+            where = " WHERE status != 'completed'" if any(word in q for word in ["待执行", "未完成", "未关闭"]) else ""
+            return GeneratedSql(
+                "SELECT id, asset_id, action, status, created_at FROM work_orders" + where +
+                " ORDER BY created_at DESC LIMIT 20;",
+                "list_work_orders", 0.86, ["work_orders"],
             )
 
         # 未匹配任何已知意图。

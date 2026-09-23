@@ -195,6 +195,12 @@ class ResilientSqlWriter:
         - 模型不可用时保留可运行的离线演示能力；
         - 不因模型异常而向上抛出，避免影响主流程稳定性。
         """
+        # 明确写操作由本地安全规则优先识别，不能让模型将变更请求改写成可自动执行的 SELECT。
+        guarded = self.fallback.generate(question, tables, tool_context)
+        if guarded and guarded.intent == "write_request":
+            self.last_provider = "safety_guard"
+            return guarded
+
         # 模型不可用时保留可运行的离线演示能力，同时记录实际 provider。
         if self.llm:
             generated = self.llm.generate(question, tables, tool_context)

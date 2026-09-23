@@ -24,6 +24,18 @@ from app.tool_planner import ToolPlanner, ToolSelection, classify_query_intent, 
 EventHandler = Callable[[WorkflowEvent], None]
 
 
+def _data_question_from_mixed_intent(question: str) -> str:
+    """从“查数据并说明处置办法”中提取 SQL Writer 应处理的数据部分。"""
+    markers = (
+        "，并按", ",并按", "并按", "，并根据", ",并根据", "并根据",
+        "，并说明", ",并说明", "并说明", "，并告诉我", ",并告诉我", "并告诉我",
+        "，并解释", ",并解释", "并解释", "并介绍", "并给出", "，并说", ",并说", "并说",
+        "，同时说明", ",同时说明", "同时说明", "以及如何", "以及怎么", "；按", ";按",
+    )
+    split_at = min((position for marker in markers if (position := question.find(marker)) > 0), default=-1)
+    return question[:split_at].rstrip(" ，,；;") if split_at > 0 else question
+
+
 class WorkflowState(TypedDict, total=False):
     """LangGraph 工作流的状态字典，在各节点之间传递。
 
@@ -360,7 +372,12 @@ class SqlAgentGraph:
             item for item in state.get("tool_context", [])
             if item.get("tool") != "knowledge_search"
         ]
-        generated = self.writer.generate(state["question"], state["candidates"], writer_context)
+        writer_question = state["question"]
+        needs_knowledge, needs_data = classify_query_intent(writer_question)
+        if needs_knowledge and needs_data:
+            # 已有知识工具负责 SOP 证据；SQL Writer 只解析数据子问题，避免混合句被误判为纯知识问答。
+            writer_question = _data_question_from_mixed_intent(writer_question)
+        generated = self.writer.generate(writer_question, state["candidates"], writer_context)
         if generated is None:
             # 无法生成可靠 SQL，切换到运维知识库
             events = self._emit(state, "rag", "无法生成可靠 SQL，切换到运维知识库")
@@ -497,7 +514,19 @@ class SqlAgentGraph:
         write_audit(state["requester"], "sql_executed", {"question": state["question"], "sql": sql, "row_count": len(rows)})
         tool_summary = state.get("tool_summary", "")
         answer = (tool_summary + "\n\n" if tool_summary else "") + f"查询完成，共返回 {len(rows)} 条记录。"
-        result = QueryResult("completed", answer, sql=sql, rows=rows, events=events)
+        sources = []
+        for evidence in state.get("tool_context", []):
+            if evidence.get("tool") != "knowledge_search":
+                continue
+            for document in evidence.get("sample", [])[:3]:
+                if not isinstance(document, dict) or not document.get("title"):
+                    continue
+                title = str(document["title"])
+                chunk_index = document.get("chunk_index")
+                source = f"{title} · 片段 {chunk_index + 1}" if isinstance(chunk_index, int) else title
+                if source not in sources:
+                    sources.append(source)
+        result = QueryResult("completed", answer, sql=sql, rows=rows, sources=sources, events=events)
         return {"events": events, "result": result}
 
     def _rag(self, state: WorkflowState) -> dict[str, Any]:

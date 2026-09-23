@@ -61,7 +61,7 @@ const pageGuides = {
     { title:"查看记录", text:"记录按时间倒序分页展示，每页 10 条，并显示总数。刷新只读取最新审计数据。" },
     { title:"验证完整性", text:"“验证完整性”会弹出范围选择：可校验全量 SHA-256 哈希链，或快速校验最近 100 条及前序锚点；发现断裂时应停止依赖该链进行合规判断。" },
     { title:"删除记录", text:"切换为值班负责人后，每条记录会出现“删除”按钮，也可以使用“按时间清理”选择开始时间和结束时间，批量删除该闭区间内的记录。删除前会先预览数量并二次确认；维护动作记录在独立日志中，不会再次占用审计记录列表。" },
-    { title:"离线评测", text:"“运行评测”可选择 5 条内置基线、全部用例或勾选的用例。运维工程师可新增自定义“问题 + 预期状态”用例；评测不会修改业务表。" }
+    { title:"离线评测", text:"“运行评测”可选择 21 条内置回归用例、全部用例或勾选的用例，检查实时数据、知识库、混合路由、工具调用和审批拦截。运维工程师可新增自定义“问题 + 预期状态”用例；写操作用例会创建待审批记录，不会直接修改业务表。" }
   ] },
   approval: { eyebrow:"HUMAN IN THE LOOP", title:"审批中心使用说明", lead:"审批中心承接 SQL 写操作和 MANUAL 工具请求。它让高风险变更必须经过人工确认，而非由 Agent 自动执行。", sections:[
     { title:"审批前检查", text:"待审批记录会显示请求 SQL、影响预估、抽样结果和有效期，便于判断是否应放行。" },
@@ -772,7 +772,8 @@ function expectedStatusLabel(status) {
 }
 
 function evaluationCasesMarkup(cases) {
-  return cases.map((item) => '<label class="evaluation-case"><input type="checkbox" data-evaluation-case value="' + escapeHtml(item.id) + '" checked /><span><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.question) + '</small></span><em class="evaluation-source ' + escapeHtml(item.source) + '">' + (item.source === "baseline" ? "内置基线" : "自定义") + '</em><b>期望：' + escapeHtml(expectedStatusLabel(item.expected_status)) + '</b>' + (item.source === "custom" ? '<button type="button" class="evaluation-delete" data-delete-evaluation-case="' + escapeHtml(item.id) + '">删除</button>' : "") + '</label>').join("");
+  const categoryLabels = {data:"实时数据", knowledge:"知识库", mixed:"数据 + 知识", safety:"安全审批", custom:"自定义"};
+  return cases.map((item) => { const category = categoryLabels[item.category] || "自定义"; const label = item.source === "baseline" ? "内置 · " + category : "自定义"; return '<label class="evaluation-case"><input type="checkbox" data-evaluation-case value="' + escapeHtml(item.id) + '" checked /><span><strong>' + escapeHtml(item.name) + '</strong><small>' + escapeHtml(item.question) + '</small></span><em class="evaluation-source ' + escapeHtml(item.source) + '">' + escapeHtml(label) + '</em><b>期望：' + escapeHtml(expectedStatusLabel(item.expected_status)) + '</b>' + (item.source === "custom" ? '<button type="button" class="evaluation-delete" data-delete-evaluation-case="' + escapeHtml(item.id) + '">删除</button>' : "") + '</label>'; }).join("");
 }
 
 async function openEvaluationDialog() {
@@ -785,14 +786,14 @@ async function openEvaluationDialog() {
     const customForm = canManage
       ? '<div class="evaluation-case-form"><h3>新增自定义用例</h3><div class="evaluation-form-grid"><label>用例名称<input id="evaluation-case-name" maxlength="80" placeholder="例如：华东离线资产查询" /></label><label>期望结果<select id="evaluation-case-expected"><option value="completed">完成只读查询</option><option value="answered_by_rag">知识库回答</option><option value="approval_required">创建审批单</option><option value="blocked">策略阻断</option></select></label></div><label>用户问题<textarea id="evaluation-case-question" maxlength="500" placeholder="例如：查询华东区离线设备"></textarea></label><button id="create-evaluation-case" type="button" class="secondary-button">保存到用例库</button></div>'
       : '<div class="action-callout"><strong>观察者为只读模式</strong><span>可运行内置或已有自定义用例；切换为运维工程师后，可新增或删除自定义评测用例。</span></div>';
-    renderAuditAction("运行评测", "EVALUATION CONSOLE", '<p class="modal-lead">评测会实际走一遍当前安全工作流，结果与预期状态逐条比较。写操作类用例只会创建审批单，默认安全模式不会改动业务表。</p><label class="action-field">运行范围<select id="evaluation-scope"><option value="baseline">只运行内置安全基线（5 条）</option><option value="all">运行全部用例（含自定义）</option><option value="selected">运行我勾选的用例</option></select></label><div id="evaluation-scope-note" class="action-callout"><strong>内置基线</strong><span>覆盖结构化查询、RAG 回答与危险写请求拦截，用于每次改动后的基础回归。</span></div><div class="evaluation-case-heading"><strong>用例库（' + cases.length + ' 条）</strong><small>仅“运行我勾选的用例”会采用下方勾选项。</small></div><div class="evaluation-case-list">' + evaluationCasesMarkup(cases) + '</div>' + customForm + '<p class="action-footnote">每次运行都会新增审计事件；期望为“创建审批单”的用例还会留下待处理审批单，便于验证人工介入链路。</p>', "运行评测");
+    renderAuditAction("运行评测", "EVALUATION CONSOLE", '<p class="modal-lead">评测会实际走一遍当前工作流，并检查预期状态、关键工具路由和知识来源。写操作类用例只会创建审批单，不会直接修改业务表。</p><label class="action-field">运行范围<select id="evaluation-scope"><option value="baseline">运行完整内置回归集（21 条）</option><option value="all">运行全部用例（含自定义）</option><option value="selected">运行我勾选的用例</option></select></label><div id="evaluation-scope-note" class="action-callout"><strong>完整内置回归集</strong><span>覆盖实时数据、知识库、数据与知识混合问题，以及安全审批；同时检查关键工具路由和知识来源。</span></div><div class="evaluation-case-heading"><strong>用例库（' + cases.length + ' 条）</strong><small>仅“运行我勾选的用例”会采用下方勾选项。</small></div><div class="evaluation-case-list">' + evaluationCasesMarkup(cases) + '</div>' + customForm + '<p class="action-footnote">每次运行都会新增审计事件；两条预期进入审批的内置用例会各创建一张待处理审批单。</p>', "运行评测");
     $("#evaluation-scope").addEventListener("change", (event) => {
       const selected = event.target.value === "selected";
       $("#evaluation-scope-note").innerHTML = selected
         ? "<strong>指定用例</strong><span>只运行当前勾选的用例，适合针对某一条新规则或一次回归失败进行复测。</span>"
         : event.target.value === "all"
           ? "<strong>全部用例</strong><span>运行内置基线和全部自定义用例，适合功能版本验收。</span>"
-          : "<strong>内置基线</strong><span>覆盖结构化查询、RAG 回答与危险写请求拦截，用于每次改动后的基础回归。</span>";
+          : "<strong>完整内置回归集</strong><span>覆盖实时数据、知识库、数据与知识混合问题，以及安全审批，并检查关键工具路由和知识来源。</span>";
     });
     $("#create-evaluation-case")?.addEventListener("click", createEvaluationCase);
     document.querySelectorAll("[data-delete-evaluation-case]").forEach((button) => button.addEventListener("click", () => deleteEvaluationCase(button.dataset.deleteEvaluationCase)));
@@ -830,10 +831,38 @@ async function runEvaluation(scope, caseIds) {
     const report = await response.json();
     if (!response.ok) throw new Error(report.detail || "评测执行失败");
     $("#metric-eval").textContent = report.success_rate + "%";
-    const structuredRate = report.structured_query_pass_rate === null ? "不适用" : report.structured_query_pass_rate + "%";
     const safetyRate = report.high_risk_interception_rate === null ? "不适用" : report.high_risk_interception_rate + "%";
+    const rates = report.category_pass_rates || {};
+    const categoryRate = (key) => rates[key] === null || rates[key] === undefined ? "不适用" : rates[key] + "%";
     const target = $("#evaluation-result"); target.hidden = false; target.className = "evaluation-result";
-    target.innerHTML = '<strong>评测完成：' + report.passed + '/' + report.dataset_size + ' 通过（' + report.success_rate + '%）</strong><span>结构化查询用例通过率 ' + structuredRate + ' · 高风险拦截率 ' + safetyRate + '</span><div class="eval-case-results">' + report.cases.map((item) => '<div class="' + (item.passed ? "passed" : "failed") + '"><b>' + (item.passed ? "✓" : "×") + '</b><span>' + escapeHtml(item.name) + '：期望 ' + escapeHtml(expectedStatusLabel(item.expected)) + '，实际 ' + escapeHtml(expectedStatusLabel(item.actual)) + '</span></div>').join("") + '</div>';
+    const statusLabel = (status) => ({completed:"完成", answered_by_rag:"知识库回答", approval_required:"进入审批", blocked:"被策略阻断", failed:"执行失败"})[status] || status || "无状态";
+    const listMarkup = (items, emptyText) => items && items.length
+      ? '<ul>' + items.map((value) => '<li>' + escapeHtml(typeof value === "string" ? value : JSON.stringify(value)) + '</li>').join("") + '</ul>'
+      : '<p class="eval-empty">' + escapeHtml(emptyText) + '</p>';
+    const preMarkup = (value) => '<pre>' + escapeHtml(typeof value === "string" ? value : JSON.stringify(value, null, 2)) + '</pre>';
+    const caseMarkup = (item) => {
+      const expected = item.expected_output || {status:item.expected, required_tools:item.required_tools || [], forbidden_tools:item.forbidden_tools || [], minimum_sources:item.require_sources ? 1 : 0, description:"达到用例预期状态"};
+      const actual = item.actual_output || {status:item.actual, tools:item.actual_tools || [], tool_statuses:item.tool_statuses || {}, row_count:0, rows_preview:[], sources:[]};
+      const actualTools = (actual.tools || []).map((name) => {
+        const toolStatus = actual.tool_statuses && actual.tool_statuses[name];
+        const toolStatusLabel = ({completed:"成功", failed:"失败", blocked:"拦截"})[toolStatus] || toolStatus;
+        return name + (toolStatus ? "（" + toolStatusLabel + "）" : "");
+      });
+      const resultChecks = item.passed
+        ? listMarkup(item.passed_reasons || [], "所有断言均通过。")
+        : listMarkup(item.checks || [], "存在未通过断言，但服务端未提供具体原因。");
+      const sourceItems = (actual.sources || []).map((source) => typeof source === "string" ? source : (source.title || source.name || JSON.stringify(source)));
+      const expectedPanel = '<section class="eval-compare-panel expected"><h4>预期输出</h4><dl><dt>预期状态</dt><dd>' + escapeHtml(expectedStatusLabel(expected.status)) + '</dd><dt>评测目标</dt><dd>' + escapeHtml(expected.description || "") + '</dd><dt>必须调用工具</dt><dd>' + escapeHtml((expected.required_tools || []).join("、") || "无") + '</dd><dt>禁止调用工具</dt><dd>' + escapeHtml((expected.forbidden_tools || []).join("、") || "无") + '</dd><dt>最少文档来源</dt><dd>' + Number(expected.minimum_sources || 0) + ' 个</dd></dl></section>';
+      const actualPanel = '<section class="eval-compare-panel actual"><h4>实际输出</h4><dl><dt>实际状态</dt><dd>' + escapeHtml(statusLabel(actual.status)) + '</dd><dt>实际调用工具</dt><dd>' + escapeHtml(actualTools.join("、") || "未调用工具") + '</dd><dt>返回数据行数</dt><dd>' + Number(actual.row_count || 0) + ' 行</dd><dt>文档来源</dt><dd>' + (sourceItems.length ? listMarkup(sourceItems, "无文档来源") : '<span>无（本用例未必要求知识库）</span>') + '</dd></dl>' + (actual.sql ? '<h5>执行 SQL</h5>' + preMarkup(actual.sql) : '') + (actual.rows_preview && actual.rows_preview.length ? '<h5>返回数据样例（最多 3 行）</h5>' + preMarkup(actual.rows_preview) : '') + (actual.answer_preview ? '<h5>回答内容（截取前 600 字）</h5><div class="eval-answer-preview">' + escapeHtml(actual.answer_preview) + '</div>' : '') + (actual.approval_id ? '<p class="eval-approval-id">审批单：' + escapeHtml(actual.approval_id) + '</p>' : '') + '</section>';
+      const question = item.question ? '<p class="eval-case-question">问题：' + escapeHtml(item.question) + '</p>' : '';
+      return '<details class="eval-case-detail ' + (item.passed ? "passed" : "failed") + '"><summary><b>' + (item.passed ? "✓" : "×") + '</b><span class="eval-case-title">' + escapeHtml(item.name) + '</span><span class="eval-case-outcome">预期 ' + escapeHtml(expectedStatusLabel(expected.status)) + ' · 实际 ' + escapeHtml(statusLabel(actual.status)) + (actual.tools && actual.tools.length ? ' · 工具 ' + escapeHtml(actual.tools.join("、")) : '') + '</span><span class="eval-case-expand">查看详情</span></summary><div class="eval-case-detail-body">' + question + '<div class="eval-compare-grid">' + expectedPanel + actualPanel + '</div><section class="eval-assertions"><h4>' + (item.passed ? "通过依据" : "未通过原因") + '</h4>' + resultChecks + '</section></div></details>';
+    };
+    const failedCases = report.cases.filter((item) => !item.passed);
+    const previewCases = failedCases.length ? failedCases : report.cases.slice(0, Math.min(3, report.cases.length));
+    const hasHiddenCases = previewCases.length < report.cases.length;
+    target.innerHTML = '<strong>评测完成：' + report.passed + '/' + report.dataset_size + ' 通过（' + report.success_rate + '%）</strong><span>数据 ' + categoryRate("data") + ' · 知识库 ' + categoryRate("knowledge") + ' · 混合问题 ' + categoryRate("mixed") + ' · 安全审批 ' + categoryRate("safety") + '（高风险拦截率 ' + safetyRate + '）</span><div class="eval-case-results" id="evaluation-preview-cases">' + previewCases.map(caseMarkup).join("") + '</div>' + (hasHiddenCases ? '<div class="eval-case-results" id="evaluation-all-cases" hidden>' + report.cases.map(caseMarkup).join("") + '</div><button type="button" class="eval-results-toggle" id="evaluation-details-toggle" aria-expanded="false">查看全部 ' + report.dataset_size + ' 条结果</button>' : '');
+    const detailsToggle = $("#evaluation-details-toggle");
+    detailsToggle?.addEventListener("click", () => { const details = $("#evaluation-all-cases"); const preview = $("#evaluation-preview-cases"); details.hidden = !details.hidden; preview.hidden = !details.hidden; detailsToggle.setAttribute("aria-expanded", String(!details.hidden)); detailsToggle.textContent = details.hidden ? "查看全部 " + report.dataset_size + " 条结果" : "收起完整结果"; });
     toast("评测已完成"); loadAudit(); loadMetrics();
   } catch (error) { toast(error.message || "评测执行失败"); }
   finally { button.disabled = false; button.textContent = "运行评测"; }
