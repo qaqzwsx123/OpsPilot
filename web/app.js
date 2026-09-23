@@ -19,11 +19,13 @@ let knowledgeRecordCache = new Map();
 let chatConversationId = "";
 let chatConversations = [];
 let allSkills = [];
+let skillPage = 0;
 let allTools = [];
 let customToolSchema = [];
 const recordPageSize = 10;
 const toolPageSize = 6;
 let toolPage = 0;
+const skillPageSize = 4;
 const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
 
@@ -384,14 +386,25 @@ function renderSkills() {
   const kind = $("#skill-filter").value;
   const risk = $("#skill-risk-filter").value;
   const skills = allSkills.filter((skill) => (!kind || skill.runnable) && (!risk || skill.risk === risk));
-  $("#skill-count-note").textContent = "显示 " + skills.length + " / " + allSkills.length + " 个运维流程";
-  target.innerHTML = skills.length ? skills.map((skill, index) => {
+  const totalPages = Math.max(1, Math.ceil(skills.length / skillPageSize));
+  skillPage = Math.min(skillPage, totalPages - 1);
+  const pageStart = skillPage * skillPageSize;
+  const visibleSkills = skills.slice(pageStart, pageStart + skillPageSize);
+  const shownStart = skills.length ? pageStart + 1 : 0;
+  const shownEnd = Math.min(pageStart + skillPageSize, skills.length);
+  $("#skill-count-note").textContent = "显示 " + shownStart + "–" + shownEnd + " / " + skills.length + " 个运维流程（共 " + allSkills.length + " 个）";
+  target.innerHTML = skills.length ? visibleSkills.map((skill, index) => {
       const suggestions = (skill.suggestions || []).map((item) => '<button class="skill-suggestion" data-run-skill="' + escapeHtml(skill.name) + '" data-skill-input="' + escapeHtml(item) + '">' + escapeHtml(item) + '</button>').join("");
       const toolNames = (skill.tools || []).map(escapeHtml).join("、") || "无工具依赖（规则评审流程）";
       const triggers = (skill.triggers || []).map((item) => '<span class="skill-trigger">' + escapeHtml(item) + '</span>').join("");
       const steps = (skill.steps || []).map((item) => '<li>' + escapeHtml(item) + '</li>').join("");
-      return `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><span class="skill-risk ${escapeHtml(skill.risk || "auto")}">${escapeHtml((skill.category || "通用") + " · " + (skill.risk || "auto").toUpperCase())}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维流程")}</p><div class="skill-flow-meta"><strong>触发场景</strong><div>${triggers || "需手动运行"}</div><strong>需要输入</strong><p>${escapeHtml(skill.required_input || "无需额外参数")}</p><strong>依赖工具</strong><p>${toolNames}</p><strong>执行步骤</strong><ol>${steps}</ol><strong>结果包含</strong><p>${escapeHtml(skill.output || "结构化流程结果")}</p></div><div class="skill-suggestions">${suggestions}</div><div class="skill-actions"><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看流程定义</button><button class="primary-button skill-run" data-run-skill="${escapeHtml(skill.name)}">运行流程 ↗</button></div></article>`;
+      return `<article class="card skill-card"><span class="skill-symbol">${(pageStart + index) % 2 ? "⌘" : "◈"}</span><span class="skill-risk ${escapeHtml(skill.risk || "auto")}">${escapeHtml((skill.category || "通用") + " · " + (skill.risk || "auto").toUpperCase())}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维流程")}</p><div class="skill-flow-meta"><strong>触发场景</strong><div>${triggers || "需手动运行"}</div><strong>需要输入</strong><p>${escapeHtml(skill.required_input || "无需额外参数")}</p><strong>依赖工具</strong><p>${toolNames}</p><strong>执行步骤</strong><ol>${steps}</ol><strong>结果包含</strong><p>${escapeHtml(skill.output || "结构化流程结果")}</p></div><div class="skill-suggestions">${suggestions}</div><div class="skill-actions"><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看流程定义</button><button class="primary-button skill-run" data-run-skill="${escapeHtml(skill.name)}">运行流程 ↗</button></div></article>`;
   }).join("") : "<div class='empty-state'><strong>没有符合筛选条件的运维流程</strong><p>调整风险筛选后重试。</p></div>";
+  const pagination = $("#skill-pagination");
+  pagination.hidden = skills.length <= skillPageSize;
+  pagination.innerHTML = '<button type="button" class="text-button" data-skill-page="prev" ' + (skillPage === 0 ? "disabled" : "") + '>← 上一页</button><span>第 ' + (skillPage + 1) + ' / ' + totalPages + ' 页 · 每页 ' + skillPageSize + ' 个</span><button type="button" class="text-button" data-skill-page="next" ' + (skillPage >= totalPages - 1 ? "disabled" : "") + '>下一页 →</button>';
+  pagination.querySelector('[data-skill-page="prev"]')?.addEventListener("click", () => { if (skillPage > 0) { skillPage -= 1; renderSkills(); } });
+  pagination.querySelector('[data-skill-page="next"]')?.addEventListener("click", () => { if (skillPage < totalPages - 1) { skillPage += 1; renderSkills(); } });
   document.querySelectorAll("[data-skill]").forEach((button) => button.addEventListener("click", () => viewSkill(button.dataset.skill)));
   document.querySelectorAll("[data-run-skill]").forEach((button) => button.addEventListener("click", () => runSkill(button.dataset.runSkill, button.dataset.skillInput || "")));
 }
@@ -957,8 +970,8 @@ $("#next-knowledge").addEventListener("click", () => { knowledgeOffset += knowle
 $("#search-knowledge").addEventListener("click", searchKnowledge);
 $("#reindex-knowledge").addEventListener("click", reindexKnowledge);
 $("#browse-chroma").addEventListener("click", openChromaBrowser);
-$("#skill-filter").addEventListener("change", renderSkills);
-$("#skill-risk-filter").addEventListener("change", renderSkills);
+$("#skill-filter").addEventListener("change", () => { skillPage = 0; renderSkills(); });
+$("#skill-risk-filter").addEventListener("change", () => { skillPage = 0; renderSkills(); });
 $("#refresh-skill-history").addEventListener("click", loadSkillHistory);
 $("#tool-category-filter").addEventListener("change", () => { toolPage = 0; renderTools(); });
 $("#tool-risk-filter").addEventListener("change", () => { toolPage = 0; renderTools(); });
