@@ -1,7 +1,7 @@
 """Agent 工具白名单：统一定义工具描述、风险等级和受控执行入口。
 
 本模块是 OpsPilot 的工具白名单与执行层，核心设计目标：
-1. 用一份 TOOLS 定义同时驱动：工具中心卡片、模型 Function Calling schema、
+1. 内置 TOOLS 与 SQLite 中的自定义只读工具合并驱动工具中心、模型 schema、
    规划器校验和后端执行入口；
 2. 每个工具都带明确 risk 等级，作为后端 invoke 的强制安全边界，而非 UI 标签；
 3. 所有工具调用只能通过 invoke() 入口，便于统一审计和权限控制；
@@ -24,7 +24,10 @@ from typing import Any  # 宽松字典类型标注
 
 # 只读查询和列表接口；所有工具实现都基于这些受控函数，不直接拼接 SQL。
 from app.database import (
+    custom_query_tool_definition,
+    execute_custom_query_tool,
     execute_readonly,             # 执行固定只读 SQL
+    list_custom_query_tools,
     list_approvals,               # 审批列表
     list_audit,                   # 审计列表
     list_knowledge_documents,     # 知识文档列表
@@ -64,9 +67,14 @@ class ToolDefinition:
     # 工具中心的分组名称。
     category: str
 
+    # 自定义工具向 Function Calling 暴露的受限参数结构。
+    parameters: dict[str, Any] | None = None
 
-# 当前白名单共 12 个工具：9 个 AUTO 只读、2 个 MANUAL 需审批、1 个 BLOCKED。
-# 新增工具必须同时补齐定义、执行分支、权限审计和前端使用说明。
+    # 标记是否来自本地数据库配置，而非内置代码目录。
+    custom: bool = False
+
+
+# 当前内置白名单共 12 个工具；用户自定义查询工具保存在 SQLite 中，与内置目录动态合并。
 TOOLS = (
     # ---------- AUTO 只读工具（9 个）----------
     # 只读查询，可直接执行，不改变任何业务状态。
@@ -91,18 +99,44 @@ TOOLS = (
 )
 
 
-def catalog() -> list[dict[str, str]]:
+def catalog() -> list[dict[str, Any]]:
     """返回工具目录，供前端工具中心和模型 Function Calling 使用。
 
     返回：
     - list[dict]：每项包含 name、description、risk、category。
 
-    说明：
-    - 前端工具中心和模型 Function Calling 都从同一份目录生成；
-    - 使用 asdict 把 dataclass 转为字典，便于 JSON 序列化。
+    说明：内置和自定义工具合并成同一份目录，便于 API 与模型共享。
     """
     # 前端工具中心和模型 Function Calling 都从同一份目录生成。
-    return [asdict(tool) for tool in TOOLS]
+    builtin = [asdict(tool) for tool in TOOLS]
+    custom = [{
+        "name": tool["name"], "description": tool["description"], "risk": "auto",
+        "category": tool["category"], "custom": True,
+        "table_name": tool["table_name"], "columns": tool["columns"],
+        "filters": tool["filters"], "max_rows": tool["max_rows"],
+        "parameters": _filter_parameters(tool["filters"]),
+    } for tool in list_custom_query_tools()]
+    return builtin + custom
+
+
+def _filter_parameters(filters: list[dict[str, Any]]) -> dict[str, Any]:
+    """生成仅包含已配置筛选字段和比较符的 JSON Schema。"""
+    properties: dict[str, Any] = {}
+    for item in filters:
+        properties[item["column"]] = {
+            "type": "object",
+            "properties": {
+                "operator": {"type": "string", "enum": item["operators"]},
+                "value": {"type": "string", "description": "筛选值；数值字段也以字符串形式传入"},
+            },
+            "required": ["operator", "value"],
+            "additionalProperties": False,
+        }
+    return {
+        "type": "object",
+        "properties": {"filters": {"type": "object", "properties": properties, "additionalProperties": False}},
+        "additionalProperties": False,
+    }
 
 
 def definition(name: str) -> ToolDefinition | None:
@@ -120,15 +154,25 @@ def definition(name: str) -> ToolDefinition | None:
     - API 层判断工具是否存在；
     - invoke 前置校验工具风险等级。
     """
-    return next((tool for tool in TOOLS if tool.name == name), None)
+    builtin = next((tool for tool in TOOLS if tool.name == name), None)
+    if builtin is not None:
+        return builtin
+    custom_tool = custom_query_tool_definition(name)
+    if custom_tool is None:
+        return None
+    return ToolDefinition(
+        custom_tool["name"], custom_tool["description"], "auto", custom_tool["category"],
+        _filter_parameters(custom_tool["filters"]), True,
+    )
 
 
-def invoke(name: str, query: str = "") -> dict[str, Any]:
+def invoke(name: str, query: str = "", arguments: dict[str, Any] | None = None) -> dict[str, Any]:
     """工具的统一执行入口。
 
     参数：
     - name：工具名；
-    - query：可选查询文本，仅部分工具使用（如 knowledge_search）。
+    - query：可选查询文本，仅部分内置工具使用（如 knowledge_search）；
+    - arguments：模型生成的调用参数，自定义查询只接受配置过的 filters。
 
     返回：
     - dict：统一结构的结果，至少包含 status 和 tool 字段：
@@ -173,6 +217,11 @@ def invoke(name: str, query: str = "") -> dict[str, Any]:
             "WHERE status != 'completed' ORDER BY created_at DESC LIMIT 20;"
         ),
     }
+
+    # 自定义查询工具使用持久化的表/字段白名单和参数化筛选器。
+    if name not in readonly_queries and custom_query_tool_definition(name) is not None:
+        result = execute_custom_query_tool(name, arguments)
+        return result or {"status": "not_found", "tool": name, "message": "工具不存在。"}
 
     # 只读查询工具：走固定 SQL，统一返回 rows。
     if name in readonly_queries:

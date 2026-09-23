@@ -20,6 +20,7 @@ let chatConversationId = "";
 let chatConversations = [];
 let allSkills = [];
 let allTools = [];
+let customToolSchema = [];
 const recordPageSize = 10;
 const knowledgePageSize = 5;
 const currentRole = () => $("#role-selector").value;
@@ -80,11 +81,12 @@ const pageGuides = {
     { title:"试运行", text:"可运行的 Skill 会要求输入本次业务上下文，并返回结构化结论和下一步建议；运行记录会写入审计。" },
     { title:"执行范围", text:"当前内置试运行 Skill 为只读诊断与建议能力，不会直接关闭告警、创建工单或修改数据库。", tone:"blocked" }
   ] },
-  tools: { eyebrow:"TOOL CENTER GUIDE", title:"工具中心使用说明", lead:"工具中心是 Agent 的白名单能力注册表。每张卡片对应一个已经注册、授权并可审计的后端函数，不提供任意命令执行入口。", sections:[
+  tools: { eyebrow:"TOOL CENTER GUIDE", title:"工具中心使用说明", lead:"工具中心是 Agent 的白名单能力注册表。内置工具来自后端代码；值班负责人也可以新增受限的自定义只读查询工具。", sections:[
     { title:"只读工具（AUTO）", text:"点击“试运行工具”会真实调用后端函数、返回结构化结果并写入审计，但不会修改业务数据。", items:["<code>asset_lookup</code>：查询设备资产", "<code>alert_query</code>：查询未关闭告警", "<code>ticket_query</code>：查询运维工单", "<code>work_order_query</code>：查询作业任务", "<code>knowledge_search</code>：检索知识库", "<code>system_health</code>：查看 Agent 服务与数据接入状态"] },
+    { title:"新增自定义只读工具", text:"值班负责人可从资产、告警、工单、作业和指标白名单表中选择返回字段、筛选字段及比较方式。配置保存在本地数据库，并自动加入 Agent 可选工具目录；任意 SQL、审计、聊天、审批和知识正文数据不开放。" },
     { title:"变更工具（MANUAL）", text:"<code>create_work_order</code> 和 <code>close_alert</code> 不会直接改变数据。点击后仅创建审批单；需在审批中心核对影响并处理。", tone:"manual" },
     { title:"禁止工具（BLOCKED）", text:"<code>database_maintenance</code> 等数据库维护、DDL 和多语句操作会被直接拒绝，不执行也不进入审批。", tone:"blocked" }
-  ], roles:["观察者：仅 AUTO", "运维工程师：可发起 MANUAL 审批", "值班负责人：可审批受控变更"] }
+  ], roles:["观察者：仅 AUTO", "运维工程师：可发起 MANUAL 审批", "值班负责人：可审批受控变更并管理自定义只读工具"] }
 };
 const guideExamples = {
   agent: { title:"示例：查询华东 P1 告警关联设备", steps:["在输入框输入 <code>查询华东 P1 告警关联设备</code>。", "点击“运行查询”，观察 Recall、Writer、Reviewer、Risk Guard、Runner 逐步完成。", "点击 Writer 或 Reviewer 的“详情”核对 SQL 与审查结论；结果区会返回关联设备，护栏显示本次为只读自动执行。"] },
@@ -923,6 +925,11 @@ $("#refresh-skill-history").addEventListener("click", loadSkillHistory);
 $("#tool-category-filter").addEventListener("change", renderTools);
 $("#tool-risk-filter").addEventListener("change", renderTools);
 $("#refresh-tool-history").addEventListener("click", loadToolHistory);
+$("#add-custom-tool").addEventListener("click", openCustomToolForm);
+$("#cancel-custom-tool").addEventListener("click", () => { $("#custom-tool-form").hidden = true; });
+$("#custom-tool-table").addEventListener("change", renderCustomToolColumns);
+$("#add-custom-filter").addEventListener("click", addCustomToolFilter);
+$("#save-custom-tool").addEventListener("click", saveCustomTool);
 $("#refresh-approvals").addEventListener("click", () => { approvalOffset = 0; loadApprovals(); });
 $("#prev-approvals").addEventListener("click", () => { approvalOffset = Math.max(0, approvalOffset - recordPageSize); loadApprovals(); });
 $("#next-approvals").addEventListener("click", () => { approvalOffset += recordPageSize; loadApprovals(); });
@@ -1219,14 +1226,101 @@ async function loadDataTable() {
   } catch (error) { $("#data-table-wrap").innerHTML = '<div class="empty-state"><strong>无法加载表数据</strong><p>' + escapeHtml(error.message || "请求失败") + '</p></div>'; }
 }
 
+const customToolOperators = [["=", "等于"], ["!=", "不等于"], [">", "大于"], [">=", "大于等于"], ["<", "小于"], ["<=", "小于等于"], ["contains", "包含"]];
+
+async function openCustomToolForm() {
+  if (currentRole() !== "approver") return toast("只有值班负责人可以新增工具");
+  try {
+    const response = await fetch("/api/v1/tools/query-schema?role=" + encodeURIComponent(currentRole()));
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "无法加载可查询表结构");
+    customToolSchema = result;
+    $("#custom-tool-table").innerHTML = customToolSchema.map((table) => '<option value="' + escapeHtml(table.name) + '">' + escapeHtml(table.label) + '（' + escapeHtml(table.name) + '）</option>').join("");
+    $("#custom-tool-form").hidden = false;
+    $("#custom-tool-filters").innerHTML = "";
+    renderCustomToolColumns();
+    $("#custom-tool-form").scrollIntoView({ behavior:"smooth", block:"start" });
+  } catch (error) { toast(error.message || "加载工具配置失败"); }
+}
+
+function selectedCustomToolTable() {
+  return customToolSchema.find((table) => table.name === $("#custom-tool-table").value);
+}
+
+function renderCustomToolColumns() {
+  const table = selectedCustomToolTable();
+  const target = $("#custom-tool-columns");
+  target.innerHTML = table ? table.columns.map((column) => '<label><input type="checkbox" value="' + escapeHtml(column.name) + '" /> <span>' + escapeHtml(column.name) + '</span><small>' + escapeHtml(column.type || "TEXT") + '</small></label>').join("") : "";
+  document.querySelectorAll(".custom-tool-filter-row").forEach((row) => {
+    row.querySelector("select").innerHTML = (table ? table.columns : []).map((column) => '<option value="' + escapeHtml(column.name) + '">' + escapeHtml(column.name) + '</option>').join("");
+  });
+}
+
+function addCustomToolFilter() {
+  const table = selectedCustomToolTable();
+  if (!table || !table.columns.length) return toast("当前没有可配置的筛选字段");
+  const target = $("#custom-tool-filters");
+  const row = document.createElement("div");
+  row.className = "custom-tool-filter-row";
+  row.innerHTML = '<label class="custom-filter-column-label">筛选字段<select>' + table.columns.map((column) => '<option value="' + escapeHtml(column.name) + '">' + escapeHtml(column.name) + '</option>').join("") + '</select></label><div class="custom-filter-operators">' + customToolOperators.map(([operator, label]) => '<label><input type="checkbox" value="' + escapeHtml(operator) + '"' + (operator === "=" ? " checked" : "") + ' />' + escapeHtml(label) + '</label>').join("") + '</div><button class="text-button custom-filter-remove" type="button">移除</button>';
+  row.querySelector(".custom-filter-remove").addEventListener("click", () => row.remove());
+  target.append(row);
+}
+
+async function saveCustomTool() {
+  if (currentRole() !== "approver") return toast("只有值班负责人可以新增工具");
+  const columns = Array.from(document.querySelectorAll("#custom-tool-columns input:checked"), (input) => input.value);
+  const filters = Array.from(document.querySelectorAll(".custom-tool-filter-row"), (row) => ({
+    column: row.querySelector("select").value,
+    operators: Array.from(row.querySelectorAll(".custom-filter-operators input:checked"), (input) => input.value),
+  }));
+  const payload = {
+    name: $("#custom-tool-name").value.trim(),
+    description: $("#custom-tool-description").value.trim(),
+    category: $("#custom-tool-category").value.trim(),
+    table_name: $("#custom-tool-table").value,
+    columns,
+    filters,
+    max_rows: Number($("#custom-tool-max-rows").value),
+    role: currentRole(), requester: "Lenovo",
+  };
+  const button = $("#save-custom-tool"); button.disabled = true;
+  try {
+    const response = await fetch("/api/v1/tools/custom", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(payload) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "新增工具失败");
+    $("#custom-tool-form").hidden = true;
+    $("#custom-tool-name").value = ""; $("#custom-tool-description").value = ""; $("#custom-tool-category").value = "";
+    toast("只读工具已注册，Agent 可以选择调用");
+    await loadTools(); loadAudit();
+  } catch (error) { toast(error.message || "新增工具失败"); }
+  finally { button.disabled = false; }
+}
+
+async function removeCustomTool(name) {
+  if (currentRole() !== "approver") return toast("只有值班负责人可以删除自定义工具");
+  if (!await showConfirmDialog({ title:"删除自定义工具", eyebrow:"CUSTOM TOOL", message:"确认删除工具“" + name + "”？", detail:"删除后它会立即从工具中心和 Agent 的可选工具目录中移除，已有审计记录仍会保留。", confirmText:"确认删除" })) return;
+  try {
+    const response = await fetch("/api/v1/tools/custom/" + encodeURIComponent(name) + "?role=" + encodeURIComponent(currentRole()) + "&requester=Lenovo", { method:"DELETE" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "删除工具失败");
+    toast("自定义工具已删除"); await loadTools(); loadAudit();
+  } catch (error) { toast(error.message || "删除工具失败"); }
+}
+
 function renderTools() {
   const target = $("#tool-list");
   const category = $("#tool-category-filter").value;
   const risk = $("#tool-risk-filter").value;
   const tools = allTools.filter((tool) => (!category || tool.category === category) && (!risk || tool.risk === risk));
   $("#tool-count-note").textContent = "显示 " + tools.length + " / " + allTools.length + " 个工具";
-  target.innerHTML = tools.map((tool) => '<article class="card tool-card"><span class="risk ' + escapeHtml(tool.risk) + '">' + escapeHtml(tool.risk.toUpperCase()) + '</span><p class="section-label">' + escapeHtml(tool.category) + '</p><h3>' + escapeHtml(tool.name) + '</h3><p>' + escapeHtml(tool.description) + '</p><button class="text-button" data-tool="' + escapeHtml(tool.name) + '">试运行工具</button></article>').join("");
+  target.innerHTML = tools.map((tool) => {
+    const filterInputs = tool.custom ? '<div class="tool-run-fields">' + (tool.filters || []).map((filter) => '<label>' + escapeHtml(filter.column) + '<span><select data-tool-operator="' + escapeHtml(filter.column) + '">' + filter.operators.map((operator) => '<option value="' + escapeHtml(operator) + '">' + escapeHtml(operator === "contains" ? "包含" : operator) + '</option>').join("") + '</select><input data-tool-value="' + escapeHtml(filter.column) + '" placeholder="可选" /></span></label>').join("") + '</div>' : '';
+    const deleteAction = tool.custom && currentRole() === "approver" ? '<button class="text-button custom-tool-delete" data-delete-custom-tool="' + escapeHtml(tool.name) + '">删除定义</button>' : '';
+    return '<article class="card tool-card' + (tool.custom ? ' custom-tool-card' : '') + '"><span class="risk ' + escapeHtml(tool.risk) + '">' + escapeHtml(tool.risk.toUpperCase()) + '</span><p class="section-label">' + escapeHtml(tool.category) + (tool.custom ? ' · 自定义' : '') + '</p><h3>' + escapeHtml(tool.name) + '</h3><p>' + escapeHtml(tool.description) + '</p>' + filterInputs + '<div class="tool-card-actions"><button class="text-button" data-tool="' + escapeHtml(tool.name) + '">试运行工具</button>' + deleteAction + '</div></article>';
+  }).join("");
   document.querySelectorAll("[data-tool]").forEach((button) => button.addEventListener("click", () => invokeTool(button.dataset.tool, button)));
+  document.querySelectorAll("[data-delete-custom-tool]").forEach((button) => button.addEventListener("click", () => removeCustomTool(button.dataset.deleteCustomTool)));
 }
 
 function renderToolSummary() {
@@ -1235,7 +1329,8 @@ function renderToolSummary() {
 }
 
 function renderToolHistory(rows) {
-  $("#tool-history-list").innerHTML = rows.length ? rows.map((row) => '<div><strong>' + escapeHtml(row.payload.tool || "未知工具") + '</strong><span>' + escapeHtml(row.action === "tool_invoked" ? "已完成只读调用" : row.action === "tool_approval_requested" ? "已创建人工审批" : "调用被权限策略拒绝") + '</span><em>' + new Date(row.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</em></div>').join("") : "<div class='empty-state'><strong>暂未调用过工具</strong><p>从上方选择白名单能力进行试运行。</p></div>";
+  const labels = { tool_invoked:"已完成只读调用", tool_approval_requested:"已创建人工审批", tool_access_denied:"调用被权限策略拒绝", custom_tool_created:"已新增自定义工具", custom_tool_deleted:"已删除自定义工具" };
+  $("#tool-history-list").innerHTML = rows.length ? rows.map((row) => '<div><strong>' + escapeHtml(row.payload.tool || "未知工具") + '</strong><span>' + escapeHtml(labels[row.action] || "工具目录事件") + '</span><em>' + new Date(row.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</em></div>').join("") : "<div class='empty-state'><strong>暂无工具活动</strong><p>试运行工具或新增自定义工具后，活动会显示在这里。</p></div>";
 }
 
 async function loadToolHistory() {
@@ -1250,6 +1345,7 @@ async function loadTools() {
   try {
     const response = await fetch("/api/v1/tools"); allTools = await response.json();
     if (!response.ok) throw new Error("加载失败");
+    $("#add-custom-tool").hidden = currentRole() !== "approver";
     const categories = [...new Set(allTools.map((tool) => tool.category))];
     $("#tool-category-filter").innerHTML = '<option value="">全部分类</option>' + categories.map((item) => '<option value="' + escapeHtml(item) + '">' + escapeHtml(item) + '</option>').join("");
     renderToolSummary(); renderTools(); loadToolHistory();
@@ -1259,7 +1355,16 @@ async function loadTools() {
 async function invokeTool(name, button) {
   button.disabled = true; button.textContent = "调用中…";
   try {
-    const response = await fetch("/api/v1/tools/" + encodeURIComponent(name) + "/invoke", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo" }) });
+    const tool = allTools.find((item) => item.name === name);
+    const argumentsPayload = { filters:{} };
+    if (tool && tool.custom) for (const filter of tool.filters || []) {
+      const value = button.closest(".tool-card").querySelector('[data-tool-value="' + CSS.escape(filter.column) + '"]').value.trim();
+      if (value) argumentsPayload.filters[filter.column] = {
+        operator: button.closest(".tool-card").querySelector('[data-tool-operator="' + CSS.escape(filter.column) + '"]').value,
+        value,
+      };
+    }
+    const response = await fetch("/api/v1/tools/" + encodeURIComponent(name) + "/invoke", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", arguments:tool && tool.custom ? argumentsPayload : {} }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "工具调用失败");
     const box = $("#tool-result"); box.hidden = false;

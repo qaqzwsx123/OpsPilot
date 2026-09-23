@@ -28,7 +28,7 @@ from typing import Any  # 宽松字典类型标注
 
 from app.config import settings  # 读取 chat_base_url、chat_model、超时等配置
 from app.context import ContextCompressor  # 为工具规划请求控制证据 Token 预算
-from app.tool_registry import definition, invoke  # 工具定义查询和调用入口
+from app.tool_registry import catalog, definition, invoke  # 工具定义查询和调用入口
 
 
 @dataclass(frozen=True, slots=True)
@@ -266,7 +266,7 @@ class ToolPlanner:
                 query = str(call.arguments.get("query") or question)[:500]
 
                 try:
-                    result = invoke(call.name, query=query)
+                    result = invoke(call.name, query=query, arguments=call.arguments)
                     compact = self._compact(selection, result)
                     # 附加模型调用的元信息，便于审计和前端展示。
                     compact.update({
@@ -343,36 +343,33 @@ class ToolPlanner:
 
         # 构造可用工具列表：存在、只读、未使用过。
         available = [
-            tool for tool in self.rules
-            if definition(tool[0]) and definition(tool[0]).risk == "auto" and tool[0] not in used
+            tool for tool in catalog()
+            if tool["risk"] == "auto" and tool["name"] not in used
         ]
 
         # 构造 OpenAI Function Calling 的 tools 规范。
-        # 每个工具只暴露 name、description 和 query/reason 参数。
-        tool_specs = [
-            {
+        # 内置工具使用 query 参数；动态只读工具使用注册时生成的筛选字段 schema。
+        tool_specs = []
+        for tool in available:
+            parameters = json.loads(json.dumps(tool.get("parameters") or {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "传给工具的业务问题或筛选条件"},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            }))
+            parameters.setdefault("properties", {})["reason"] = {
+                "type": "string", "description": "为什么需要调用这个工具",
+            }
+            tool_specs.append({
                 "type": "function",
                 "function": {
-                    "name": name,
-                    "description": definition(name).description,
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "query": {
-                                "type": "string",
-                                "description": "传给工具的业务问题或筛选条件",
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "为什么需要调用这个工具",
-                            },
-                        },
-                        "required": ["query"],
-                    },
+                    "name": tool["name"],
+                    "description": tool["description"],
+                    "parameters": parameters,
                 },
-            }
-            for name, _, _ in available
-        ]
+            })
 
         # 工具结果先做结构化样本裁剪，再按工具请求预算逐步减少旧证据。
         tool_input_budget = max(

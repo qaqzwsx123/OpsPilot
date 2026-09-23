@@ -22,6 +22,7 @@ import csv  # 解析 CSV 指标导入文件
 import io  # 将字符串包装成文件对象供 csv 使用
 import json  # 序列化影响预估、执行结果和审计 payload
 import math  # 校验浮点数是否为有限值
+import re  # 校验自定义工具名
 import sqlite3  # 本地事实库驱动
 from hashlib import sha256  # 审计哈希链使用的摘要算法
 from datetime import datetime, timedelta, timezone  # 处理 UTC 时间和审批有效期
@@ -64,6 +65,17 @@ EXPLORER_TABLES = {
     "conversation_memory": "会话记忆",
     "chat_conversations": "Agent 聊天会话",
     "chat_messages": "Agent 聊天消息",
+}
+
+# 自定义只读工具的独立白名单：不开放审计、聊天、审批、知识正文等敏感表。
+CUSTOM_TOOL_TABLES = {
+    "assets": "设备资产",
+    "alerts": "监控告警",
+    "tickets": "运维工单",
+    "work_orders": "作业任务",
+    "metric_definitions": "指标定义",
+    "metric_samples": "指标样本",
+    "metric_imports": "指标导入记录",
 }
 
 
@@ -140,6 +152,12 @@ def initialize() -> None:
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, actor TEXT NOT NULL,
               operation TEXT NOT NULL, target_event_id TEXT, target_action TEXT,
               cutoff TEXT, deleted_count INTEGER NOT NULL DEFAULT 0, details TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS custom_query_tools (
+              id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL,
+              category TEXT NOT NULL, table_name TEXT NOT NULL, columns_json TEXT NOT NULL,
+              filters_json TEXT NOT NULL, max_rows INTEGER NOT NULL DEFAULT 20,
+              active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, requester TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS approvals (
               id TEXT PRIMARY KEY, created_at TEXT NOT NULL, requester TEXT NOT NULL,
@@ -1887,6 +1905,150 @@ def approval_status_counts() -> dict[str, int]:
     counts = {status: 0 for status in APPROVAL_STATUSES}
     counts.update({row["status"]: row["count"] for row in rows})
     return counts
+
+
+def custom_tool_schema() -> list[dict[str, Any]]:
+    """返回可用于创建自定义查询工具的业务表及字段白名单。"""
+    result = []
+    with connect() as conn:
+        for table_name, label in CUSTOM_TOOL_TABLES.items():
+            columns = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            result.append({
+                "name": table_name,
+                "label": label,
+                "columns": [{"name": row["name"], "type": row["type"]} for row in columns],
+            })
+    return result
+
+
+def list_custom_query_tools(include_inactive: bool = False) -> list[dict[str, Any]]:
+    """读取自定义只读工具目录。"""
+    query = "SELECT * FROM custom_query_tools" + ("" if include_inactive else " WHERE active = 1") + " ORDER BY created_at DESC"
+    with connect() as conn:
+        rows = conn.execute(query).fetchall()
+    return [{
+        "id": row["id"], "name": row["name"], "description": row["description"],
+        "category": row["category"], "table_name": row["table_name"],
+        "columns": json.loads(row["columns_json"]), "filters": json.loads(row["filters_json"]),
+        "max_rows": row["max_rows"], "active": bool(row["active"]),
+        "created_at": row["created_at"], "requester": row["requester"],
+    } for row in rows]
+
+
+def create_custom_query_tool(
+    name: str, description: str, category: str, table_name: str,
+    columns: list[str], filters: list[dict[str, Any]], max_rows: int, requester: str,
+) -> dict[str, Any]:
+    """校验并保存一个基于白名单表与字段的只读查询工具。"""
+    name = name.strip()
+    description = description.strip()
+    category = category.strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_]{1,47}", name):
+        raise ValueError("工具名称需为 2–48 位小写字母、数字或下划线，且以字母开头。")
+    if not description or len(description) > 240:
+        raise ValueError("工具说明不能为空且不能超过 240 个字符。")
+    if not category or len(category) > 48:
+        raise ValueError("工具分类不能为空且不能超过 48 个字符。")
+    if table_name not in CUSTOM_TOOL_TABLES:
+        raise ValueError("所选数据表不在自定义查询白名单中。")
+    if not 1 <= max_rows <= 100:
+        raise ValueError("最大返回行数必须在 1 到 100 之间。")
+
+    with connect() as conn:
+        existing_count = conn.execute("SELECT COUNT(*) FROM custom_query_tools").fetchone()[0]
+        if existing_count >= 30:
+            raise ValueError("最多可注册 30 个自定义只读工具，请先删除不再使用的工具。")
+        schema = {row["name"] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+        safe_columns = {column for column in schema if not column.startswith("_")}
+        selected_columns = list(dict.fromkeys(columns))
+        if not selected_columns or len(selected_columns) > 32 or any(column not in safe_columns for column in selected_columns):
+            raise ValueError("至少选择一个有效字段，且最多选择 32 个字段。")
+
+        allowed_operators = {"=", "!=", ">", ">=", "<", "<=", "contains"}
+        normalized_filters: list[dict[str, Any]] = []
+        seen_filter_columns: set[str] = set()
+        if len(filters) > 12:
+            raise ValueError("筛选字段最多配置 12 个。")
+        for item in filters:
+            column = str(item.get("column", ""))
+            operators = list(dict.fromkeys(str(op) for op in item.get("operators", [])))
+            if column not in safe_columns or column in seen_filter_columns:
+                raise ValueError("筛选字段无效或重复。")
+            if not operators or any(op not in allowed_operators for op in operators):
+                raise ValueError("请为每个筛选字段选择有效的比较方式。")
+            normalized_filters.append({"column": column, "operators": operators})
+            seen_filter_columns.add(column)
+
+        tool = {
+            "id": str(uuid4()), "name": name, "description": description,
+            "category": category, "table_name": table_name,
+            "columns": selected_columns, "filters": normalized_filters,
+            "max_rows": max_rows, "active": True, "created_at": utc_now(), "requester": requester,
+        }
+        try:
+            conn.execute(
+                "INSERT INTO custom_query_tools (id, name, description, category, table_name, columns_json, "
+                "filters_json, max_rows, active, created_at, requester) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                (tool["id"], name, description, category, table_name,
+                 json.dumps(selected_columns, ensure_ascii=False), json.dumps(normalized_filters, ensure_ascii=False),
+                 max_rows, tool["created_at"], requester),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("该工具名称已存在。") from exc
+    return tool
+
+
+def delete_custom_query_tool(name: str) -> bool:
+    """删除自定义工具配置；内置工具不在此表中，无法通过此函数删除。"""
+    with connect() as conn:
+        return conn.execute("DELETE FROM custom_query_tools WHERE name = ?", (name,)).rowcount > 0
+
+
+def custom_query_tool_definition(name: str) -> dict[str, Any] | None:
+    """按名称获取启用的自定义工具配置。"""
+    return next((tool for tool in list_custom_query_tools() if tool["name"] == name), None)
+
+
+def execute_custom_query_tool(name: str, arguments: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """执行受约束的自定义只读查询；标识符来自配置白名单，值一律使用 SQL 参数。"""
+    tool = custom_query_tool_definition(name)
+    if tool is None:
+        return None
+    arguments = arguments or {}
+    if set(arguments) - {"filters", "reason"}:
+        raise ValueError("工具参数包含未配置字段。")
+    raw_filters = arguments.get("filters", {})
+    if not isinstance(raw_filters, dict):
+        raise ValueError("filters 参数必须是对象。")
+    configured = {item["column"]: set(item["operators"]) for item in tool["filters"]}
+    where_parts: list[str] = []
+    values: list[Any] = []
+    operator_sql = {"=": "=", "!=": "!=", ">": ">", ">=": ">=", "<": "<", "<=": "<=", "contains": "LIKE"}
+    for column, condition in raw_filters.items():
+        if column not in configured or not isinstance(condition, dict) or set(condition) != {"operator", "value"}:
+            raise ValueError("请求包含未配置的筛选字段。")
+        operator = str(condition.get("operator", ""))
+        value = condition.get("value")
+        if operator not in configured[column] or not isinstance(value, (str, int, float, bool)):
+            raise ValueError("筛选操作符或字段值无效。")
+        if isinstance(value, str) and len(value) > 300:
+            raise ValueError("筛选值不能超过 300 个字符。")
+        quoted_column = '"' + column.replace('"', '""') + '"'
+        if operator == "contains":
+            where_parts.append(f"{quoted_column} LIKE ?")
+            values.append(f"%{value}%")
+        else:
+            where_parts.append(f"{quoted_column} {operator_sql[operator]} ?")
+            values.append(value)
+
+    quoted_columns = ", ".join('"' + column.replace('"', '""') + '"' for column in tool["columns"])
+    quoted_table = '"' + tool["table_name"].replace('"', '""') + '"'
+    where_sql = " WHERE " + " AND ".join(where_parts) if where_parts else ""
+    sql = f"SELECT {quoted_columns} FROM {quoted_table}{where_sql} ORDER BY rowid DESC LIMIT ?"
+    values.append(tool["max_rows"])
+    with connect() as conn:
+        rows = [dict(row) for row in conn.execute(sql, values).fetchall()]
+    return {"status": "completed", "tool": name, "rows": rows, "result_count": len(rows)}
 
 
 def data_catalog() -> list[dict[str, Any]]:

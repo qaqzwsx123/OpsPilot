@@ -25,6 +25,7 @@ from contextlib import asynccontextmanager  # 声明 FastAPI 异步生命周期�
 from pathlib import Path  # 跨平台路径处理
 from queue import Empty, Queue  # 用于跨线程传递工作流事件
 from threading import Event, Thread  # 在后台线程运行工作流，避免阻塞事件循环
+from typing import Any  # 动态筛选条件的值允许多种 JSON 标量类型
 
 from fastapi import FastAPI, HTTPException, Request  # FastAPI 核心组件
 from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse  # 各类响应类型
@@ -46,6 +47,8 @@ from app.database import (
     audit_integrity,             # 审计哈希链校验
     create_approval,             # 创建审批单
     create_chat_conversation as create_chat_conversation_record,  # 创建会话（重命名避免与 API 函数冲突）
+    create_custom_query_tool,     # 创建持久化自定义只读工具
+    custom_tool_schema,           # 自定义查询可用表/字段目录
     data_catalog,                # 数据浏览器表目录
     delete_approval,             # 删除审批单
     delete_audit_event,          # 删除单条审计
@@ -53,6 +56,7 @@ from app.database import (
     delete_audit_range,          # 按范围删除审计
     delete_evaluation_case,      # 删除评测用例
     delete_chat_conversation,    # 删除会话
+    delete_custom_query_tool,    # 删除自定义查询工具
     delete_knowledge_document,   # 删除知识文档
     document_chunks,             # 查询文档分块
     execute_approved,            # 执行已批准变更
@@ -211,7 +215,25 @@ class AuditCleanupRequest(MutationActorRequest):
 
 class ToolInvokeRequest(MutationActorRequest):
     """工具中心试运行请求；工具名来自 URL，权限和风险仍由后端判断。"""
-    pass
+    query: str = Field(default="", max_length=500)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class CustomToolFilterRequest(BaseModel):
+    """一个自定义筛选字段及其允许的比较操作。"""
+    column: str = Field(min_length=1, max_length=64)
+    operators: list[str] = Field(min_length=1, max_length=7)
+
+
+class CustomToolCreateRequest(MutationActorRequest):
+    """新增受约束的自定义只读查询工具。"""
+    name: str = Field(min_length=2, max_length=48)
+    description: str = Field(min_length=1, max_length=240)
+    category: str = Field(min_length=1, max_length=48)
+    table_name: str = Field(min_length=1, max_length=64)
+    columns: list[str] = Field(min_length=1, max_length=32)
+    filters: list[CustomToolFilterRequest] = Field(default_factory=list, max_length=12)
+    max_rows: int = Field(default=20, ge=1, le=100)
 
 
 class SkillRunRequest(MutationActorRequest):
@@ -1243,20 +1265,61 @@ async def import_metrics_csv(
 
 
 @app.get("/api/v1/tools")
-def tools_catalog() -> list[dict[str, str]]:
+def tools_catalog() -> list[dict[str, Any]]:
     """返回所有工具目录。"""
     return catalog()
+
+
+@app.get("/api/v1/tools/query-schema")
+def custom_tools_query_schema(role: str = "viewer") -> list[dict[str, Any]]:
+    """返回可配置自定义查询工具的业务表和字段白名单。"""
+    if not permitted(role, "read"):
+        raise HTTPException(status_code=403, detail="当前角色无权读取工具配置目录。")
+    return custom_tool_schema()
+
+
+@app.post("/api/v1/tools/custom")
+def create_custom_tool(request: CustomToolCreateRequest) -> dict[str, Any]:
+    """创建动态注册的只读工具；仅值班负责人可修改工具目录。"""
+    if not permitted(request.role, "approve_change"):
+        raise HTTPException(status_code=403, detail="只有值班负责人可以新增工具。")
+    if definition(request.name):
+        raise HTTPException(status_code=409, detail="工具名称已被使用。")
+    try:
+        result = create_custom_query_tool(
+            request.name, request.description, request.category, request.table_name,
+            request.columns, [item.model_dump() for item in request.filters], request.max_rows,
+            request.requester,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    write_audit(request.requester, "custom_tool_created", {
+        "tool": result["name"], "table": result["table_name"],
+        "columns": result["columns"], "role": request.role,
+    })
+    return result
+
+
+@app.delete("/api/v1/tools/custom/{tool_name}")
+def remove_custom_tool(tool_name: str, role: str = "viewer", requester: str = "Lenovo") -> dict[str, Any]:
+    """删除自定义工具定义，不影响内置工具。"""
+    if not permitted(role, "approve_change"):
+        raise HTTPException(status_code=403, detail="只有值班负责人可以删除自定义工具。")
+    if not delete_custom_query_tool(tool_name):
+        raise HTTPException(status_code=404, detail="自定义工具不存在或已删除。")
+    write_audit(requester, "custom_tool_deleted", {"tool": tool_name, "role": role})
+    return {"deleted": True, "tool": tool_name}
 
 
 @app.get("/api/v1/tools/history")
 def tools_history(role: str = "viewer", limit: int = 8) -> list[dict]:
     """返回最近的工具调用相关审计事件。
 
-    过滤的动作包括：tool_invoked、tool_approval_requested、tool_access_denied。
+    过滤工具调用及自定义工具目录变更事件。
     """
     if not permitted(role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无工具调用记录查看权限。")
-    actions = {"tool_invoked", "tool_approval_requested", "tool_access_denied"}
+    actions = {"tool_invoked", "tool_approval_requested", "tool_access_denied", "custom_tool_created", "custom_tool_deleted"}
     return [
         event for event in list_audit(limit=200) if event["action"] in actions
     ][:min(max(limit, 1), 30)]
@@ -1303,9 +1366,14 @@ def invoke_tool(
         }
 
     # 只读工具直接执行。
-    result = invoke(tool_name)
+    try:
+        result = invoke(tool_name, query=request.query, arguments=request.arguments)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     write_audit(request.requester, "tool_invoked", {
         "tool": tool_name, "status": result["status"], "role": request.role,
+        "filter_fields": sorted((request.arguments.get("filters") or {}).keys())
+        if isinstance(request.arguments.get("filters", {}), dict) else [],
     })
     return result
 

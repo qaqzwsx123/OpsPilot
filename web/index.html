@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpsPilot · 安全可控 SQL Agent</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260923-audit-multi-delete" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260923-dynamic-tools" />
 </head>
 <body>
   <!-- 左侧导航只负责切换视图；每个业务动作仍通过后端 API 完成权限校验。 -->
@@ -165,7 +165,20 @@
       <section id="tools-page" class="page">
         <div class="section-intro"><div class="tools-intro-actions"><span class="pill">TOOL / FUNCTION CALLING</span><button id="show-tool-help" class="tool-help-button page-help-button" data-guide="tools">使用说明 ?</button></div><h2>Agent 只能调用被注册和授权的工具。</h2><p>工具按风险分级。只读工具可直接试运行；变更工具必须进入审批；高危维护工具会被拒绝。</p></div>
         <div id="tool-summary" class="capability-summary"></div>
-        <div class="capability-toolbar"><label>工具分类<select id="tool-category-filter"><option value="">全部分类</option></select></label><label>风险等级<select id="tool-risk-filter"><option value="">全部风险</option><option value="auto">AUTO 只读</option><option value="manual">MANUAL 审批</option><option value="blocked">BLOCKED 拦截</option></select></label><span id="tool-count-note">—</span></div>
+        <div class="capability-toolbar"><label>工具分类<select id="tool-category-filter"><option value="">全部分类</option></select></label><label>风险等级<select id="tool-risk-filter"><option value="">全部风险</option><option value="auto">AUTO 只读</option><option value="manual">MANUAL 审批</option><option value="blocked">BLOCKED 拦截</option></select></label><span id="tool-count-note">—</span><button id="add-custom-tool" class="primary-button" hidden>＋ 新增只读工具</button></div>
+        <article id="custom-tool-form" class="card custom-tool-form" hidden>
+          <div class="card-heading"><div><p class="section-label">CUSTOM READ-ONLY TOOL</p><h3>新增只读查询工具</h3></div><button id="cancel-custom-tool" class="text-button">取消</button></div>
+          <div class="custom-tool-fields">
+            <label>工具名称<input id="custom-tool-name" maxlength="48" placeholder="例如：critical_alerts" /></label>
+            <label>工具说明<input id="custom-tool-description" maxlength="240" placeholder="说明 Agent 何时应该调用它" /></label>
+            <label>工具分类<input id="custom-tool-category" maxlength="48" placeholder="例如：告警" /></label>
+            <label>数据表<select id="custom-tool-table"></select></label>
+            <label>最大返回行数<input id="custom-tool-max-rows" type="number" min="1" max="100" value="20" /></label>
+          </div>
+          <div class="custom-tool-config-section"><strong>返回字段</strong><div id="custom-tool-columns" class="custom-tool-columns"></div></div>
+          <div class="custom-tool-config-section"><div class="custom-tool-filter-heading"><strong>可选筛选字段和比较方式</strong><button id="add-custom-filter" class="text-button" type="button">＋ 添加筛选字段</button></div><div id="custom-tool-filters" class="custom-tool-filters"></div><small>Agent 可以不传筛选条件；传入的字段和比较方式只会使用此处配置的选项。</small></div>
+          <div class="custom-tool-form-actions"><button id="save-custom-tool" class="primary-button">保存并注册</button></div>
+        </article>
         <div id="tool-result" class="tool-result" hidden></div>
         <div id="tool-list" class="tool-grid"></div>
         <article class="card capability-history"><div class="card-heading"><div><p class="section-label">TOOL ACTIVITY</p><h3>最近工具调用</h3></div><button id="refresh-tool-history" class="text-button">刷新</button></div><div id="tool-history-list" class="capability-history-list"></div></article>
@@ -192,6 +205,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260923-audit-multi-delete"></script>
+  <script src="/static/app.js?v=20260923-dynamic-tools"></script>
 </body>
 </html>
