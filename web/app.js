@@ -942,7 +942,7 @@ async function createChat() {
   try {
     const response = await fetch("/api/v1/chat/conversations", chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", title:"新对话" })); const conversation = await response.json();
     if (!response.ok) throw new Error(conversation.detail || "创建对话失败");
-    chatConversations = [conversation, ...chatConversations]; chatConversationId = conversation.id; renderChatConversations(); renderChatMessages([]); $("#chat-title").textContent = conversation.title; $("#chat-input").focus();
+    chatConversations = [conversation, ...chatConversations]; chatConversationId = conversation.id; renderChatConversations(); renderChatMessages([]); $("#chat-title").textContent = conversation.title; $("#chat-context-stat").textContent = "发送消息后显示本轮上下文统计"; $("#chat-input").focus();
   } catch (error) { toast(error.message || "创建对话失败"); }
 }
 
@@ -950,7 +950,7 @@ async function openChat(conversationId) {
   try {
     const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(conversationId) + "/messages?requester=Lenovo&role=" + encodeURIComponent(currentRole())); const messages = await response.json();
     if (!response.ok) throw new Error(messages.detail || "对话加载失败");
-    chatConversationId = conversationId; const conversation = chatConversations.find((item) => item.id === conversationId); $("#chat-title").textContent = conversation?.title || "Agent 对话"; renderChatConversations(); renderChatMessages(messages);
+    chatConversationId = conversationId; const conversation = chatConversations.find((item) => item.id === conversationId); $("#chat-title").textContent = conversation?.title || "Agent 对话"; $("#chat-context-stat").textContent = "发送新消息后显示本轮上下文统计"; renderChatConversations(); renderChatMessages(messages);
   } catch (error) { toast(error.message || "对话加载失败"); }
 }
 
@@ -965,10 +965,27 @@ async function deleteChat(conversationId) {
 }
 
 // Agent 聊天通过 SSE 接收 plan/stage/token/done 事件，实现真正的流式回复。
+function formatChatContextStats(stats) {
+  if (!stats || !Number.isFinite(Number(stats.before)) || !Number.isFinite(Number(stats.after))) {
+    return "本轮上下文统计暂不可用";
+  }
+  const before = Number(stats.before);
+  const after = Number(stats.after);
+  const budget = Number(stats.input_budget);
+  const reduction = Math.max(0, Math.round((1 - after / Math.max(1, before)) * 100));
+  const strategy = stats.strategy === "llm_summary" ? "模型摘要压缩"
+    : stats.strategy === "extractive_fallback" ? "摘录压缩（模型摘要不可用）"
+    : "未超预算，无需压缩";
+  const counter = String(stats.token_counter || "").startsWith("tiktoken:") ? "tiktoken 计数" : "Token 估算";
+  const budgetText = Number.isFinite(budget) ? ` / 预算 ${budget}` : "";
+  return `本轮上下文：${before} → ${after} tokens${budgetText}，减少 ${reduction}% · ${strategy} · ${counter}`;
+}
+
 async function sendChat() {
   const content = $("#chat-input").value.trim(); if (!content) return;
   if (!chatConversationId) { await createChat(); if (!chatConversationId) return; }
   const button = $("#send-chat"); button.disabled = true; button.textContent = "思考中…"; $("#chat-input").disabled = true;
+  $("#chat-context-stat").textContent = "正在统计本轮上下文…";
   $("#chat-input").value = "";
   appendChatBubble("user", content);
   const assistantTarget = appendChatBubble("assistant", "");
@@ -983,6 +1000,7 @@ async function sendChat() {
       const data = JSON.parse(dataLine.slice(5).trim());
       if (eventName === "stage") {
         $("#chat-provider").textContent = data.stage === "context" ? "加载上下文" : "任务规划中";
+        if (data.stage === "context") $("#chat-context-stat").textContent = formatChatContextStats(data.stats);
         $("#chat-task-plan").textContent = data.stage === "plan" ? "任务规划：" + data.message + " · " + (data.steps || []).join(" → ") : data.message;
       } else if (eventName === "token") {
         assistantText += data.content || ""; assistantTarget.innerHTML = escapeHtml(assistantText).replace(/\n/g, "<br>"); $("#chat-provider").textContent = data.provider === "local_llm" ? "本地 LLM · 流式" : "离线流式";
