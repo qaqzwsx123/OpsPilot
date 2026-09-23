@@ -2123,7 +2123,8 @@ def audit_integrity(limit: int | None = None) -> dict[str, Any]:
 
         # 取锚点：待校验窗口前一条的 entry_hash，作为起始 previous。
         anchor = conn.execute(
-            "SELECT entry_hash FROM audit_logs ORDER BY rowid LIMIT 1 OFFSET ?", (offset - 1,)
+            "SELECT id, created_at, requester, action, entry_hash FROM audit_logs ORDER BY rowid LIMIT 1 OFFSET ?",
+            (offset - 1,),
         ).fetchone() if offset else None
 
         # 取出待校验窗口的所有事件。
@@ -2133,26 +2134,73 @@ def audit_integrity(limit: int | None = None) -> dict[str, Any]:
             (checked, offset),
         ).fetchall()
 
+    def event_summary(row: Any) -> dict[str, Any]:
+        return {key: row[key] for key in ("id", "created_at", "requester", "action", "prev_hash", "entry_hash") if key in row.keys()}
+
     previous = anchor["entry_hash"] if anchor else ""
+    previous_event = event_summary(anchor) if anchor else None
+    first_event = event_summary(rows[0]) if rows else None
+    last_event = event_summary(rows[-1]) if rows else None
     for index, row in enumerate(rows, start=1):
-        # 重算期望哈希，与存储值比较。
-        payload = _canonical_payload(json.loads(row["payload"]))
-        expected = _audit_digest(previous, row["id"], row["created_at"], row["requester"], row["action"], payload)
-        # prev_hash 或 entry_hash 不一致，说明链被破坏。
-        if row["prev_hash"] != previous or row["entry_hash"] != expected:
+        # 重算期望哈希，与存储值比较；同时记录具体失败项供界面解释。
+        try:
+            payload = _canonical_payload(json.loads(row["payload"]))
+        except (json.JSONDecodeError, TypeError):
             return {
                 "valid": False,
                 "checked_events": index - 1,
                 "total_events": total,
                 "scope": "full" if checked == total else "recent",
                 "broken_at": row["id"],
+                "excluded_events": offset,
+                "range_start": first_event,
+                "range_end": last_event,
+                "anchor": event_summary(anchor) if anchor else None,
+                "previous_event": previous_event,
+                "broken_event": event_summary(row),
+                "failure_reasons": ["payload_invalid"],
+                "stored_previous_hash": row["prev_hash"],
+                "expected_previous_hash": previous,
+                "stored_entry_hash": row["entry_hash"],
+                "expected_entry_hash": None,
+            }
+        expected = _audit_digest(previous, row["id"], row["created_at"], row["requester"], row["action"], payload)
+        failure_reasons = []
+        if row["prev_hash"] != previous:
+            failure_reasons.append("previous_hash_mismatch")
+        if row["entry_hash"] != expected:
+            failure_reasons.append("entry_hash_mismatch")
+        if failure_reasons:
+            return {
+                "valid": False,
+                "checked_events": index - 1,
+                "total_events": total,
+                "scope": "full" if checked == total else "recent",
+                "broken_at": row["id"],
+                "excluded_events": offset,
+                "range_start": first_event,
+                "range_end": last_event,
+                "anchor": event_summary(anchor) if anchor else None,
+                "previous_event": previous_event,
+                "broken_event": event_summary(row),
+                "failure_reasons": failure_reasons,
+                "stored_previous_hash": row["prev_hash"],
+                "expected_previous_hash": previous,
+                "stored_entry_hash": row["entry_hash"],
+                "expected_entry_hash": expected,
             }
         previous = expected
+        previous_event = event_summary(row)
 
     return {
         "valid": True,
         "checked_events": len(rows),
         "total_events": total,
         "scope": "full" if checked == total else "recent",
+        "excluded_events": offset,
+        "range_start": first_event,
+        "range_end": last_event,
+        "anchor": event_summary(anchor) if anchor else None,
+        "latest_event": last_event,
         "latest_hash": previous or None,
     }

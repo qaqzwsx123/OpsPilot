@@ -890,9 +890,23 @@ async function verifyAuditIntegrity(scope) {
     const full = result.scope === "full";
     const target = $("#evaluation-result"); target.hidden = false;
     target.className = "evaluation-result " + (result.valid ? "integrity-ok" : "integrity-broken");
-    target.innerHTML = result.valid
-      ? '<strong>审计校验通过：已校验 ' + result.checked_events + '/' + result.total_events + ' 条记录。</strong><span>' + (full ? "全量哈希链未发现断裂。" : "已校验最近 100 条及前序锚点；更早历史未在本次范围内。") + '</span>'
-      : '<strong>审计链异常：校验范围内存在哈希断裂。</strong><span>请停止依赖该链进行合规判断，并核查数据库与运行日志。</span>';
+    const timeLabel = (value) => value ? new Date(value).toLocaleString("zh-CN", {hour12:false}) : "—";
+    const eventLabel = (event) => event ? escapeHtml((event.action || "未知事件") + " · " + (event.id || "无 ID") + " · " + timeLabel(event.created_at) + " · 操作者 " + (event.requester || "未知")) : "无（从链首开始校验）";
+    const hashBlock = (label, value) => '<div class="integrity-hash-row"><span>' + escapeHtml(label) + '</span><code>' + escapeHtml(value || "空值") + '</code></div>';
+    const reasonLabels = {previous_hash_mismatch:"前序哈希不匹配：本条记录引用的 prev_hash 与前一条记录的 entry_hash 不一致。", entry_hash_mismatch:"记录哈希不匹配：根据记录内容重新计算的 entry_hash 与存储值不同。", payload_invalid:"记录内容无法解析：payload 不是有效 JSON，无法重新计算该条哈希。"};
+    const rangeText = result.range_start && result.range_end
+      ? timeLabel(result.range_start.created_at) + " 至 " + timeLabel(result.range_end.created_at)
+      : "没有审计记录";
+    const scopeDetails = '<section class="integrity-detail-panel"><h4>校验范围</h4><dl><dt>范围</dt><dd>' + (full ? "全量哈希链" : "最近 100 条记录") + '</dd><dt>本次成功校验</dt><dd>' + Number(result.checked_events || 0) + ' 条</dd><dt>审计记录总数</dt><dd>' + Number(result.total_events || 0) + ' 条</dd><dt>本次范围</dt><dd>' + escapeHtml(rangeText) + '</dd><dt>范围外记录</dt><dd>' + Number(result.excluded_events || 0) + ' 条' + (full ? "" : "（较早历史未检查）") + '</dd><dt>前序锚点</dt><dd>' + eventLabel(result.anchor) + '</dd></dl></section>';
+    const methodDetails = '<section class="integrity-detail-panel"><h4>检查了什么</h4><ul><li>逐条确认 prev_hash 指向前一条记录的 entry_hash。</li><li>根据事件 ID、时间、操作者、动作和 payload 重新计算 entry_hash。</li><li>全量校验从链首开始；最近记录校验从窗口前一条记录的哈希锚点接续。</li></ul></section>';
+    if (result.valid) {
+      target.innerHTML = '<strong>审计校验通过：已校验 ' + Number(result.checked_events || 0) + '/' + Number(result.total_events || 0) + ' 条记录。</strong><span>' + (full ? "全量哈希链未发现断裂。" : "最近 100 条通过；更早历史未纳入本次校验。") + '</span><div class="integrity-detail-grid">' + scopeDetails + methodDetails + '</div>' + (result.latest_event ? '<section class="integrity-detail-panel integrity-latest"><h4>最后一条已验证记录</h4><p>' + eventLabel(result.latest_event) + '</p>' + hashBlock("entry_hash", result.latest_hash) + '</section>' : '');
+    } else {
+      const reasons = (result.failure_reasons || []).map((reason) => '<li>' + escapeHtml(reasonLabels[reason] || reason) + '</li>').join("") || '<li>哈希链校验失败，接口未提供具体原因。</li>';
+      const broken = result.broken_event;
+      const eventNumber = Number(result.excluded_events || 0) + Number(result.checked_events || 0) + 1;
+      target.innerHTML = '<strong>审计链异常：在本次校验范围发现断点。</strong><span>断点位于总记录序号 ' + eventNumber + '；断点之前本次范围内通过 ' + Number(result.checked_events || 0) + ' 条。建议检查该事件及其前一条记录。</span><div class="integrity-detail-grid">' + scopeDetails + methodDetails + '</div><section class="integrity-detail-panel integrity-failure"><h4>断裂事件</h4><p>' + eventLabel(broken) + '</p><ul>' + reasons + '</ul><h5>前序链值对照</h5>' + hashBlock("期望前序哈希（上一条 entry_hash）", result.expected_previous_hash) + hashBlock("本条存储的 prev_hash", result.stored_previous_hash) + '<h5>当前记录哈希对照</h5>' + hashBlock("重新计算的 entry_hash", result.expected_entry_hash) + hashBlock("本条存储的 entry_hash", result.stored_entry_hash) + (result.previous_event ? '<p class="integrity-previous-event">前一条记录：' + eventLabel(result.previous_event) + '</p>' : '') + '</section>';
+    }
     toast(result.valid ? "审计完整性校验通过" : "发现审计链异常");
   } catch (error) { toast(error.message || "审计完整性校验失败"); }
   finally { button.disabled = false; button.textContent = "验证完整性"; }
