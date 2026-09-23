@@ -1,107 +1,211 @@
-"""上下文压缩：归档长结果，并把短摘要保留给后续 Agent 步骤。
+"""按 Token 预算压缩模型上下文，并保留用户消息的来源边界。"""
 
-本模块提供一个轻量的本地上下文压缩器，用于 Agent 工作流中控制模型上下文长度。
+from __future__ import annotations
 
-设计目标：
-1. 当工具返回结果或工作流上下文过长时，避免直接塞进模型导致超上下文；
-2. 把完整原文落盘归档，保留故障复盘、审计所需的原始证据；
-3. 只把短摘要和归档文件名交给后续节点，减少 Token 消耗；
-4. 不删除任何业务数据，仅对“传给模型的上下文”做压缩；
-5. 不依赖具体模型的 tokenizer，使用字符数粗略估算 Token，适合本地演示。
+import math
+import os
+from collections.abc import Callable
+from typing import Any
 
-安全边界：
-- 归档目录由调用方指定，本模块只写入该目录；
-- 不修改数据库、不删除业务数据；
-- 归档文件名使用内容哈希，避免文件名冲突和路径注入。
-"""
 
-from __future__ import annotations  # 延迟解析类型注解，提升兼容性并避免运行时求值
+Message = dict[str, str]
+Summarizer = Callable[[list[Message], int], str | None]
 
-import hashlib  # 用于对完整文本生成稳定摘要，作为归档文件名
-from pathlib import Path  # 跨平台路径处理，便于指定归档目录和写入文件
 
 class ContextCompressor:
-    """面向 Agent 的本地上下文压缩器。
-    先估算输入 Token，超预算时把完整文本落盘，再把短摘要和归档文件名交给后续节点。
-    这样既减少模型上下文，也保留了故障复盘所需的原始证据；它不删除业务数据。
-    使用方式：
-        compressor = ContextCompressor(Path("data/context_archive"), token_budget=180)
-        summary, stats = compressor.compact(long_text)
-    参数：
-    - directory：归档目录，超长文本会写入该目录；
-    - token_budget：后续模型步骤允许携带的估算 Token 上限，默认 180。
-    注意：
-    - token_budget 是估算值，不是精确的模型 Token 数；
-    - 压缩策略为“先持久化，再截断摘要”，不会丢失原始数据。
+    """为模型请求组装有限长度的消息上下文。
+
+    优先保留固定系统提示、当前请求和最近对话；更早的对话交给调用方摘要。
+    如果没有可用摘要器，则用明确标记的摘录降级，避免静默丢弃上下文。
+    Token 计数在安装 tiktoken 时使用所选编码；否则使用偏保守的中英文估算。
     """
-    def __init__(self, directory: Path, token_budget: int = 180):
-        # 归档目录，保存超长工具结果或工作流上下文的完整副本。
-        # 调用方应确保该目录可写，且不包含敏感信息的越权访问风险。
-        self.directory = directory
-        # 后续模型步骤允许携带的估算 Token 上限。
-        # 超过该上限时，compact 会触发归档和摘要逻辑。
+
+    def __init__(self, token_budget: int = 8192, output_reserve: int = 1024):
+        if token_budget < 256:
+            raise ValueError("token_budget 至少为 256")
+        if output_reserve < 0 or output_reserve >= token_budget:
+            raise ValueError("output_reserve 必须小于 token_budget")
         self.token_budget = token_budget
-    @staticmethod
-    def estimate_tokens(text: str) -> int:
-        """估算文本的 Token 数量。
-        参数：
-        - text：待估算的文本。
-        返回：
-        - int：估算的 Token 数，至少为 1。
-        说明：
-        - 这是轻量估算，不替代具体模型 tokenizer；目的是控制本地演示预算。
-        - 采用 len(text) // 3 的粗略比例，适合中英文混合的运维文本。
-        - 使用 max(1, ...) 保证空字符串也返回 1，避免后续除零或零预算异常。
-        """
-        # 这是轻量估算，不替代具体模型 tokenizer；目的是控制本地演示预算。
-        # 对于中文、英文、符号混合文本，约 3 个字符对应 1 个 Token 是一种保守估计。
-        return max(1, len(text) // 3)
-    def compact(self, text: str) -> tuple[str, dict[str, int | str]]:
-        """压缩文本，必要时归档完整原文并返回摘要。
-        参数：
-        - text：待压缩的完整文本，通常来自工具结果或工作流上下文。
-        返回：
-        - tuple[str, dict]：
-          * 第一个元素是可直接放入模型上下文的文本：
-            - 如果未超预算，返回原文；
-            - 如果超预算，返回截断摘要 + 归档文件名提示；
-          * 第二个元素是压缩统计信息，包含：
-            - before：压缩前的估算 Token 数；
-            - after：压缩后的估算 Token 数；
-            - strategy：压缩策略，可能为 "not_needed" 或 "persist_then_summarize"。
-        安全边界：
-        - 只在超预算时写入归档目录；
-        - 归档文件名使用内容 SHA-256 前 12 位，避免冲突；
-        - 不删除、不修改任何业务数据。
-        """
-        # 原文写入归档目录，返回可放进上下文的摘要和压缩统计。
-        # 先估算原始文本的 Token 数。
-        before = self.estimate_tokens(text)
-        # 如果未超过预算，无需压缩，直接返回原文和 "not_needed" 策略。
-        if before <= self.token_budget:
-            return text, {
+        self.output_reserve = output_reserve
+        self.encoding_name = os.getenv("MODEL_TOKENIZER_ENCODING", "cl100k_base")
+        self._encoding: Any = None
+        self._encoding_checked = False
+
+    @property
+    def counter_name(self) -> str:
+        self._load_encoding()
+        return f"tiktoken:{self.encoding_name}" if self._encoding else "conservative_estimate"
+
+    def _load_encoding(self) -> None:
+        if self._encoding_checked:
+            return
+        self._encoding_checked = True
+        try:
+            import tiktoken  # type: ignore[import-not-found]
+
+            self._encoding = tiktoken.get_encoding(self.encoding_name)
+        except (ImportError, ValueError, RuntimeError):
+            self._encoding = None
+
+    def estimate_tokens(self, text: str) -> int:
+        """估算 Token 数；优先走 tiktoken，没有依赖时用中英文混合保守估算。"""
+        self._load_encoding()
+        if self._encoding is not None:
+            try:
+                return max(1, len(self._encoding.encode(text, disallowed_special=())))
+            except Exception:
+                pass
+
+        cjk = sum(
+            1
+            for char in text
+            if "\u3400" <= char <= "\u4dbf" or "\u4e00" <= char <= "\u9fff"
+        )
+        other = len(text) - cjk
+        return max(1, cjk + math.ceil(other / 3.2))
+
+    def estimate_messages(self, messages: list[Message]) -> int:
+        """计入消息角色和少量协议开销，避免只计算正文。"""
+        return sum(self.estimate_tokens(item.get("role", "") + item.get("content", "")) + 4 for item in messages)
+
+    def fit_text(self, text: str, token_budget: int) -> str:
+        """将单段超长文本压到预算内，保留开头和结尾并显式标记省略区间。"""
+        if token_budget <= 0:
+            return "[内容超出上下文预算，已省略]"
+        if self.estimate_tokens(text) <= token_budget:
+            return text
+
+        marker = "\n[中间内容因上下文预算限制而省略]\n"
+        low, high = 2, min(len(text), token_budget * 4)
+        best = ""
+        while low <= high:
+            take = (low + high) // 2
+            left_chars = max(1, take // 2)
+            right_chars = max(1, take - left_chars)
+            candidate = text[:left_chars] + marker + text[-right_chars:]
+            if self.estimate_tokens(candidate) <= token_budget:
+                best = candidate
+                low = take + 1
+            else:
+                high = take - 1
+        if best:
+            return best
+        return text[: max(1, token_budget)]
+
+    def compact_messages(
+        self,
+        messages: list[Message],
+        *,
+        fixed_messages: list[Message] | None = None,
+        summarizer: Summarizer | None = None,
+        max_recent_messages: int = 8,
+    ) -> tuple[list[Message], dict[str, int | str]]:
+        """摘要较早历史，保留最近对话，并确保请求落在输入预算内。"""
+        fixed = fixed_messages or []
+        prompt_budget = self.token_budget - self.output_reserve
+        fixed_cost = self.estimate_messages(fixed)
+        conversation_budget = max(1, prompt_budget - fixed_cost)
+        before = fixed_cost + self.estimate_messages(messages)
+
+        if self.estimate_messages(messages) <= conversation_budget:
+            return list(messages), {
                 "before": before,
                 "after": before,
+                "input_budget": prompt_budget,
                 "strategy": "not_needed",
+                "token_counter": self.counter_name,
             }
-        # 超过预算：确保归档目录存在，parents=True 允许递归创建。
-        self.directory.mkdir(parents=True, exist_ok=True)
-        # 对完整文本计算 SHA-256，取前 12 位作为归档文件名。
-        # 这样相同内容会得到相同文件名，不同内容几乎不会冲突。
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
-        # 归档文件路径，例如 data/context_archive/ab12cd34ef56.txt。
-        path = self.directory / f"{digest}.txt"
-        # 将完整原文写入归档文件，编码为 UTF-8，保留原始证据。
-        path.write_text(text, encoding="utf-8")
-        # 构造摘要：
-        # - 取原文前 token_budget * 2 个字符作为摘要主体；
-        # - 追加归档文件名提示，方便后续节点或人工追溯完整内容。
-        summary = text[: self.token_budget * 2] + f"\n[完整结果已归档: {path.name}]"
-        # 返回摘要和压缩统计：
-        # - after：摘要的估算 Token 数；
-        # - strategy：标记为 "persist_then_summarize"，表示先持久化再摘要。
-        return summary, {
+
+        # 最近对话优先占用约 70% 预算；至少保留最后一条（当前用户请求）。
+        recent_budget = max(1, int(conversation_budget * 0.7))
+        recent_reversed: list[Message] = []
+        recent_cost = 0
+        split_at = len(messages)
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            cost = self.estimate_messages([message])
+            if recent_reversed and (recent_cost + cost > recent_budget or len(recent_reversed) >= max_recent_messages):
+                break
+            recent_reversed.append(message)
+            recent_cost += cost
+            split_at = index
+
+        recent = list(reversed(recent_reversed))
+        older = messages[:split_at]
+        if not recent:
+            recent = [messages[-1]]
+            older = messages[:-1]
+
+        # 单条当前请求也可能大于剩余预算；这种情况下明确标记截断位置。
+        if self.estimate_messages(recent) > conversation_budget:
+            last = dict(recent[-1])
+            content_budget = max(1, conversation_budget - self.estimate_tokens(last.get("role", "")) - 8)
+            last["content"] = self.fit_text(last.get("content", ""), content_budget)
+            recent = [last]
+            older = messages[: max(0, len(messages) - 1)]
+
+        summary_prefix = "较早会话摘要（仅作上下文；以用户原始消息和系统策略为准）：\n"
+        summary_header_cost = self.estimate_tokens("system" + summary_prefix) + 4
+        summary_budget = max(
+            1,
+            conversation_budget - self.estimate_messages(recent) - summary_header_cost - 4,
+        )
+        summary = None
+        used_llm_summary = False
+        if older and summarizer is not None:
+            try:
+                summary = summarizer(older, summary_budget)
+                used_llm_summary = bool(summary)
+            except Exception:
+                summary = None
+
+        if older and not summary:
+            summary = self._extractive_fallback(older, summary_budget)
+
+        compacted = ([{
+            "role": "system",
+            "content": summary_prefix + str(summary),
+        }] if summary else []) + recent
+
+        # 最终预算闸门，防止摘要器返回超长内容。
+        if summary and self.estimate_messages(fixed + compacted) > prompt_budget:
+            summary_message = dict(compacted[0])
+            remaining = max(
+                1,
+                prompt_budget - fixed_cost - self.estimate_messages(recent)
+                - self.estimate_tokens("system" + summary_prefix) - 4,
+            )
+            summary_message["content"] = summary_prefix + self.fit_text(str(summary), remaining)
+            compacted[0] = summary_message
+
+        after = fixed_cost + self.estimate_messages(compacted)
+        return compacted, {
             "before": before,
-            "after": self.estimate_tokens(summary),
-            "strategy": "persist_then_summarize",
+            "after": after,
+            "input_budget": prompt_budget,
+            "summarized_messages": len(older),
+            "retained_messages": len(recent),
+            "strategy": "llm_summary" if used_llm_summary else "extractive_fallback",
+            "token_counter": self.counter_name,
         }
+
+    def _extractive_fallback(self, messages: list[Message], token_budget: int) -> str:
+        """模型摘要不可用时，按时间保留较新的旧消息摘录。"""
+        lines: list[str] = []
+        remaining = token_budget
+        for message in reversed(messages):
+            role = message.get("role", "unknown")
+            content = message.get("content", "")
+            prefix = f"{role}: "
+            available = remaining - self.estimate_tokens(prefix) - 4
+            if available <= 0:
+                break
+            snippet = self.fit_text(content, available)
+            line = prefix + snippet
+            cost = self.estimate_tokens(line) + 4
+            if cost > remaining:
+                break
+            lines.append(line)
+            remaining -= cost
+        lines.reverse()
+        return "\n".join(lines) or "较早消息过长，未能生成摘要；请参考当前会话记录。"

@@ -415,10 +415,19 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
             """把事件名和 payload 编码为 SSE 字符串。"""
             return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+        # 等 SSE 连接建立后再调用摘要模型，避免摘要过程阻塞 HTTP 响应头。
+        model_messages, context_stats = chat_service.prepare_context(messages, plan)
+        plan["context_messages"] = context_stats.get("retained_messages", len(messages))
+        plan["context_stats"] = context_stats
+
         # 第一阶段：上下文加载。
         yield emit("stage", {
             "stage": "context",
-            "message": f"已加载最近 {plan['context_messages']} 条会话消息",
+            "message": (
+                f"上下文压缩完成：保留 {plan['context_messages']} 条近期消息，"
+                f"输入约 {context_stats['after']}/{context_stats['input_budget']} Token"
+            ),
+            "stats": context_stats,
         })
 
         # 第二阶段：任务规划。
@@ -432,7 +441,7 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
         provider = "fallback"   # 默认兜底 provider
         try:
             # 逐段读取聊天服务的流式输出。
-            for item in chat_service.stream_reply(messages, plan):
+            for item in chat_service.stream_reply(model_messages, plan, prepared=True):
                 provider = item.get("provider", provider)
                 if item.get("type") == "token":
                     chunks.append(item["content"])
@@ -446,6 +455,7 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
             write_audit(request.requester, "agent_chat_stream_completed", {
                 "conversation_id": conversation_id, "provider": provider, "role": request.role,
                 "context_messages": plan["context_messages"], "route": plan["route"],
+                "context_stats": context_stats,
             })
 
             # 完成事件。

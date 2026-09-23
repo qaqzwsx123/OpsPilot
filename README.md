@@ -21,7 +21,7 @@ Recall → Writer → Reviewer → Fix → Runner
 - 内置数据浏览器：基于固定表白名单提供字段结构、行数与分页样例，仅允许只读浏览，并将访问动作写入审计。
 - 权限闭环：知识库新增、删除、索引重建需要 `operator` 及以上角色；自动工具要求 `read`，手工风险工具要求 `request_change` 并会创建真正的审批单。
 - Agentic RAG：无法生成可执行查询时，以运维知识库生成带来源的回答；本地 Chroma 持久化知识分块、资产、告警、工单和作业单向量索引。
-- Context Engineering：超预算上下文先落盘、再保留摘要，减少后续提示词负担。
+- Context Engineering：按模型输入预算保留当前问题和近期消息；较早聊天历史优先由模型压成事实摘要，模型不可用时退化为带省略标记的近期摘录；工具证据按预算逐步减少样本。完整会话仍保存在 SQLite，用户可见 SQL 结果不会被压缩。
 - Skill 能力库：读取 `skills/*/SKILL.md`，内置告警分诊、指标诊断、工单交接、变更评审等可试运行 SOP；每次运行都有结构化输出和审计记录。
 - FastAPI、真正逐阶段推送的 SSE 事件流、SQLite 示例数据、持久化会话记忆、审批执行开关、单元测试和离线评测集。
 
@@ -32,12 +32,14 @@ Recall → Writer → Reviewer → Fix → Runner
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -e ".[dev]"
+pip install -e ".[dev,context]"
 python -m app.seed
 uvicorn app.main:app --reload
 ```
 
 访问 `http://127.0.0.1:8000/` 打开可视化运营控制台；`http://127.0.0.1:8000/docs` 为 Swagger 接口文档。
+
+上下文窗口可通过环境变量调整：`MODEL_CONTEXT_WINDOW_TOKENS`（默认 8192）、`MODEL_OUTPUT_RESERVE_TOKENS`（默认 1024）、`MODEL_CONTEXT_RECENT_MESSAGES`（默认 8）、`MODEL_TOKENIZER_ENCODING`（默认 `cl100k_base`）和 `AGENT_TOOL_CONTEXT_TOKENS`（默认 2048）。安装 `context` 可选依赖后，预算使用 `tiktoken` 的配置编码；未安装时使用偏保守的中英文估算。若服务商使用不同 tokenizer，计数仍是近似值，应通过实际请求校准窗口大小。
 
 ## 可选：接入真实服务
 

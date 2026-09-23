@@ -13,6 +13,7 @@ from typing import Any  # 标注较宽松的字典结构，便于适配不同模
 from urllib.error import HTTPError, URLError  # 捕获 HTTP 错误和网络错误
 from urllib.request import Request, urlopen  # 使用标准库 HTTP 客户端，避免额外依赖
 from app.config import settings  # 项目配置：模型地址、密钥、超时、开关等
+from app.context import ContextCompressor  # 按 Token 预算摘要旧消息并保留近期上下文
 
 
 # 聊天模型的安全边界：聊天只负责解释和规划，不直接执行业务变更。
@@ -26,7 +27,7 @@ SYSTEM_PROMPT = """你是 OpsPilot 的 Agent 聊天助手，服务于运维团�
 class AgentChatService:
     """Agent 聊天适配器。
 
-    负责会话消息到本地 OpenAI 兼容 DeepSeek 的请求转换、流式 SSE 增量解析和离线兜底。
+    负责会话消息到本地 OpenAI 兼容 LLM 的请求转换、流式 SSE 增量解析和离线兜底。
     聊天服务只解释问题、维护多轮上下文和给出流程建议，不直接调用写操作工具。
 
     主要方法：
@@ -36,6 +37,12 @@ class AgentChatService:
     - _split_stream：把兜底文案切分成小块，模拟流式输出；
     - _fallback：生成统一的离线/异常兜底文案。
     """
+
+    def __init__(self) -> None:
+        self.context_compressor = ContextCompressor(
+            token_budget=settings.chat_context_window_tokens,
+            output_reserve=settings.chat_output_reserve_tokens,
+        )
 
     def reply(self, messages: list[dict[str, str]]) -> tuple[str, str]:
         """非流式聊天接口。
@@ -47,7 +54,7 @@ class AgentChatService:
         - tuple[str, str]：第一个元素是回复内容，第二个元素是提供方标识。
           provider 可能为：
           * offline：未启用本地模型；
-          * local_deepseek：本地模型正常返回；
+          * local_llm：本地模型正常返回；
           * fallback：本地模型异常，返回兜底文案。
         """
         # 非流式接口主要用于兼容简单调用；正式聊天页面使用 stream_reply。
@@ -55,15 +62,27 @@ class AgentChatService:
         if not settings.chat_enabled:
             return self._fallback("未检测到本地模型配置。请检查 .env 中的 MODEL_BASE_URL 和 MODEL_NAME。"), "offline"
 
+        # 对历史消息按模型输入预算进行压缩；系统提示和回复预留不参与被压缩部分。
+        fixed_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        compacted, _ = self.context_compressor.compact_messages(
+            messages,
+            fixed_messages=fixed_messages,
+            summarizer=self._summarize_history,
+            max_recent_messages=settings.chat_recent_messages,
+        )
+
         # 构造 OpenAI 兼容的 /chat/completions 请求体。
         payload = {
-            "model": settings.chat_model,  # 本地模型名称，例如 deepseek-chat
+            "model": settings.chat_model,  # 本地模型名称，例如 qwen3.5:2b
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},  # 安全边界与角色约束
-                *messages[-16:],  # 只保留最近 16 条历史，防止上下文过长
+                *compacted,
             ],
             "temperature": 0.3,  # 降低随机性，适合运维解释、规划和排障建议
+            "max_tokens": settings.chat_output_reserve_tokens,
         }
+        if settings.chat_reasoning_effort:
+            payload["reasoning_effort"] = settings.chat_reasoning_effort
 
         # 请求头默认是 JSON；如果配置了 API Key，则追加 Bearer 认证。
         headers = {"Content-Type": "application/json"}
@@ -90,7 +109,7 @@ class AgentChatService:
             if not content:
                 raise RuntimeError("模型返回中没有 message.content")
 
-            return str(content), "local_deepseek"
+            return str(content), "local_llm"
 
         except HTTPError as exc:
             # HTTP 错误：例如 401、404、500 等。读取错误正文并截断，避免返回过长内容。
@@ -157,14 +176,97 @@ class AgentChatService:
                 "结合历史消息补全指代",
                 "给出下一步可执行建议",
             ]
-        # context_messages 与 reply/stream_reply 中 messages[-16:] 的窗口保持一致。
         return {
             "route": route,
             "steps": steps,
-            "context_messages": min(len(history), 16),
+            "context_messages": len(history),
         }
 
-    def stream_reply(self, messages: list[dict[str, str]], plan: dict[str, Any]) -> Iterator[dict[str, str]]:
+    def prepare_context(
+        self,
+        messages: list[dict[str, str]],
+        plan: dict[str, Any],
+    ) -> tuple[list[dict[str, str]], dict[str, int | str]]:
+        """压缩流式聊天上下文，返回实际发送的消息和可审计统计。"""
+        context_instruction = self._context_instruction(plan)
+        fixed = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": context_instruction},
+        ]
+        compacted, stats = self.context_compressor.compact_messages(
+            messages,
+            fixed_messages=fixed,
+            summarizer=self._summarize_history,
+            max_recent_messages=settings.chat_recent_messages,
+        )
+        return compacted, stats
+
+    @staticmethod
+    def _context_instruction(plan: dict[str, Any]) -> str:
+        return (
+            "当前任务规划：" + str(plan["route"]) + "；步骤：" + " → ".join(plan["steps"]) +
+            "。请遵守安全边界，不要声称已经执行受控操作。"
+        )
+
+    def _summarize_history(self, messages: list[dict[str, str]], token_budget: int) -> str | None:
+        """用当前聊天模型摘要较早历史；模型不可用时由压缩器执行摘录降级。"""
+        if not settings.chat_enabled or not messages or token_budget < 32:
+            return None
+
+        # 摘要请求本身也必须有界，超长历史先按预算做一次安全摘录。
+        source_budget = max(512, min(settings.chat_context_window_tokens // 2, 4096))
+        source_compressor = ContextCompressor(
+            token_budget=source_budget + 256,
+            output_reserve=256,
+        )
+        bounded, _ = source_compressor.compact_messages(
+            messages,
+            max_recent_messages=max(8, settings.chat_recent_messages * 2),
+        )
+        history_json = json.dumps(bounded, ensure_ascii=False)
+        summary_limit = max(32, min(token_budget, 512))
+        payload = {
+            "model": settings.chat_model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "你负责压缩对话历史，供同一会话后续继续使用。只保留用户目标、明确约束、已确认事实、"
+                        "关键名称/数字/ID、已作决定和未解决事项。不得推断、补全或改变事实；不输出寒暄。"
+                        "若原文不确定，明确标注不确定。用中文简洁分点。"
+                    ),
+                },
+                {"role": "user", "content": history_json},
+            ],
+            "temperature": 0,
+            "max_tokens": summary_limit,
+        }
+        if settings.chat_reasoning_effort:
+            payload["reasoning_effort"] = settings.chat_reasoning_effort
+        headers = {"Content-Type": "application/json"}
+        if settings.chat_api_key:
+            headers["Authorization"] = f"Bearer {settings.chat_api_key}"
+        request = Request(
+            f"{settings.chat_base_url}/chat/completions",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=min(settings.chat_timeout_seconds, 20)) as response:
+                data = json.loads(response.read().decode("utf-8"))
+            summary = data.get("choices", [{}])[0].get("message", {}).get("content")
+            return str(summary).strip() if summary else None
+        except (HTTPError, URLError, TimeoutError, ValueError, KeyError, TypeError, RuntimeError):
+            return None
+
+    def stream_reply(
+        self,
+        messages: list[dict[str, str]],
+        plan: dict[str, Any],
+        *,
+        prepared: bool = False,
+    ) -> Iterator[dict[str, str]]:
         """Stream OpenAI-compatible deltas and keep an honest fallback path.
         流式聊天接口。通过 SSE 逐段转发模型增量，网络或模型异常时逐段发送可解释的兜底消息。
         参数：
@@ -172,14 +274,13 @@ class AgentChatService:
         - plan：由 plan_turn 生成的任务规划。
         生成：
         - dict：每个事件形如 {"type": "token", "content": "...", "provider": "..."}。
-          provider 可能为 offline、local_deepseek、fallback。
+          provider 可能为 offline、local_llm、fallback。
         """
         # 通过 SSE 逐段转发模型增量，网络或模型异常时逐段发送可解释的兜底消息。
         # 将本轮任务规划注入第二条 system 消息，让模型知道路线和步骤。
-        context_instruction = (
-            "当前任务规划：" + str(plan["route"]) + "；步骤：" + " → ".join(plan["steps"]) +
-            "。请遵守安全边界，不要声称已经执行受控操作。"
-        )
+        context_instruction = self._context_instruction(plan)
+        if not prepared:
+            messages, _ = self.prepare_context(messages, plan)
         # 如果聊天能力未启用，则走离线兜底：按小块输出，保持流式体验。
         if not settings.chat_enabled:
             fallback = self._fallback("未检测到本地模型配置。请检查 .env 中的 MODEL_BASE_URL 和 MODEL_NAME。")
@@ -192,11 +293,14 @@ class AgentChatService:
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},  # 安全边界
                 {"role": "system", "content": context_instruction},  # 本轮规划
-                *messages[-16:],  # 最近 16 条上下文，与 plan_turn 统计一致
+                *messages,
             ],
             "temperature": 0.3,  # 保持较低随机性
+            "max_tokens": settings.chat_output_reserve_tokens,
             "stream": True,  # 开启流式返回
         }
+        if settings.chat_reasoning_effort:
+            payload["reasoning_effort"] = settings.chat_reasoning_effort
         # 请求头默认 JSON；有 API Key 时追加认证头。
         headers = {"Content-Type": "application/json"}
         if settings.chat_api_key:
@@ -238,7 +342,7 @@ class AgentChatService:
 
                     # 只有存在实际增量文本时才向前端发送 token。
                     if delta:
-                        yield {"type": "token", "content": str(delta), "provider": "local_deepseek"}
+                        yield {"type": "token", "content": str(delta), "provider": "local_llm"}
 
         except (HTTPError, URLError, TimeoutError, ValueError, KeyError, RuntimeError) as exc:
             # 流式过程中出现异常：生成兜底文案，并按小块继续以 token 形式输出。

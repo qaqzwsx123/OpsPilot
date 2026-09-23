@@ -91,7 +91,7 @@ class Settings:
     """应用运行配置。
 
     配置值优先从项目根目录的 ``.env`` 和进程环境读取，代码只保存非敏感默认值。
-    SQL 生成模型和 Agent 聊天模型可以是两个独立的 OpenAI 兼容服务，便于本地部署 DeepSeek。
+    SQL 生成模型和 Agent 聊天模型可以是两个独立的 OpenAI 兼容服务。
 
     设计说明：
     - frozen=True：实例创建后不可修改，避免运行期意外篡改配置；
@@ -140,7 +140,7 @@ class Settings:
     # rstrip("/") 去掉末尾斜杠，便于拼接接口路径。
     chat_base_url: str = os.getenv("MODEL_BASE_URL", "").rstrip("/")
 
-    # Agent 聊天服务访问令牌；本地 DeepSeek 可为空。
+    # Agent 聊天服务访问令牌；本地模型服务可按需留空。
     # 来源环境变量：MODEL_API_KEY。
     chat_api_key: str = os.getenv("MODEL_API_KEY", "")
 
@@ -148,9 +148,22 @@ class Settings:
     # 来源环境变量：MODEL_NAME。
     chat_model: str = os.getenv("MODEL_NAME", "")
 
+    # 可选推理强度；Ollama 的思考模型可设为 none，避免回复额度被推理内容耗尽。
+    # 留空时不向其他 OpenAI 兼容服务发送此扩展参数。
+    chat_reasoning_effort: str = os.getenv("MODEL_REASONING_EFFORT", "").strip().lower()
+
     # Agent 聊天请求超时时间，单位秒。
     # 来源环境变量：MODEL_TIMEOUT，默认 90 秒，适合本地大模型较慢的响应。
     chat_timeout_seconds: int = int(os.getenv("MODEL_TIMEOUT", "90"))
+
+    # 模型上下文窗口和回复预留，压缩器按二者计算本轮输入预算。
+    # 本地模型窗口不同时可在 .env 中覆盖；预算包含 system、历史和当前问题。
+    chat_context_window_tokens: int = int(os.getenv("MODEL_CONTEXT_WINDOW_TOKENS", "8192"))
+    chat_output_reserve_tokens: int = int(os.getenv("MODEL_OUTPUT_RESERVE_TOKENS", "1024"))
+    chat_recent_messages: int = int(os.getenv("MODEL_CONTEXT_RECENT_MESSAGES", "8"))
+
+    # Agent 工具规划是辅助调用，使用独立的小预算，避免过多证据挤占规划提示。
+    tool_context_budget_tokens: int = int(os.getenv("AGENT_TOOL_CONTEXT_TOKENS", "2048"))
 
     # 工具规划模式：model/auto/on 使用模型 Function Calling，否则走规则白名单。
     # 来源环境变量：AGENT_TOOL_PLANNER_MODE，默认 "model"。
@@ -183,7 +196,7 @@ class Settings:
         条件：
         - chat_provider 必须是 "openai-compatible"；
         - 必须配置 chat_base_url 和 chat_model。
-        API Key 可为空，因为本地 DeepSeek 通常不需要认证。
+        API Key 可为空，因为部分本地模型服务不需要认证。
         """
         return self.chat_provider == "openai-compatible" and bool(self.chat_base_url and self.chat_model)
 

@@ -27,6 +27,7 @@ from dataclasses import dataclass  # 声明不可变的数据结构
 from typing import Any  # 宽松字典类型标注
 
 from app.config import settings  # 读取 chat_base_url、chat_model、超时等配置
+from app.context import ContextCompressor  # 为工具规划请求控制证据 Token 预算
 from app.tool_registry import definition, invoke  # 工具定义查询和调用入口
 
 
@@ -373,11 +374,25 @@ class ToolPlanner:
             for name, _, _ in available
         ]
 
+        # 工具结果先做结构化样本裁剪，再按工具请求预算逐步减少旧证据。
+        tool_input_budget = max(
+            256,
+            min(
+                settings.tool_context_budget_tokens,
+                settings.chat_context_window_tokens - settings.chat_output_reserve_tokens - 512,
+            ),
+        )
+        context_compressor = ContextCompressor(
+            token_budget=max(512, tool_input_budget),
+            output_reserve=0,
+        )
+        prompt_evidence = json.loads(json.dumps(evidence[-3:], ensure_ascii=False, default=str))
+
         # 构造用户消息：包含问题、已调用工具、最近证据和指令。
         prompt = {
             "question": question,
             "already_called": sorted(used),
-            "evidence": evidence[-3:],  # 只传最近 3 条证据，控制 prompt 长度
+            "evidence": prompt_evidence,
             "instruction": (
                 f"只从 tools 白名单中选择最多 {max_calls} 个最有帮助的只读工具；"
                 "如果现有证据已经足够，返回空调用。不要选择 manual 或 blocked 工具。"
@@ -385,14 +400,49 @@ class ToolPlanner:
             ),
         }
 
+        system_message = {
+            "role": "system",
+            "content": "你是 OpsPilot 的工具规划器。必须遵守工具白名单，只规划只读调用。",
+        }
+
+        def request_tokens() -> int:
+            serialized = json.dumps(prompt, ensure_ascii=False, default=str)
+            return (
+                context_compressor.estimate_messages([system_message, {"role": "user", "content": serialized}])
+                + context_compressor.estimate_tokens(json.dumps(tool_specs, ensure_ascii=False, default=str))
+            )
+
+        # 优先保留问题、调用状态和每条证据的摘要；逐条移除样本，再裁短说明文字。
+        while request_tokens() > tool_input_budget and prompt["evidence"]:
+            sample_entry = next(
+                (item for item in prompt["evidence"] if isinstance(item.get("sample"), list) and item["sample"]),
+                None,
+            )
+            if sample_entry is not None:
+                sample_entry["sample"].pop()
+                sample_entry["samples_omitted"] = True
+                continue
+            if len(prompt["evidence"]) > 1:
+                prompt["evidence"].pop(0)
+                continue
+            entry = prompt["evidence"][0]
+            entry["summary"] = context_compressor.fit_text(str(entry.get("summary", "")), 80)
+            entry["followup_hint"] = context_compressor.fit_text(str(entry.get("followup_hint", "")), 40)
+            # 所有样本和长字段都已裁减后，极长问题仍需保留明确的省略标记。
+            if request_tokens() > tool_input_budget:
+                fixed_cost = context_compressor.estimate_messages([system_message])
+                tool_cost = context_compressor.estimate_tokens(json.dumps(tool_specs, ensure_ascii=False, default=str))
+                prompt["question"] = context_compressor.fit_text(
+                    question,
+                    max(32, tool_input_budget - fixed_cost - tool_cost - 128),
+                )
+            break
+
         # 构造请求 payload。
         payload = {
             "model": settings.chat_model,
             "messages": [
-                {
-                    "role": "system",
-                    "content": "你是 OpsPilot 的工具规划器。必须遵守工具白名单，只规划只读调用。",
-                },
+                system_message,
                 {
                     "role": "user",
                     # default=str 兜底序列化非 JSON 类型。
@@ -402,7 +452,10 @@ class ToolPlanner:
             "tools": tool_specs,
             "tool_choice": "auto",  # 让模型自行决定是否调用工具
             "temperature": 0,       # 降低随机性，保证规划稳定
+            "max_tokens": 512,
         }
+        if settings.chat_reasoning_effort:
+            payload["reasoning_effort"] = settings.chat_reasoning_effort
 
         try:
             response = self._request(payload)

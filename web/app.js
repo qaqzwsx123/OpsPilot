@@ -33,9 +33,9 @@ const pageGuides = {
     { title:"执行过程", text:"工作流会先由 Tool Planner 从 AUTO 白名单中选择相关只读工具，再召回授权表、生成 SQL、审查 SQL、评估风险并执行只读查询。点击工作流节点可查看选择理由、工具返回摘要与后续证据。" },
     { title:"安全边界", text:"只读 SELECT 可自动执行；写操作只创建审批单；DDL、多语句和高危维护请求会被阻断。结果、SQL 和决策均会审计留痕。", tone:"blocked" }
   ] },
-  chat: { eyebrow:"LOCAL DEEPSEEK CHAT", title:"Agent 聊天使用说明", lead:"这是本地 DeepSeek 的多轮讨论入口，适合咨询排障思路、解释系统概念和制定操作建议。", sections:[
+  chat: { eyebrow:"LOCAL LLM CHAT", title:"Agent 聊天使用说明", lead:"这是本地 LLM 的多轮讨论入口，适合咨询排障思路、解释系统概念和制定操作建议。", sections:[
     { title:"会话管理", text:"点击“新建对话”开始；历史对话会保存在本地 SQLite，可重新打开或删除自己的会话。" },
-    { title:"输入方式", text:"Enter 发送，Shift + Enter 换行。模型回复会标识为本地 DeepSeek 或离线提示。" },
+    { title:"输入方式", text:"Enter 发送，Shift + Enter 换行。模型回复会标识为本地 LLM 或离线提示。" },
     { title:"重要边界", text:"聊天不会自动执行 SQL、调用工具、创建工单或修改数据。需要业务操作时，请到智能查询、工具中心或审批中心明确发起。", tone:"blocked" }
   ] },
   monitoring: { eyebrow:"LIVE OPERATIONS", title:"监控中心使用说明", lead:"监控中心把当前资产状态、未关闭告警和待处理工单汇总在同一页，便于快速发现异常范围。", sections:[
@@ -87,7 +87,7 @@ const pageGuides = {
 };
 const guideExamples = {
   agent: { title:"示例：查询华东 P1 告警关联设备", steps:["在输入框输入 <code>查询华东 P1 告警关联设备</code>。", "点击“运行查询”，观察 Recall、Writer、Reviewer、Risk Guard、Runner 逐步完成。", "点击 Writer 或 Reviewer 的“详情”核对 SQL 与审查结论；结果区会返回关联设备，护栏显示本次为只读自动执行。"] },
-  chat: { title:"示例：咨询离线排障方案", steps:["点击“新建对话”。", "输入 <code>华东网关离线时，现场工程师应先排查什么？</code>，按 Enter 发送。", "阅读 DeepSeek 的建议；若要查询真实告警或资产，转到“智能查询”明确发起，而不是要求聊天直接执行。"] },
+  chat: { title:"示例：咨询离线排障方案", steps:["点击“新建对话”。", "输入 <code>华东网关离线时，现场工程师应先排查什么？</code>，按 Enter 发送。", "阅读本地 LLM 的建议；若要查询真实告警或资产，转到“智能查询”明确发起，而不是要求聊天直接执行。"] },
   monitoring: { title:"示例：从 P1 告警进入根因查询", steps:["点击“刷新”，先查看未关闭告警数量和 P1 分布。", "在“最近告警”卡片点击“用 Agent 分析 P1 告警”。", "系统跳转智能查询并自动带入问题；执行后可查看关联资产、地区和离线状态。"] },
   metrics: { title:"示例：导入并分析真实 CPU 指标", steps:["切换为“运维工程师”，点击“下载模板”，填写并保存 UTF-8 CSV。", "选择 CSV 后点击“校验并导入 CSV”；成功后目录顶部会显示绿色“真实 CSV”标记。", "点击该指标“查看趋势”，再点击“交给 Agent 分析”查看该指标的安全查询路径。"] },
   data: { title:"示例：核对告警表数据", steps:["在表目录选择“监控告警（alerts）”。", "查看字段结构、总行数和本页样例；点击“下一页”继续只读浏览。", "如需按条件筛选，例如只看 P1，请转到智能查询输入 <code>查询最近的 P1 告警</code>。"] },
@@ -985,7 +985,7 @@ async function sendChat() {
         $("#chat-provider").textContent = data.stage === "context" ? "加载上下文" : "任务规划中";
         $("#chat-task-plan").textContent = data.stage === "plan" ? "任务规划：" + data.message + " · " + (data.steps || []).join(" → ") : data.message;
       } else if (eventName === "token") {
-        assistantText += data.content || ""; assistantTarget.innerHTML = escapeHtml(assistantText).replace(/\n/g, "<br>"); $("#chat-provider").textContent = data.provider === "local_deepseek" ? "本地 DeepSeek · 流式" : "离线流式";
+        assistantText += data.content || ""; assistantTarget.innerHTML = escapeHtml(assistantText).replace(/\n/g, "<br>"); $("#chat-provider").textContent = data.provider === "local_llm" ? "本地 LLM · 流式" : "离线流式";
         $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
       } else if (eventName === "done") {
         finished = true; $("#chat-task-plan").textContent = "已完成：" + data.plan.route + " · 已保留上下文";

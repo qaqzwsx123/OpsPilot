@@ -7,8 +7,7 @@ from typing import Any, Callable, Literal, TypedDict
 # LangGraph 的核心组件：END、START 是特殊节点，StateGraph 用于构建状态图。
 from langgraph.graph import END, START, StateGraph
 
-# 项目内部依赖：上下文压缩、数据库操作、数据模型、权限策略、SQL 生成器、RAG、SQL Agent 组件、工具规划器。
-from app.context import ContextCompressor
+# 项目内部依赖：数据库操作、数据模型、权限策略、SQL 生成器、RAG、SQL Agent 组件和工具规划器。
 from app.database import create_approval, execute_readonly, recent_memory, save_memory, write_audit
 from app.models import CandidateTable, GeneratedSql, QueryResult, ReviewResult, WorkflowEvent
 from app.policy import permitted
@@ -71,7 +70,6 @@ class SqlAgentGraph:
         risk_assessor: RiskAssessor,
         rag: KnowledgeRag,
         tool_planner: ToolPlanner,
-        compressor: ContextCompressor,
     ) -> None:
         """注入所有依赖组件，并构建状态图。"""
         self.retriever = retriever          # 元数据召回器：三路召回候选表
@@ -81,7 +79,6 @@ class SqlAgentGraph:
         self.risk_assessor = risk_assessor  # 风险评估器：判断 SQL 是自动执行还是人工审批
         self.rag = rag                      # 知识库 RAG：SQL 无法生成或执行失败时兜底回答
         self.tool_planner = tool_planner    # 工具规划器：决定调用哪些只读工具
-        self.compressor = compressor        # 上下文压缩器：压缩执行结果，减少上下文占用
         self.graph = self._build_graph()    # 编译后的 LangGraph 状态图
 
     def _build_graph(self):
@@ -219,14 +216,14 @@ class SqlAgentGraph:
 
         planner_started = time.perf_counter()  # 开始计时
         if state.get("use_model_tools", False):
-            # 使用模型进行工具规划（DeepSeek Function Calling）
+            # 使用本地 LLM 进行工具规划（Function Calling）
             selections, tool_context, tool_summary, selection_mode = self.tool_planner.execute_agent(question)
         else:
             # 使用规则白名单兜底
             selections, tool_context = self.tool_planner.execute(question)
             tool_summary, selection_mode = "", "rule_based_allowlist"
         planner_latency_ms = round((time.perf_counter() - planner_started) * 1000)  # 计算耗时
-        planner_name = "DeepSeek Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
+        planner_name = "本地 LLM Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
         role = state["role"]
         if state.get("use_model_tools", False):
             # 如果是模型规划，记录审计日志
@@ -428,8 +425,8 @@ class SqlAgentGraph:
 
         当风险评估为 auto 时进入此节点。
         调用 execute_readonly 执行 SQL。如果执行失败，则走 RAG 兜底。
-        如果成功，使用 compressor.compact 压缩结果，发送 runner 事件，写审计日志，
-        构造 completed 结果返回。
+        如果成功，完整结果保留给用户界面；只有后续模型请求才会按上下文预算压缩，
+        然后发送 runner 事件、写审计日志并构造 completed 结果。
         """
         sql = state["review"].normalized_sql or state["generated"].sql
         try:
@@ -441,9 +438,8 @@ class SqlAgentGraph:
             write_audit(state["requester"], "sql_execution_failed", {"sql": sql, "error": type(exc).__name__})
             result = QueryResult("answered_by_rag", answer, sql=sql, sources=sources, events=events)
             return {"events": events, "result": result}
-        # 执行成功，压缩结果
-        _, stats = self.compressor.compact(str(rows))
-        events = self._emit(state, "runner", "只读 SQL 执行完成", row_count=len(rows), context=stats)
+        # 执行成功；查询行是用户可见结果，不在此处做无效压缩或另存一份原始副本。
+        events = self._emit(state, "runner", "只读 SQL 执行完成", row_count=len(rows))
         write_audit(state["requester"], "sql_executed", {"question": state["question"], "sql": sql, "row_count": len(rows)})
         tool_summary = state.get("tool_summary", "")
         answer = (tool_summary + "\n\n" if tool_summary else "") + f"查询完成，共返回 {len(rows)} 条记录。"

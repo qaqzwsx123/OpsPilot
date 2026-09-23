@@ -1592,7 +1592,7 @@ def index_knowledge_document(document_id: int) -> int:
         conn.execute("DELETE FROM knowledge_chunks WHERE document_id = ?", (document_id,))
         conn.executemany(
             "INSERT INTO knowledge_chunks (document_id, chunk_index, content, token_count) VALUES (?, ?, ?, ?)",
-            # token_count 使用字符数 // 3 的粗略估算，与 ContextCompressor 保持一致。
+            # 知识分块的 token_count 仅用于排序/诊断，采用轻量字符估算，不作为模型请求预算。
             [(document_id, index, chunk, max(1, len(chunk) // 3)) for index, chunk in enumerate(chunks)],
         )
     return len(chunks)
@@ -1786,7 +1786,7 @@ def monitoring_overview() -> dict[str, Any]:
             {"name": "API 服务", "status": "healthy", "detail": "当前进程正常响应"},
             {"name": "SQLite 数据库", "status": "healthy", "detail": "连接与只读探针正常"},
             {"name": "知识库索引", "status": "healthy" if chunk_count else "degraded", "detail": f"{knowledge_count} 份文档 · {chunk_count} 个分块"},
-            {"name": "本地 DeepSeek", "status": "healthy" if settings.chat_enabled else "degraded", "detail": "模型配置已加载" if settings.chat_enabled else "未配置，使用离线兜底"},
+            {"name": "本地 LLM", "status": "healthy" if settings.chat_enabled else "degraded", "detail": "模型配置已加载" if settings.chat_enabled else "未配置，使用离线兜底"},
         ]
     except sqlite3.Error as exc:
         # SQLite 探针失败时，只报告数据库 down，避免其他健康项误导。

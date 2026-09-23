@@ -1,7 +1,7 @@
 """SQL Agent 工作流门面：组装依赖并调用 LangGraph。
 
 本模块是 SQL Agent 的应用层门面（Facade），核心职责：
-1. 在初始化时组装 LangGraph 所需的所有节点依赖（召回、生成、审查、修复、风险判断、RAG、工具规划、上下文压缩）；
+1. 在初始化时组装 LangGraph 所需的节点依赖（召回、生成、审查、修复、风险判断、RAG 和工具规划）；
 2. 编译 LangGraph 图对象，供同步和流式入口复用同一套节点；
 3. 对外只暴露一个 run 方法，把问题、请求者、角色、事件回调和工具开关放入图状态；
 4. 调用图并校验最终结果类型，返回统一的 QueryResult。
@@ -16,14 +16,11 @@
 - 所有安全判断（元数据召回白名单、SQL 审查、风险分级）都由被组装的组件负责；
 - 门面本身不做安全判断，但确保这些组件被正确注入图中；
 - 不在门面中执行 SQL，执行由图中 Runner 节点完成；
-- 上下文压缩器只归档和压缩，不删除业务数据。
+- 聊天上下文压缩在模型请求组装处执行，不改变数据库中的原始会话记录。
 """
 
 from __future__ import annotations  # 延迟解析类型注解，提升兼容性并避免运行时求值
 
-from pathlib import Path  # 跨平台路径处理，定位上下文归档目录
-
-from app.context import ContextCompressor  # 上下文压缩器：归档长结果并保留短摘要
 from app.graph import EventHandler, SqlAgentGraph  # LangGraph 图对象和事件回调类型
 from app.models import QueryResult  # 统一的查询结果模型
 from app.providers import ResilientSqlWriter  # 可恢复的 SQL Writer：模型优先，规则兜底
@@ -77,11 +74,6 @@ class SqlAgentWorkflow:
         # 自动工具编排：模型 Function Calling 失败时走安全规则白名单。
         # 只允许 risk="auto" 的只读工具，manual/blocked 不在规划范围。
         self.tool_planner = ToolPlanner()
-        # 上下文压缩器：将历史事件和大段结果压缩后再交给模型。
-        # 归档目录位于项目根目录 data/context；token_budget 使用默认 180。
-        self.compressor = ContextCompressor(
-            Path(__file__).resolve().parent.parent / "data" / "context"
-        )
         # LangGraph 图对象；编译后只读使用，便于同步和流式入口复用同一套节点。
         # 构造参数顺序与 SqlAgentGraph 的签名保持一致。
         self.graph = SqlAgentGraph(
@@ -92,7 +84,6 @@ class SqlAgentWorkflow:
             self.risk_assessor,
             self.rag,
             self.tool_planner,
-            self.compressor,
         ).graph
     def run(
         self,
