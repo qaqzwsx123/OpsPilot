@@ -39,15 +39,12 @@ from app.tool_planner import ToolPlanner  # 只读工具编排器：模型优先
 
 class SqlAgentWorkflow:
     """应用层工作流门面。
-
     该类负责组装 LangGraph 所需的节点依赖，不在这里实现具体业务判断。一次请求会把问题、
     请求者、角色、上下文记忆和事件回调放入图状态，由图中的 Recall、Writer、Reviewer、
     Risk Guard、Runner 等节点按条件边推进，并最终返回统一的 QueryResult。
-
     使用方式：
         workflow = SqlAgentWorkflow()
         result = workflow.run("查询最近的 P1 告警", "Lenovo", "operator")
-
     设计说明：
     - 所有依赖在 __init__ 中一次性构建，run 时复用；
     - 图对象编译后只读使用，同步和流式入口共享同一套节点；
@@ -62,37 +59,29 @@ class SqlAgentWorkflow:
         # 元数据召回：决定模型和 SQL Writer 可以看到哪些表。
         # 召回结果同时作为 Reviewer 的白名单来源，限制 SQL 可见表范围。
         self.retriever = MetadataRetriever()
-
         # SQL 生成：模型优先，规则实现兜底。
         # 内部会检查 settings.llm_enabled，未配置时只用规则生成器。
         self.writer = ResilientSqlWriter()
-
         # 静态审查：拒绝写入、多语句和未授权表。
         # 通过审查只说明可以进入风险判断，不代表可以写库。
         self.reviewer = SqlReviewer()
-
         # 保守修复：只收窄只读 SQL，不修复写操作。
         # 遇到未授权表或非 SELECT 时返回 None，交由工作流进入其他分支。
         self.fixer = SqlFixer()
-
         # 风险判断：AUTO/MANUAL/BLOCKED。
         # BLOCKED 直接阻断，MANUAL 进入审批，AUTO 可自动执行。
         self.risk_assessor = RiskAssessor()
-
         # 知识检索：优先 Chroma，失败时回退 SQLite 轻量检索。
         # 用于 SOP、解释类问题的 RAG 路径。
         self.rag = KnowledgeRag()
-
         # 自动工具编排：模型 Function Calling 失败时走安全规则白名单。
         # 只允许 risk="auto" 的只读工具，manual/blocked 不在规划范围。
         self.tool_planner = ToolPlanner()
-
         # 上下文压缩器：将历史事件和大段结果压缩后再交给模型。
         # 归档目录位于项目根目录 data/context；token_budget 使用默认 180。
         self.compressor = ContextCompressor(
             Path(__file__).resolve().parent.parent / "data" / "context"
         )
-
         # LangGraph 图对象；编译后只读使用，便于同步和流式入口复用同一套节点。
         # 构造参数顺序与 SqlAgentGraph 的签名保持一致。
         self.graph = SqlAgentGraph(
@@ -105,7 +94,6 @@ class SqlAgentWorkflow:
             self.tool_planner,
             self.compressor,
         ).graph
-
     def run(
         self,
         question: str,
@@ -113,35 +101,8 @@ class SqlAgentWorkflow:
         role: str = "operator",
         on_event: EventHandler | None = None,
         use_model_tools: bool = False,
-    ) -> QueryResult:
-        """执行一次完整的 SQL Agent 工作流。
-
-        参数：
-        - question：用户自然语言问题；
-        - requester：审计和会话记忆使用的请求者标识；
-        - role：当前身份，决定是否可发起变更或审批；
-        - on_event：可选的事件回调，用于流式接口推送阶段事件；
-        - use_model_tools：是否允许模型选择只读工具（来自配置）。
-
-        返回：
-        - QueryResult：工作流最终结果，包含状态、SQL、结果行、证据等。
-
-        异常：
-        - RuntimeError：图执行完成但没有产出 QueryResult 时抛出。
-
-        流程：
-        1. 组装图状态，包含问题、请求者、角色、工具开关、回调和空事件列表；
-        2. 调用 LangGraph 图执行；
-        3. 从最终状态中取出 result；
-        4. 类型校验后返回。
-
-        安全边界：
-        - 外部接口只面对一个 run 方法，复杂的节点流转由 SqlAgentGraph 负责；
-        - 不在门面中执行 SQL 或做安全判断；
-        - 通过显式类型校验，确保上层拿到的是合法结果。
-        """
-        # 外部接口只面对一个 run 方法，复杂的节点流转由 SqlAgentGraph 负责。
-        # 图状态字段与 SqlAgentGraph 节点约定一致。
+    ) -> QueryResult: # 返回类型标注，表示这个方法最终返回一个 QueryResult 对象。包含状态、SQL、结果行、证据等。
+      # 构造了一个字典 state，它是传给 LangGraph 图的初始状态。
         state = {
             "question": question,
             "requester": requester,
@@ -151,7 +112,8 @@ class SqlAgentWorkflow:
             "events": [],
         }
 
-        # 调用图执行；invoke 是同步阻塞调用，流式接口通过事件回调获取中间阶段。
+        # self.graph 是在 SqlAgentWorkflow.__init__ 里创建并编译好的 LangGraph 图对象。
+       # .invoke(state) 表示同步执行这个图，把 state 作为输入。
         final_state = self.graph.invoke(state)
 
         # 从最终状态中取出结果。

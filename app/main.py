@@ -129,7 +129,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title="安全可控 SQL Agent", version="0.1.0", lifespan=lifespan)
 
 # 全局 SQL Agent 工作流实例，供同步和流式查询接口复用。
-workflow = SqlAgentWorkflow()
+workflow = SqlAgentWorkflow()   #调用这个类的构造方法 __init__，创建一个对象/实例
 
 # 全局 Agent 聊天服务实例，供同步和流式聊天接口复用。
 chat_service = AgentChatService()
@@ -482,9 +482,41 @@ def query(request: QueryRequest) -> dict:
         request.role,
         use_model_tools=settings.model_tool_planner_enabled,
     ).to_dict()
-
+# 1. 前端发送请求
+#    {
+#      "question": "查询华东区离线设备",
+#      "requester": "Lenovo",
+#      "role": "operator"
+#    }
+# 2. FastAPI 先用 QueryRequest 校验请求参数
+#    - 校验通过：进入 query 函数
+#    - 校验失败：直接返回 422
+#    - query 函数不会执行
+# 3. 进入 app/main.py 的 query 函数
+# 4. 调用 workflow.run(...)
+# 5. workflow.run 组装 LangGraph 初始 state
+# 6. 调用 self.graph.invoke(state)
+# 7. LangGraph 执行权限、记忆、工具、召回、SQL、
+#    审查、修复、风险、执行/审批/RAG 等节点
+# 8. LangGraph 返回 final_state
+# 9. workflow.run 从 final_state 中取出 result
+# 10. workflow.run 检查 result 是否为 QueryResult
+# 11. workflow.run 返回 QueryResult
+# 12. main.py 调用 result.to_dict()
+# 13. FastAPI 把字典序列化成 JSON 返回前端
 
 @app.post("/api/v1/query/stream")
+# 前端向 /api/v1/query/stream 发送问题、用户和角色。
+# FastAPI 通过 QueryRequest 校验请求，并创建 SSE 事件流。
+# SSE 路由启动后台线程，在后台线程中调用 workflow.run(...)。
+# workflow.run 组装包含问题、角色、事件回调的 LangGraph state。
+# workflow.run 调用 self.graph.invoke(state) 执行 LangGraph。
+# LangGraph 依次执行权限检查、记忆加载、工具规划、元数据召回、SQL 生成、SQL 审查、修复、风险判断、执行或审批/RAG 等节点。
+# 节点产生的阶段事件通过 on_event 放入队列，再由 SSE 实时推送给前端。
+# LangGraph 执行完成后返回 final_state，workflow.run 从中取出 result 并校验它是否为 QueryResult。
+# 后台线程调用 result.to_dict()，把最终结果放入队列。
+# SSE 路由把最终结果包装成 event: result 发给前端。
+# FastAPI 始终返回 StreamingResponse，前端边接收工作流轨迹，边更新右侧流程图，最后展示查询结果。
 def stream_query(request: QueryRequest) -> StreamingResponse:
     """SSE 流式智能查询接口。
 
@@ -497,10 +529,8 @@ def stream_query(request: QueryRequest) -> StreamingResponse:
     def event_stream() -> Iterator[str]:
         # 跨线程队列：工作流线程 put，SSE 生成器 get。
         queue: Queue[tuple[str, dict]] = Queue()
-
         # 完成标志：通知 SSE 生成器工作流已结束。
         completed = Event()
-
         def worker() -> None:
             """后台工作流线程：运行工作流并把事件和结果放入队列。"""
             try:
