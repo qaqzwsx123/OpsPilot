@@ -49,6 +49,7 @@ from app.database import (
     data_catalog,                # 数据浏览器表目录
     delete_approval,             # 删除审批单
     delete_audit_event,          # 删除单条审计
+    delete_audit_events,         # 批量删除勾选的审计记录
     delete_audit_range,          # 按范围删除审计
     delete_evaluation_case,      # 删除评测用例
     delete_chat_conversation,    # 删除会话
@@ -191,6 +192,11 @@ class AuditDeleteRequest(MutationActorRequest):
     """删除单条审计记录时的二次确认。"""
     # 必须显式传 true，避免误触发不可逆删除。
     confirm: bool = False
+
+
+class AuditBulkDeleteRequest(AuditDeleteRequest):
+    """删除当前页所选审计记录；限制数量，避免超大请求。"""
+    event_ids: list[str] = Field(min_length=1, max_length=100)
 
 
 class AuditCleanupRequest(MutationActorRequest):
@@ -725,6 +731,18 @@ def cleanup_audit(request: AuditCleanupRequest) -> dict:
         return delete_audit_range(request.start, request.end, request.requester)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/v1/audit/bulk")
+def delete_selected_audit(request: AuditBulkDeleteRequest) -> dict:
+    """批量删除所选审计事件，只有值班负责人可执行且必须显式确认。"""
+    if not permitted(request.role, "approve_change"):
+        raise HTTPException(status_code=403, detail="只有值班负责人可以删除审计记录。")
+    if not request.confirm:
+        raise HTTPException(status_code=400, detail="请确认删除所选审计记录。")
+    if any(not event_id.strip() or len(event_id) > 64 for event_id in request.event_ids):
+        raise HTTPException(status_code=400, detail="审计记录 ID 格式无效。")
+    return delete_audit_events(request.event_ids, request.requester)
 
 
 @app.delete("/api/v1/audit/{event_id}")

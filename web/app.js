@@ -10,6 +10,7 @@ let selectedMetric = null;
 let explorerCatalog = [];
 let explorerOffset = 0;
 let auditOffset = 0;
+let selectedAuditIds = new Set();
 let approvalOffset = 0;
 let approvalStatus = "";
 let knowledgeOffset = 0;
@@ -319,8 +320,17 @@ async function loadAudit() {
       return payload.question || payload.sql || (Array.isArray(payload.sources) ? payload.sources.join("、") : "") || "系统事件";
     };
     const canDelete = currentRole() === "approver";
-    target.innerHTML = rows.length ? rows.map((row) => `<div class="audit-row"><span class="audit-action">${escapeHtml(row.action)}</span><span class="audit-payload">${escapeHtml(preview(row))}</span><span class="audit-time">${new Date(row.created_at).toLocaleString("zh-CN", {hour12:false})}</span><span class="audit-delete-cell">${canDelete ? '<button type="button" class="text-button audit-delete-button" data-delete-audit="' + escapeHtml(row.id) + '">删除</button>' : ''}</span></div>`).join("") : "<div class='empty-state'><strong>暂无审计记录</strong></div>";
+    selectedAuditIds = new Set();
+    $("#audit-selection-toolbar").hidden = !canDelete;
+    $("#select-all-audit").checked = false;
+    target.innerHTML = rows.length ? rows.map((row) => `<div class="audit-row${canDelete ? " selectable" : ""}"><span class="audit-select-cell">${canDelete ? '<input type="checkbox" class="audit-row-checkbox" data-audit-id="' + escapeHtml(row.id) + '" aria-label="选择此条审计记录" />' : ''}</span><span class="audit-action">${escapeHtml(row.action)}</span><span class="audit-payload">${escapeHtml(preview(row))}</span><span class="audit-time">${new Date(row.created_at).toLocaleString("zh-CN", {hour12:false})}</span><span class="audit-delete-cell">${canDelete ? '<button type="button" class="text-button audit-delete-button" data-delete-audit="' + escapeHtml(row.id) + '">删除</button>' : ''}</span></div>`).join("") : "<div class='empty-state'><strong>暂无审计记录</strong></div>";
     document.querySelectorAll("[data-delete-audit]").forEach((button) => button.addEventListener("click", () => confirmDeleteAudit(button.dataset.deleteAudit)));
+    document.querySelectorAll(".audit-row-checkbox").forEach((checkbox) => checkbox.addEventListener("change", () => {
+      if (checkbox.checked) selectedAuditIds.add(checkbox.dataset.auditId);
+      else selectedAuditIds.delete(checkbox.dataset.auditId);
+      updateAuditSelectionUi(rows.length);
+    }));
+    updateAuditSelectionUi(rows.length);
     $("#audit-page-note").textContent = "第 " + (Math.floor(auditOffset / recordPageSize) + 1) + " 页 · 本页 " + rows.length + " 条 / 共 " + summary.total + " 条";
     $("#prev-audit").disabled = auditOffset === 0; $("#next-audit").disabled = auditOffset + rows.length >= summary.total;
   } catch { target.innerHTML = "<div class='empty-state'><strong>无法加载审计记录</strong></div>"; }
@@ -454,6 +464,32 @@ async function loadKnowledge() {
     $("#knowledge-list").innerHTML = "<div class='empty-state'><strong>无法加载知识库</strong></div>";
     $("#knowledge-page-note").textContent = "加载失败";
   }
+}
+
+function updateAuditSelectionUi(pageCount) {
+  const selectedCount = selectedAuditIds.size;
+  $("#audit-selection-count").textContent = "已选 " + selectedCount + " 条";
+  $("#delete-selected-audit").disabled = selectedCount === 0;
+  const selectAll = $("#select-all-audit");
+  selectAll.checked = pageCount > 0 && selectedCount === pageCount;
+  selectAll.indeterminate = selectedCount > 0 && selectedCount < pageCount;
+}
+
+async function confirmDeleteSelectedAudit() {
+  if (currentRole() !== "approver") return toast("只有值班负责人可以删除审计记录");
+  const eventIds = Array.from(selectedAuditIds);
+  if (!eventIds.length) return;
+  if (!await showConfirmDialog({ title:"批量删除审计记录", eyebrow:"AUDIT RECORD DELETE", message:"确认删除选中的 " + eventIds.length + " 条审计记录？", detail:"只删除当前页勾选的记录；删除后会重建剩余审计哈希链，并将本次批量删除写入独立的审计维护日志。", confirmText:"确认删除" })) return;
+  const button = $("#delete-selected-audit");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/v1/audit/bulk", { method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ event_ids:eventIds, role:currentRole(), requester:"Lenovo", confirm:true }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.detail || "批量删除审计记录失败");
+    auditOffset = 0;
+    toast("已删除 " + result.deleted_count + " 条审计记录，删除动作已留痕");
+    loadAudit(); loadMetrics();
+  } catch (error) { button.disabled = false; toast(error.message || "批量删除审计记录失败"); }
 }
 
 async function loadChromaStatus() {
@@ -858,6 +894,12 @@ $("#confirm-audit-action").addEventListener("click", async () => {
 });
 $("#refresh-audit").addEventListener("click", () => { auditOffset = 0; loadAudit(); });
 $("#cleanup-audit").addEventListener("click", cleanupAuditByTime);
+$("#select-all-audit").addEventListener("change", (event) => {
+  selectedAuditIds = new Set(event.target.checked ? Array.from(document.querySelectorAll(".audit-row-checkbox")).map((checkbox) => checkbox.dataset.auditId) : []);
+  document.querySelectorAll(".audit-row-checkbox").forEach((checkbox) => { checkbox.checked = event.target.checked; });
+  updateAuditSelectionUi(document.querySelectorAll(".audit-row-checkbox").length);
+});
+$("#delete-selected-audit").addEventListener("click", confirmDeleteSelectedAudit);
 $("#prev-audit").addEventListener("click", () => { auditOffset = Math.max(0, auditOffset - recordPageSize); loadAudit(); });
 $("#next-audit").addEventListener("click", () => { auditOffset += recordPageSize; loadAudit(); });
 $("#refresh-data").addEventListener("click", () => loadDataExplorer());

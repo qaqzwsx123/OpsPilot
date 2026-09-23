@@ -782,6 +782,50 @@ def delete_audit_event(event_id: str, deleted_by: str) -> dict[str, Any] | None:
         }
 
 
+def delete_audit_events(event_ids: list[str], deleted_by: str) -> dict[str, Any]:
+    """批量删除指定审计事件，重建哈希链并在独立维护日志中留痕。"""
+    unique_ids = list(dict.fromkeys(event_id.strip() for event_id in event_ids if event_id.strip()))
+    if not unique_ids:
+        return {"deleted": False, "deleted_count": 0, "missing_count": 0, "maintenance_logged": False}
+
+    placeholders = ",".join("?" for _ in unique_ids)
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT id, created_at, requester, action FROM audit_logs WHERE id IN ({placeholders})",
+            unique_ids,
+        ).fetchall()
+        if not rows:
+            return {"deleted": False, "deleted_count": 0, "missing_count": len(unique_ids), "maintenance_logged": False}
+
+        found_ids = [row["id"] for row in rows]
+        action_counts: dict[str, int] = {}
+        for row in rows:
+            action_counts[row["action"]] = action_counts.get(row["action"], 0) + 1
+
+        delete_placeholders = ",".join("?" for _ in found_ids)
+        conn.execute(f"DELETE FROM audit_logs WHERE id IN ({delete_placeholders})", found_ids)
+        _backfill_audit_hashes(conn)
+        conn.execute(
+            "INSERT INTO audit_maintenance_logs (id, created_at, actor, operation, target_event_id, "
+            "target_action, cutoff, deleted_count, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(uuid4()), utc_now(), deleted_by, "delete_selected", None, None, None, len(rows),
+                _canonical_payload({
+                    "deleted_event_ids": found_ids,
+                    "action_counts": action_counts,
+                    "missing_count": len(unique_ids) - len(rows),
+                }),
+            ),
+        )
+        return {
+            "deleted": True,
+            "deleted_count": len(rows),
+            "missing_count": len(unique_ids) - len(rows),
+            "action_counts": action_counts,
+            "maintenance_logged": True,
+        }
+
+
 def _normalize_audit_cutoff(cutoff: str) -> str:
     """把审计清理时间参数规范化为 UTC ISO 8601。
 
