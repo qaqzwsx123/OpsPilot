@@ -925,6 +925,7 @@ $("#refresh-skill-history").addEventListener("click", loadSkillHistory);
 $("#tool-category-filter").addEventListener("change", renderTools);
 $("#tool-risk-filter").addEventListener("change", renderTools);
 $("#refresh-tool-history").addEventListener("click", loadToolHistory);
+$("#toggle-tool-result").addEventListener("click", toggleToolResult);
 $("#add-custom-tool").addEventListener("click", openCustomToolForm);
 $("#cancel-custom-tool").addEventListener("click", () => { $("#custom-tool-form").hidden = true; });
 $("#custom-tool-table").addEventListener("change", renderCustomToolColumns);
@@ -1235,6 +1236,9 @@ async function openCustomToolForm() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "无法加载可查询表结构");
     customToolSchema = result;
+    const categories = [...new Set(allTools.filter((tool) => tool.risk === "auto").map((tool) => tool.category))];
+    if (!categories.includes("其他")) categories.push("其他");
+    $("#custom-tool-category").innerHTML = '<option value="">请选择分类</option>' + categories.map((category) => '<option value="' + escapeHtml(category) + '">' + escapeHtml(category) + '</option>').join("");
     $("#custom-tool-table").innerHTML = customToolSchema.map((table) => '<option value="' + escapeHtml(table.name) + '">' + escapeHtml(table.label) + '（' + escapeHtml(table.name) + '）</option>').join("");
     $("#custom-tool-form").hidden = false;
     $("#custom-tool-filters").innerHTML = "";
@@ -1367,8 +1371,7 @@ async function invokeTool(name, button) {
     const response = await fetch("/api/v1/tools/" + encodeURIComponent(name) + "/invoke", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", arguments:tool && tool.custom ? argumentsPayload : {} }) });
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "工具调用失败");
-    const box = $("#tool-result"); box.hidden = false;
-    box.textContent = JSON.stringify(result, null, 2);
+    showToolResult(JSON.stringify(result, null, 2));
     if (result.status === "approval_required" && result.approval_id) {
       toast("已创建审批单，可前往审批中心处理"); loadApprovals();
     } else {
@@ -1376,11 +1379,28 @@ async function invokeTool(name, button) {
     }
     loadAudit(); loadToolHistory();
   } catch (error) {
-    const box = $("#tool-result"); box.hidden = false;
-    box.textContent = "工具调用失败：" + (error.message || "未知错误");
+    showToolResult("工具调用失败：" + (error.message || "未知错误"));
     toast(error.message || "工具调用失败");
   }
   finally { button.disabled = false; button.textContent = "试运行工具"; }
+}
+
+function showToolResult(content) {
+  const panel = $("#tool-result-panel");
+  const toggle = $("#toggle-tool-result");
+  panel.hidden = false;
+  panel.classList.remove("collapsed");
+  $("#tool-result").textContent = content;
+  toggle.textContent = "收起结果";
+  toggle.setAttribute("aria-expanded", "true");
+}
+
+function toggleToolResult() {
+  const panel = $("#tool-result-panel");
+  const collapsed = panel.classList.toggle("collapsed");
+  const toggle = $("#toggle-tool-result");
+  toggle.textContent = collapsed ? "展开结果" : "收起结果";
+  toggle.setAttribute("aria-expanded", String(!collapsed));
 }
 
 function renderMetricCatalog(metrics) {
