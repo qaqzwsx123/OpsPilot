@@ -861,7 +861,8 @@ $("#cleanup-audit").addEventListener("click", cleanupAuditByTime);
 $("#prev-audit").addEventListener("click", () => { auditOffset = Math.max(0, auditOffset - recordPageSize); loadAudit(); });
 $("#next-audit").addEventListener("click", () => { auditOffset += recordPageSize; loadAudit(); });
 $("#refresh-data").addEventListener("click", () => loadDataExplorer());
-$("#data-table-select").addEventListener("change", () => { explorerOffset = 0; loadDataTable(); });
+$("#data-table-select").addEventListener("change", () => { explorerOffset = 0; renderDataCatalog(explorerCatalog); loadDataTable(); });
+$("#data-table-filter").addEventListener("input", () => renderDataCatalog(explorerCatalog));
 $("#prev-data").addEventListener("click", () => { explorerOffset = Math.max(0, explorerOffset - 30); loadDataTable(); });
 $("#next-data").addEventListener("click", () => { explorerOffset += 30; loadDataTable(); });
 $("#run-evaluation").addEventListener("click", openEvaluationDialog);
@@ -1140,17 +1141,24 @@ async function loadMonitoring() {
 }
 
 function renderDataCatalog(tables) {
-  $("#data-catalog").innerHTML = tables.map((table) => '<button class="data-catalog-item" data-data-table="' + escapeHtml(table.name) + '"><strong>' + escapeHtml(table.label) + '</strong><small>' + escapeHtml(table.name) + ' · ' + table.row_count + ' 行 · ' + table.column_count + ' 列</small></button>').join("");
-  document.querySelectorAll("[data-data-table]").forEach((button) => button.addEventListener("click", () => { $("#data-table-select").value = button.dataset.dataTable; explorerOffset = 0; loadDataTable(); }));
+  const query = $("#data-table-filter").value.trim().toLocaleLowerCase();
+  const filtered = tables.filter((table) => !query || (table.name + " " + table.label).toLocaleLowerCase().includes(query));
+  const selected = $("#data-table-select").value;
+  $("#data-catalog-count").textContent = query ? "显示 " + filtered.length + " / " + tables.length + " 张表" : tables.length + " 张授权表";
+  $("#data-catalog").innerHTML = filtered.length
+    ? filtered.map((table) => '<button class="data-catalog-item' + (table.name === selected ? ' active' : '') + '" data-data-table="' + escapeHtml(table.name) + '" aria-pressed="' + (table.name === selected) + '"><strong>' + escapeHtml(table.label) + '</strong><small>' + escapeHtml(table.name) + ' · ' + table.row_count + ' 行 · ' + table.column_count + ' 列</small></button>').join("")
+    : '<div class="data-catalog-empty">没有匹配的表</div>';
+  document.querySelectorAll("[data-data-table]").forEach((button) => button.addEventListener("click", () => { $("#data-table-select").value = button.dataset.dataTable; explorerOffset = 0; renderDataCatalog(tables); loadDataTable(); }));
 }
 
 async function loadDataExplorer() {
   try {
     const response = await fetch("/api/v1/data/tables?role=" + encodeURIComponent(currentRole())); const tables = await response.json();
     if (!response.ok) throw new Error(tables.detail || "数据目录加载失败");
-    const current = $("#data-table-select").value; explorerCatalog = tables; renderDataCatalog(tables);
+    const current = $("#data-table-select").value; explorerCatalog = tables;
     $("#data-table-select").innerHTML = tables.map((table) => '<option value="' + escapeHtml(table.name) + '">' + escapeHtml(table.label) + '（' + escapeHtml(table.name) + '）</option>').join("");
     $("#data-table-select").value = tables.some((table) => table.name === current) ? current : (tables[0]?.name || "");
+    renderDataCatalog(tables);
     explorerOffset = 0; await loadDataTable();
   } catch (error) { $("#data-table-wrap").innerHTML = '<div class="empty-state"><strong>无法加载数据浏览器</strong><p>' + escapeHtml(error.message || "请确认当前角色具有只读权限") + '</p></div>'; }
 }
