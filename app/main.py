@@ -61,6 +61,7 @@ from app.database import (
     document_chunks,             # 查询文档分块
     execute_approved,            # 执行已批准变更
     get_chat_messages,           # 查询会话消息
+    last_chat_message_is_user,    # 确认重试目标仍是末尾未完成消息
     import_metric_csv,           # 导入指标 CSV
     initialize,                  # 初始化数据库
     knowledge_document_count,    # 知识文档数量
@@ -253,6 +254,41 @@ class ChatTurnRequest(MutationActorRequest):
     """向已有会话追加一轮用户消息。"""
     # 当前轮的自然语言内容，聊天服务会结合历史上下文调用模型。
     content: str = Field(min_length=1, max_length=4000)
+    retry: bool = False
+
+
+def _chat_evidence_details(automation: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """整理每轮工具执行明细和知识库引用，限制展示字段和样本体积。"""
+    tools: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    for item in automation.get("evidence", []):
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool") or "unknown")
+        sample = item.get("sample") or []
+        if not isinstance(sample, list):
+            sample = [sample] if isinstance(sample, dict) else []
+        summary = str(item.get("summary") or "")[:500]
+        tools.append({
+            "tool": tool_name,
+            "status": str(item.get("status") or "unknown"),
+            "reason": str(item.get("reason") or "")[:240],
+            "result_count": item.get("result_count", 0),
+            "summary": summary,
+            "sample": sample[:3] if isinstance(sample, list) else [],
+        })
+        if tool_name == "knowledge_search" and isinstance(sample, list):
+            for document in sample[:5]:
+                if not isinstance(document, dict) or document.get("document_id") is None:
+                    continue
+                sources.append({
+                    "document_id": document.get("document_id"),
+                    "title": str(document.get("title") or "知识库文档")[:160],
+                    "chunk_index": document.get("chunk_index"),
+                    "excerpt": str(document.get("content") or "")[:360],
+                    "score": document.get("score"),
+                })
+    return tools, sources
 
 
 def _bounded_context_value(value: Any, list_limit: int = 3) -> Any:
@@ -294,7 +330,10 @@ def _prepare_chat_automation(question: str, plan: dict[str, Any], requester: str
                 "result_count": evidence["result_count"], "reason": evidence["reason"],
                 "selection_mode": "skill_workflow", "role": role,
             })
-        return {"type": "skill", "name": skill.name, "tools": result.get("tools_used", [])}
+        return {
+            "type": "skill", "name": skill.name, "tools": result.get("tools_used", []),
+            "evidence": result.get("tool_evidence", []),
+        }
 
     # 先判断知识、数据或混合意图，强制保证规范类请求查知识，纯数据请求不额外查 SOP。
     needs_knowledge, needs_data = classify_query_intent(question)
@@ -321,8 +360,11 @@ def _prepare_chat_automation(question: str, plan: dict[str, Any], requester: str
                     "result_count": item.get("result_count", 0), "reason": item.get("reason", ""),
                     "selection_mode": mode, "role": role,
                 })
-        return {"type": plan["automation_type"], "name": plan["automation_name"], "tools": [item.name for item in selections]}
-    return {"type": "none", "name": "", "tools": []}
+        return {
+            "type": plan["automation_type"], "name": plan["automation_name"],
+            "tools": [item.name for item in selections], "evidence": evidence,
+        }
+    return {"type": "none", "name": "", "tools": [], "evidence": []}
 
 
 class ApprovalActionRequest(BaseModel):
@@ -498,7 +540,12 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
     """
     if not permitted(request.role, "read"):
         raise HTTPException(status_code=403, detail="当前角色无 Agent 聊天权限。")
-    if add_chat_message(conversation_id, request.requester, "user", request.content) is None:
+    if get_chat_messages(conversation_id, request.requester) is None:
+        raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
+    if request.retry:
+        if not last_chat_message_is_user(conversation_id, request.requester, request.content):
+            raise HTTPException(status_code=409, detail="当前会话没有可重试的未完成消息，请刷新会话后再试。")
+    elif add_chat_message(conversation_id, request.requester, "user", request.content) is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
     history = get_chat_messages(conversation_id, request.requester)
     if history is None:
@@ -519,11 +566,19 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
         # 先识别可运行流程或真实只读工具；首个 SSE 事件让前端显示正在规划。
         yield emit("stage", {"stage": "route", "message": "正在识别运维流程和只读工具…"})
         automation = _prepare_chat_automation(request.content, plan, request.requester, request.role)
+        tool_details, source_details = _chat_evidence_details(automation)
         if automation["type"] != "none":
             yield emit("stage", {
                 "stage": "automation",
                 "message": ("执行运维流程：" if automation["type"] == "skill" else "已调用只读工具：") + automation["name"],
                 "tools": automation["tools"],
+                "evidence": tool_details,
+                "sources": source_details,
+            })
+        else:
+            yield emit("stage", {
+                "stage": "evidence", "message": "本轮未调用工具或检索知识库。",
+                "tools": [], "evidence": [], "sources": [],
             })
 
         # 等 SSE 连接建立后再调用摘要模型，避免摘要过程阻塞 HTTP 响应头。
@@ -550,9 +605,11 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
 
         chunks: list[str] = []  # 收集所有 token，用于最终写入助手消息
         provider = "fallback"   # 默认兜底 provider
+        stream_iterator = None
         try:
             # 逐段读取聊天服务的流式输出。
-            for item in chat_service.stream_reply(model_messages, plan, prepared=True):
+            stream_iterator = chat_service.stream_reply(model_messages, plan, prepared=True)
+            for item in stream_iterator:
                 provider = item.get("provider", provider)
                 if item.get("type") == "token":
                     chunks.append(item["content"])
@@ -560,7 +617,12 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
 
             # 拼接完整回复并持久化。
             content = "".join(chunks)
-            message = add_chat_message(conversation_id, request.requester, "assistant", content)
+            metadata = {
+                "status": "completed", "route": plan["route"], "steps": plan["steps"],
+                "tools": tool_details, "sources": source_details,
+                "context_stats": context_stats, "provider": provider,
+            }
+            message = add_chat_message(conversation_id, request.requester, "assistant", content, metadata)
 
             # 写审计：记录 provider、role、上下文条数和路线。
             write_audit(request.requester, "agent_chat_stream_completed", {
@@ -576,9 +638,25 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
                 "message": message,
                 "plan": plan,
             })
+        except GeneratorExit:
+            write_audit(request.requester, "agent_chat_stream_cancelled", {
+                "conversation_id": conversation_id, "route": plan.get("route"), "role": request.role,
+            })
+            raise
         except Exception as exc:  # keep the browser informed if the stream fails after it starts
             # 流已经开始，无法再返回 HTTP 状态码，通过 error 事件通知前端。
+            write_audit(request.requester, "agent_chat_stream_failed", {
+                "conversation_id": conversation_id, "provider": provider,
+                "route": plan.get("route"), "error": type(exc).__name__, "role": request.role,
+            })
             yield emit("error", {"message": "流式聊天失败：" + str(exc)[:180]})
+        finally:
+            close = getattr(stream_iterator, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
     # 返回 SSE 响应：禁用缓存和 Nginx 缓冲，保证增量实时到达浏览器。
     return StreamingResponse(

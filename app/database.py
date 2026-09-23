@@ -177,7 +177,7 @@ def initialize() -> None:
             CREATE TABLE IF NOT EXISTS chat_messages (
               id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL,
               role TEXT NOT NULL CHECK(role IN ('user', 'assistant')), content TEXT NOT NULL,
-              created_at TEXT NOT NULL,
+              created_at TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}',
               FOREIGN KEY(conversation_id) REFERENCES chat_conversations(id)
             );
             CREATE INDEX IF NOT EXISTS idx_chat_messages_conversation ON chat_messages(conversation_id, id);
@@ -215,6 +215,10 @@ def initialize() -> None:
 
         # Lightweight migrations keep existing local demo databases compatible.
         # 下面这些迁移用于兼容早期演示库；对不存在字段的执行 ALTER TABLE。
+
+        chat_columns = {row["name"] for row in conn.execute("PRAGMA table_info(chat_messages)").fetchall()}
+        if "metadata_json" not in chat_columns:
+            conn.execute("ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'")
 
         # approvals 表补列：executed_at、execution_result、risk_level、impact_preview 等。
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(approvals)").fetchall()}
@@ -1253,7 +1257,7 @@ def list_chat_conversations(requester: str, limit: int = 100) -> list[dict[str, 
     return [dict(row) for row in rows]
 
 
-def get_chat_messages(conversation_id: str, requester: str) -> list[dict[str, str]] | None:
+def get_chat_messages(conversation_id: str, requester: str) -> list[dict[str, Any]] | None:
     """返回指定会话的所有消息，按 id 正序。
 
     - 会话不属于该 requester 时返回 None，避免越权访问；
@@ -1267,13 +1271,21 @@ def get_chat_messages(conversation_id: str, requester: str) -> list[dict[str, st
         if conversation is None:
             return None
         rows = conn.execute(
-            "SELECT role, content, created_at FROM chat_messages WHERE conversation_id = ? ORDER BY id",
+            "SELECT role, content, created_at, metadata_json FROM chat_messages WHERE conversation_id = ? ORDER BY id",
             (conversation_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+    messages = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            item["metadata"] = {}
+        messages.append(item)
+    return messages
 
 
-def add_chat_message(conversation_id: str, requester: str, role: str, content: str) -> dict[str, str] | None:
+def add_chat_message(conversation_id: str, requester: str, role: str, content: str, metadata: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """向属于 requester 的会话追加 user/assistant 消息并更新时间。
 
     - role 只允许 user 或 assistant；
@@ -1294,8 +1306,8 @@ def add_chat_message(conversation_id: str, requester: str, role: str, content: s
 
         # 写入消息。
         conn.execute(
-            "INSERT INTO chat_messages (conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-            (conversation_id, role, content, timestamp),
+            "INSERT INTO chat_messages (conversation_id, role, content, created_at, metadata_json) VALUES (?, ?, ?, ?, ?)",
+            (conversation_id, role, content, timestamp, json.dumps(metadata or {}, ensure_ascii=False, default=str)),
         )
 
         # 首次用户消息时自动生成会话标题。
@@ -1312,7 +1324,19 @@ def add_chat_message(conversation_id: str, requester: str, role: str, content: s
                 "UPDATE chat_conversations SET updated_at = ? WHERE id = ?",
                 (timestamp, conversation_id),
             )
-    return {"role": role, "content": content, "created_at": timestamp}
+    return {"role": role, "content": content, "created_at": timestamp, "metadata": metadata or {}}
+
+
+def last_chat_message_is_user(conversation_id: str, requester: str, content: str) -> bool:
+    """确认重试只针对该用户会话末尾尚未得到助手回复的同一条用户消息。"""
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT m.role, m.content FROM chat_messages m "
+            "JOIN chat_conversations c ON c.id = m.conversation_id "
+            "WHERE m.conversation_id = ? AND c.requester = ? ORDER BY m.id DESC LIMIT 1",
+            (conversation_id, requester),
+        ).fetchone()
+    return bool(row and row["role"] == "user" and row["content"] == content)
 
 
 def delete_chat_conversation(conversation_id: str, requester: str) -> bool:

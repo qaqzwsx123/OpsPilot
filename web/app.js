@@ -18,6 +18,8 @@ let editingKnowledgeId = null;
 let knowledgeRecordCache = new Map();
 let chatConversationId = "";
 let chatConversations = [];
+let activeChatController = null;
+let activeChatConversationId = "";
 let allSkills = [];
 let skillPage = 0;
 let allTools = [];
@@ -42,7 +44,8 @@ const pageGuides = {
   chat: { eyebrow:"LOCAL LLM CHAT", title:"Agent 聊天使用说明", lead:"这是本地 LLM 的多轮讨论入口，适合咨询排障思路、解释系统概念和制定操作建议。", sections:[
     { title:"会话管理", text:"点击“新建对话”开始；历史对话会保存在本地 SQLite，可重新打开或删除自己的会话。" },
     { title:"输入方式", text:"Enter 发送，Shift + Enter 换行。模型回复会标识为本地 LLM 或离线提示。" },
-    { title:"重要边界", text:"聊天不会自动执行 SQL、调用工具、创建工单或修改数据。需要业务操作时，请到智能查询、工具中心或审批中心明确发起。", tone:"blocked" }
+    { title:"工具与证据", text:"每轮会显示调用的只读工具、选择原因、返回条数和样例；知识库命中会显示文档引用，可点击查看对应原文片段。生成中可以停止，异常或手动停止后可以重试。", tone:"manual" },
+    { title:"重要边界", text:"聊天可能根据问题调用已授权的只读工具和知识库检索，不会通过这些工具修改业务数据。写操作仍须到审批流程中明确发起。", tone:"blocked" }
   ] },
   monitoring: { eyebrow:"LIVE OPERATIONS", title:"监控中心使用说明", lead:"监控中心把当前资产状态、未关闭告警和待处理工单汇总在同一页，便于快速发现异常范围。", sections:[
     { title:"查看内容", text:"资产运行状态展示在线、离线和维护中的设备；告警分布按严重程度汇总；最近告警提供明细。" },
@@ -594,12 +597,13 @@ async function loadKnowledgeTags() {
   try { const response = await fetch("/api/v1/knowledge/tags?role=" + encodeURIComponent(currentRole())); const tags = await response.json(); if (!response.ok) throw new Error(); $("#knowledge-tag-filter").innerHTML = '<option value="">全部标签</option>' + tags.map((tag) => '<option value="' + escapeHtml(tag) + '">' + escapeHtml(tag) + '</option>').join(""); } catch { /* keep default filter */ }
 }
 
-async function showKnowledgeChunks(documentId) {
+async function showKnowledgeChunks(documentId, focusChunkIndex = null) {
   try {
     const response = await fetch("/api/v1/knowledge/" + documentId + "/chunks?role=" + encodeURIComponent(currentRole())); const chunks = await response.json(); if (!response.ok) throw new Error(chunks.detail || "加载失败");
     activeAuditAction = "";
-    renderAuditAction("文档分块预览", "KNOWLEDGE CHUNKS", '<p class="modal-lead">共 ' + chunks.length + ' 个分块。每个分块是 RAG 检索、评分和引用的最小证据单元。</p><div class="knowledge-chunk-list">' + chunks.map((chunk) => '<div><strong>片段 ' + (chunk.chunk_index + 1) + ' · 约 ' + chunk.token_count + ' Token</strong><p>' + escapeHtml(chunk.content) + '</p></div>').join("") + '</div>', "关闭");
+    renderAuditAction("文档分块预览", "KNOWLEDGE CHUNKS", '<p class="modal-lead">共 ' + chunks.length + ' 个分块。每个分块是 RAG 检索、评分和引用的最小证据单元。</p><div class="knowledge-chunk-list">' + chunks.map((chunk) => '<div id="knowledge-chunk-' + chunk.chunk_index + '" class="' + (Number(chunk.chunk_index) === Number(focusChunkIndex) ? "focused-knowledge-chunk" : "") + '"><strong>片段 ' + (chunk.chunk_index + 1) + ' · 约 ' + chunk.token_count + ' Token</strong><p>' + escapeHtml(chunk.content) + '</p></div>').join("") + '</div>', "关闭");
     $("#confirm-audit-action").onclick = () => setAuditActionVisible(false); setAuditActionVisible(true);
+    if (focusChunkIndex !== null && focusChunkIndex !== undefined) requestAnimationFrame(() => document.getElementById("knowledge-chunk-" + focusChunkIndex)?.scrollIntoView({block:"center", behavior:"smooth"}));
   } catch (error) { toast(error.message || "无法加载文档分块"); }
 }
 
@@ -1026,7 +1030,19 @@ function renderChatMessages(messages) {
   const target = $("#chat-messages");
   $("#chat-task-plan").textContent = messages.length ? "已加载 " + messages.length + " 条上下文" : "多轮上下文待加载";
   if (!messages.length) { target.innerHTML = '<div class="empty-state"><strong>开始一次 Agent 对话</strong><p>例如：如何处理华东 P1 网关离线？</p></div>'; return; }
-  target.innerHTML = messages.map((message) => '<article class="chat-bubble ' + escapeHtml(message.role) + '"><span>' + (message.role === "user" ? "你" : "OpsPilot") + '</span><div>' + escapeHtml(message.content).replace(/\n/g, "<br>") + '</div></article>').join("");
+  target.innerHTML = messages.map((message) => {
+    const meta = message.metadata || {};
+    const tools = (meta.tools || []).map((item) => '<div class="chat-evidence-tool ' + (item.status === "completed" ? "success" : "failed") + '"><strong>' + (item.status === "completed" ? "✓" : "×") + ' ' + escapeHtml(item.tool || "工具") + '</strong><span>' + escapeHtml(item.status || "unknown") + ' · ' + escapeHtml(String(item.result_count ?? "—")) + ' 条</span><small>' + escapeHtml(item.reason || item.summary || "") + '</small>' + (item.summary && item.reason ? '<small>' + escapeHtml(item.summary) + '</small>' : '') + (item.status !== "completed" ? '<em>本工具未成功返回证据</em>' : '') + (item.sample?.length ? '<details><summary>查看返回样例</summary><pre>' + escapeHtml(JSON.stringify(item.sample, null, 2)) + '</pre></details>' : '') + '</div>').join("");
+    const sources = (meta.sources || []).map((source) => '<div class="chat-source"><button class="chat-source-link" data-chat-source="' + escapeHtml(source.document_id) + '" data-chat-chunk="' + escapeHtml(source.chunk_index ?? "") + '">📄 ' + escapeHtml(source.title || "知识库文档") + (source.chunk_index !== null && source.chunk_index !== undefined ? ' · 片段 ' + (Number(source.chunk_index) + 1) : '') + '</button>' + (source.excerpt ? '<small>' + escapeHtml(source.excerpt) + '</small>' : '') + '</div>').join("");
+    const summary = (meta.tools || []).length || (meta.sources || []).length
+      ? '<section class="chat-evidence"><strong>本轮使用的工具与证据</strong>' + (tools || '<small>没有工具调用记录</small>') + (sources ? '<div class="chat-sources"><strong>知识库引用（点击查看原文片段）</strong>' + sources + '</div>' : '') + '</section>'
+      : (message.role === "assistant" && meta.status ? '<section class="chat-evidence"><strong>本轮未调用工具或检索知识库</strong></section>' : "");
+    return '<article class="chat-bubble ' + escapeHtml(message.role) + '"><span>' + (message.role === "user" ? "你" : "OpsPilot") + '</span><div>' + escapeHtml(message.content).replace(/\n/g, "<br>") + '</div>' + summary + '</article>';
+  }).join("");
+  target.querySelectorAll("[data-chat-source]").forEach((button) => button.addEventListener("click", () => {
+    document.querySelector('.nav-item[data-page="knowledge"]').click();
+    showKnowledgeChunks(button.dataset.chatSource, button.dataset.chatChunk === "" ? null : Number(button.dataset.chatChunk));
+  }));
   target.scrollTop = target.scrollHeight;
 }
 
@@ -1037,6 +1053,18 @@ function appendChatBubble(role, content) {
   article.innerHTML = '<span>' + (role === "user" ? "你" : "OpsPilot") + '</span><div>' + escapeHtml(content || "") + '</div>';
   target.appendChild(article); target.scrollTop = target.scrollHeight;
   return article.querySelector("div");
+}
+
+function renderLiveChatEvidence(article, evidence = [], sources = []) {
+  let panel = article.querySelector(".chat-evidence");
+  if (!panel) { panel = document.createElement("section"); panel.className = "chat-evidence"; article.appendChild(panel); }
+  const tools = evidence.map((item) => '<div class="chat-evidence-tool ' + (item.status === "completed" ? "success" : "failed") + '"><strong>' + (item.status === "completed" ? "✓" : "×") + ' ' + escapeHtml(item.tool || "工具") + '</strong><span>' + escapeHtml(item.status || "unknown") + ' · ' + escapeHtml(String(item.result_count ?? "—")) + ' 条</span><small>' + escapeHtml(item.reason || "") + '</small>' + (item.summary ? '<small>' + escapeHtml(item.summary) + '</small>' : '') + (item.status !== "completed" ? '<em>本工具未成功返回证据</em>' : '') + (item.sample?.length ? '<details><summary>查看返回样例</summary><pre>' + escapeHtml(JSON.stringify(item.sample, null, 2)) + '</pre></details>' : '') + '</div>').join("");
+  const refs = sources.map((source) => '<div class="chat-source"><button class="chat-source-link" data-chat-source="' + escapeHtml(source.document_id) + '" data-chat-chunk="' + escapeHtml(source.chunk_index ?? "") + '">📄 ' + escapeHtml(source.title || "知识库文档") + (source.chunk_index !== null && source.chunk_index !== undefined ? ' · 片段 ' + (Number(source.chunk_index) + 1) : '') + '</button>' + (source.excerpt ? '<small>' + escapeHtml(source.excerpt) + '</small>' : '') + '</div>').join("");
+  panel.innerHTML = '<strong>本轮使用的工具与证据</strong>' + (tools || '<small>本轮未调用工具或检索知识库。</small>') + (refs ? '<div class="chat-sources"><strong>知识库引用（点击查看原文片段）</strong>' + refs + '</div>' : '');
+  panel.querySelectorAll("[data-chat-source]").forEach((button) => button.addEventListener("click", () => {
+    document.querySelector('.nav-item[data-page="knowledge"]').click();
+    showKnowledgeChunks(button.dataset.chatSource, button.dataset.chatChunk === "" ? null : Number(button.dataset.chatChunk));
+  }));
 }
 
 function renderChatConversations() {
@@ -1057,6 +1085,7 @@ async function loadChat() {
 }
 
 async function createChat() {
+  if (activeChatController) activeChatController.abort();
   try {
     const response = await fetch("/api/v1/chat/conversations", chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", title:"新对话" })); const conversation = await response.json();
     if (!response.ok) throw new Error(conversation.detail || "创建对话失败");
@@ -1065,6 +1094,7 @@ async function createChat() {
 }
 
 async function openChat(conversationId) {
+  if (activeChatController && conversationId !== activeChatConversationId) activeChatController.abort();
   try {
     const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(conversationId) + "/messages?requester=Lenovo&role=" + encodeURIComponent(currentRole())); const messages = await response.json();
     if (!response.ok) throw new Error(messages.detail || "对话加载失败");
@@ -1073,6 +1103,7 @@ async function openChat(conversationId) {
 }
 
 async function deleteChat(conversationId) {
+  if (activeChatController && activeChatConversationId === conversationId) activeChatController.abort();
   if (!await showConfirmDialog({ title:"删除 Agent 对话", eyebrow:"CONVERSATION DELETE", message:"确认删除该 Agent 对话及其历史消息？", detail:"删除后当前对话和消息记录将无法在页面恢复。", confirmText:"确认删除" })) return;
   try {
     const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(conversationId), chatRequestOptions("DELETE", { role:currentRole(), requester:"Lenovo" })); const result = await response.json();
@@ -1100,16 +1131,35 @@ function formatChatContextStats(stats) {
 }
 
 async function sendChat() {
-  const content = $("#chat-input").value.trim(); if (!content) return;
+  if (activeChatController) { activeChatController.abort(); return; }
+  return runChatTurn();
+}
+
+async function retryChatTurn(content) {
+  if (activeChatController) return;
+  return runChatTurn(content, true);
+}
+
+async function runChatTurn(retryContent = null, retry = false) {
+  const content = retry ? retryContent : $("#chat-input").value.trim(); if (!content) return;
   if (!chatConversationId) { await createChat(); if (!chatConversationId) return; }
-  const button = $("#send-chat"); button.disabled = true; button.textContent = "思考中…"; $("#chat-input").disabled = true;
+  const conversationId = chatConversationId;
+  const button = $("#send-chat"); const controller = new AbortController(); activeChatController = controller; activeChatConversationId = conversationId;
+  button.disabled = false; button.textContent = "停止 ■"; button.classList.add("chat-stop-button"); $("#chat-input").disabled = true;
   $("#chat-context-stat").textContent = "正在统计本轮上下文…";
-  $("#chat-input").value = "";
-  appendChatBubble("user", content);
+  if (!retry) { $("#chat-input").value = ""; appendChatBubble("user", content); }
   const assistantTarget = appendChatBubble("assistant", "");
+  const assistantArticle = assistantTarget.closest(".chat-bubble");
   let assistantText = "";
+  let retryAdded = false;
+  const addRetryControl = (reason) => {
+    if (retryAdded) return; retryAdded = true;
+    const status = document.createElement("small"); status.className = "chat-turn-status"; status.textContent = reason;
+    const retryButton = document.createElement("button"); retryButton.className = "chat-retry-button"; retryButton.textContent = "重试本轮 ↻"; retryButton.addEventListener("click", () => retryChatTurn(content));
+    assistantArticle.append(status, retryButton);
+  };
   try {
-    const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(chatConversationId) + "/messages/stream", chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", content }));
+    const response = await fetch("/api/v1/chat/conversations/" + encodeURIComponent(conversationId) + "/messages/stream", {...chatRequestOptions("POST", { role:currentRole(), requester:"Lenovo", content, retry }), signal:controller.signal});
     if (!response.ok) { const result = await response.json(); throw new Error(result.detail || "聊天请求失败"); }
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let buffer = ""; let finished = false;
     const consume = (block) => {
@@ -1117,21 +1167,30 @@ async function sendChat() {
       const dataLine = block.split("\n").find((line) => line.startsWith("data:")); if (!dataLine) return;
       const data = JSON.parse(dataLine.slice(5).trim());
       if (eventName === "stage") {
-        $("#chat-provider").textContent = data.stage === "context" ? "加载上下文" : "任务规划中";
-        if (data.stage === "context") $("#chat-context-stat").textContent = formatChatContextStats(data.stats);
-        $("#chat-task-plan").textContent = data.stage === "plan" ? "任务规划：" + data.message + " · " + (data.steps || []).join(" → ") : data.message;
+        if (chatConversationId === conversationId) {
+          $("#chat-provider").textContent = data.stage === "context" ? "加载上下文" : "任务规划中";
+          if (data.stage === "context") $("#chat-context-stat").textContent = formatChatContextStats(data.stats);
+          $("#chat-task-plan").textContent = data.stage === "plan" ? "任务规划：" + data.message + " · " + (data.steps || []).join(" → ") : data.message;
+        }
+        if (data.stage === "automation" || data.stage === "evidence") renderLiveChatEvidence(assistantArticle, data.evidence || [], data.sources || []);
       } else if (eventName === "token") {
-        assistantText += data.content || ""; assistantTarget.innerHTML = escapeHtml(assistantText).replace(/\n/g, "<br>"); $("#chat-provider").textContent = data.provider === "local_llm" ? "本地 LLM · 流式" : "离线流式";
-        $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight;
+        assistantText += data.content || ""; assistantTarget.innerHTML = escapeHtml(assistantText).replace(/\n/g, "<br>");
+        if (chatConversationId === conversationId) { $("#chat-provider").textContent = data.provider === "local_llm" ? "本地 LLM · 流式" : "离线流式"; $("#chat-messages").scrollTop = $("#chat-messages").scrollHeight; }
       } else if (eventName === "done") {
-        finished = true; $("#chat-task-plan").textContent = "已完成：" + data.plan.route + " · 已保留上下文";
+        finished = true; if (chatConversationId === conversationId) $("#chat-task-plan").textContent = "已完成：" + data.plan.route + " · 已保留上下文";
       } else if (eventName === "error") throw new Error(data.message || "流式聊天失败");
     };
     while (true) { const {value, done} = await reader.read(); if (done) break; buffer += decoder.decode(value, {stream:true}); const blocks = buffer.split("\n\n"); buffer = blocks.pop(); blocks.forEach(consume); }
     if (buffer.trim()) consume(buffer); if (!finished) throw new Error("流式响应未正常结束");
-    await loadChat(); await openChat(chatConversationId); loadAudit();
-  } catch (error) { toast(error.message || "聊天请求失败"); }
-  finally { button.disabled = false; button.textContent = "发送 ↗"; $("#chat-input").disabled = false; $("#chat-input").focus(); }
+    await loadChat(); if (chatConversationId === conversationId) await openChat(conversationId); loadAudit();
+  } catch (error) {
+    const stopped = error.name === "AbortError" || controller.signal.aborted;
+    addRetryControl(stopped ? "已停止生成；已完成的只读工具不会回滚，助手回复未保存。" : "本轮生成失败；用户消息已保留，可以重试。");
+    if (!stopped) toast(error.message || "聊天请求失败");
+  }
+  finally {
+    if (activeChatController === controller) { activeChatController = null; activeChatConversationId = ""; button.disabled = false; button.textContent = "发送 ↗"; button.classList.remove("chat-stop-button"); $("#chat-input").disabled = false; $("#chat-input").focus(); }
+  }
 }
 
 function renderApprovals(approvals) {
