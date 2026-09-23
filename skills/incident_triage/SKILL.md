@@ -5,6 +5,11 @@ category: 告警处置
 risk: auto
 runnable: true
 suggestions: P1 告警|华东 P1 告警
+triggers: 告警分诊|告警排查流程|P1 告警怎么处理|P2 告警怎么处理
+tools: alert_query|asset_lookup
+input: 可选告警级别（P1/P2/P3）和区域（华东/华南/华北）
+steps: 确认级别和区域|查询未关闭告警|关联非在线设备|输出影响范围与排查建议
+output: 告警列表、关联设备、影响范围、排查步骤和升级建议
 ---
 
 # 告警分诊 SOP

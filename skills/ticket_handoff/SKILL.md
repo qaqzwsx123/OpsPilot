@@ -5,6 +5,11 @@ category: 工单协同
 risk: auto
 runnable: true
 suggestions: 当前待处理工单|高优工单交接
+triggers: 工单交接|工单交接清单|交接未关闭工单
+tools: ticket_query|unassigned_tickets|ticket_priority_summary
+input: 可选负责人或交接班次说明
+steps: 查询未关闭工单|识别高优和未分配事项|生成逐单交接检查清单
+output: 工单列表、高优数量、未分配事项和交接检查项
 ---
 
 # 工单交接 SOP

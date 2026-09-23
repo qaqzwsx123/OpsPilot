@@ -5,6 +5,11 @@ category: 变更安全
 risk: manual
 runnable: true
 suggestions: DELETE FROM alerts WHERE status = 'closed';|SELECT * FROM alerts LIMIT 20;
+triggers: 变更评审|SQL 风险评审|评估这条 SQL|检查变更风险
+tools:
+input: SQL 或变更方案描述
+steps: 识别操作类型和风险|说明影响与审批要求|给出回滚和验证检查项
+output: 风险等级、评审理由、审批要求和回滚检查项
 ---
 
 # 变更评审 SOP

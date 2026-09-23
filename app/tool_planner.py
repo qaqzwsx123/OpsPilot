@@ -105,6 +105,14 @@ class ToolPlanner:
     # 每条规则： (工具名, 触发词元组, 选择理由)
     # 触发词匹配问题小写文本中的子串；命中任意一个即选中该工具。
     rules = (
+        ("unassigned_tickets", ("未分配工单", "无人负责工单", "没有负责人的工单", "未指派工单"), "问题需要定位未分配的开放工单"),
+        ("ticket_priority_summary", ("工单统计", "工单优先级分布", "工单数量汇总", "各级工单"), "问题需要汇总工单优先级和状态"),
+        ("alert_severity_summary", ("告警统计", "告警分布", "告警汇总", "各级告警数量"), "问题需要汇总告警级别和状态"),
+        ("recent_p1_alerts", ("最近的p1", "最近p1告警", "最新p1告警", "一级告警"), "问题需要查看近期最高级别告警"),
+        ("asset_status_summary", ("设备状态统计", "资产状态分布", "按区域统计设备", "资产分布"), "问题需要汇总设备状态或区域分布"),
+        ("asset_owner_summary", ("负责人资产统计", "各负责人设备", "每个负责人", "资产负责人分布"), "问题需要按负责人汇总设备资产"),
+        ("work_order_status_summary", ("作业统计", "作业状态分布", "任务状态统计", "各类作业数量"), "问题需要汇总运维作业状态和类型"),
+        ("latest_metric_samples", ("最新指标值", "最新监控指标", "最新指标样本", "最近采集的指标"), "问题需要查看最近采集的时序指标值"),
         ("alert_query", ("告警", "报警", "p1", "p2", "p3"), "问题涉及告警级别、状态或影响范围"),
         ("asset_lookup", ("设备", "资产", "网关", "离线", "在线", "维护", "机器人"), "问题涉及设备资产或运行状态"),
         ("ticket_query", ("工单", "高优", "负责人", "优先级"), "问题涉及故障工单或负责人"),
@@ -114,14 +122,6 @@ class ToolPlanner:
         ("approval_queue", ("审批", "待批", "变更单"), "问题涉及待处理审批或变更状态"),
         ("audit_recent", ("审计", "留痕", "追溯", "历史操作"), "问题涉及操作追溯或审计记录"),
         ("system_health", ("系统状态", "服务状态", "健康检查", "健康"), "问题涉及 Agent 或数据接入健康状态"),
-        ("asset_status_summary", ("设备状态统计", "资产状态分布", "按区域统计设备", "资产分布"), "问题需要汇总设备状态或区域分布"),
-        ("asset_owner_summary", ("负责人资产统计", "各负责人设备", "每个负责人", "资产负责人分布"), "问题需要按负责人汇总设备资产"),
-        ("alert_severity_summary", ("告警统计", "告警分布", "告警汇总", "各级告警数量"), "问题需要汇总告警级别和状态"),
-        ("recent_p1_alerts", ("最近的p1", "最近p1告警", "最新p1告警", "一级告警"), "问题需要查看近期最高级别告警"),
-        ("ticket_priority_summary", ("工单统计", "工单优先级分布", "工单数量汇总", "各级工单"), "问题需要汇总工单优先级和状态"),
-        ("unassigned_tickets", ("未分配工单", "无人负责工单", "没有负责人的工单", "未指派工单"), "问题需要定位未分配的开放工单"),
-        ("work_order_status_summary", ("作业统计", "作业状态分布", "任务状态统计", "各类作业数量"), "问题需要汇总运维作业状态和类型"),
-        ("latest_metric_samples", ("最新指标值", "最新监控指标", "最新指标样本", "最近采集的指标"), "问题需要查看最近采集的时序指标值"),
     )
 
     def plan(self, question: str, max_tools: int = 3) -> list[ToolSelection]:
@@ -141,7 +141,7 @@ class ToolPlanner:
         - 不做模型调用，完全确定性。
         """
         # 问题转小写，统一匹配。
-        normalized = question.lower()
+        normalized = "".join(question.casefold().split())
         selected: list[ToolSelection] = []
 
         # 按 rules 顺序遍历，命中触发词即选中。
@@ -152,7 +152,7 @@ class ToolPlanner:
                 continue
 
             # 命中任意触发词即选中。
-            if any(trigger in normalized for trigger in triggers):
+            if any("".join(trigger.casefold().split()) in normalized for trigger in triggers):
                 selected.append(ToolSelection(name, reason))
 
             # 达到上限时提前退出。

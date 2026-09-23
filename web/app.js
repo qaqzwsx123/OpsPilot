@@ -78,10 +78,10 @@ const pageGuides = {
     { title:"验证检索", text:"在右侧输入问题并点击检索，可看到命中文档片段和得分，用于检查知识是否能被正确召回。" },
     { title:"索引说明", text:"保存文档会自动切分并同步到本地 Chroma 向量库；页面右上角会显示集合数量和索引状态。SQLite 仍是业务事实库，Chroma 只是可重建的检索索引，删除或重建索引不会修改业务数据。" }
   ] },
-  skills: { eyebrow:"REUSABLE EXPERIENCE", title:"Skills 与 SOP 使用说明", lead:"Skill 将重复运维经验封装为可复用的输入、步骤、输出和风险声明，方便 Agent 按标准方式执行或给出建议。", sections:[
-    { title:"阅读 SOP", text:"点击“查看完整 SOP”可以查看 Skill 的原始说明、适用场景、输入要求、步骤和边界。" },
-    { title:"试运行", text:"可运行的 Skill 会要求输入本次业务上下文，并返回结构化结论和下一步建议；运行记录会写入审计。" },
-    { title:"执行范围", text:"当前内置试运行 Skill 为只读诊断与建议能力，不会直接关闭告警、创建工单或修改数据库。", tone:"blocked" }
+  skills: { eyebrow:"REUSABLE OPERATIONS FLOWS", title:"运维流程使用说明", lead:"运维流程把多个只读工具按 SOP 组织起来，适合告警分诊、值班交接和容量巡检等复合任务。", sections:[
+    { title:"自动路由", text:"在 Agent 聊天或智能查询中描述流程卡片上的触发场景，系统会优先运行对应流程；普通数据问题仍直接选择只读工具。" },
+    { title:"查看定义与手动运行", text:"卡片列出触发语、输入要求、依赖工具、执行步骤和输出。点击“运行流程”可手动试运行；结果和工具调用都会写入审计。" },
+    { title:"安全边界", text:"流程通过工具中心白名单读取数据，不执行任意 SQL 或直接写业务数据。纯规范文档在知识库中维护和检索。", tone:"blocked" }
   ] },
   tools: { eyebrow:"TOOL CENTER GUIDE", title:"工具中心使用说明", lead:"工具中心是 Agent 的白名单能力注册表。内置工具来自后端代码；值班负责人也可以新增受限的自定义只读查询工具。", sections:[
     { title:"只读工具（AUTO）", text:"点击“试运行工具”会真实调用后端函数、返回结构化结果并写入审计，但不会修改业务数据。", items:["<code>asset_lookup</code>：查询设备资产", "<code>alert_query</code>：查询未关闭告警", "<code>ticket_query</code>：查询运维工单", "<code>work_order_query</code>：查询作业任务", "<code>knowledge_search</code>：检索知识库", "<code>system_health</code>：查看 Agent 服务与数据接入状态"] },
@@ -92,7 +92,7 @@ const pageGuides = {
 };
 const guideExamples = {
   agent: { title:"示例：查询华东 P1 告警关联设备", steps:["在输入框输入 <code>查询华东 P1 告警关联设备</code>。", "点击“运行查询”，观察 Recall、Writer、Reviewer、Risk Guard、Runner 逐步完成。", "点击 Writer 或 Reviewer 的“详情”核对 SQL 与审查结论；结果区会返回关联设备，护栏显示本次为只读自动执行。"] },
-  chat: { title:"示例：咨询离线排障方案", steps:["点击“新建对话”。", "输入 <code>华东网关离线时，现场工程师应先排查什么？</code>，按 Enter 发送。", "阅读本地 LLM 的建议；若要查询真实告警或资产，转到“智能查询”明确发起，而不是要求聊天直接执行。"] },
+  chat: { title:"示例：由聊天调用流程和工具", steps:["点击“新建对话”。", "输入 <code>执行华东 P1 告警分诊</code>，系统会识别并运行告警分诊流程。", "再输入 <code>查一下当前未关闭工单</code>，聊天会调用只读工具并把实际返回的证据交给模型回答。"] },
   monitoring: { title:"示例：从 P1 告警进入根因查询", steps:["点击“刷新”，先查看未关闭告警数量和 P1 分布。", "在“最近告警”卡片点击“用 Agent 分析 P1 告警”。", "系统跳转智能查询并自动带入问题；执行后可查看关联资产、地区和离线状态。"] },
   metrics: { title:"示例：导入并分析真实 CPU 指标", steps:["切换为“运维工程师”，点击“下载模板”，填写并保存 UTF-8 CSV。", "选择 CSV 后点击“校验并导入 CSV”；成功后目录顶部会显示绿色“真实 CSV”标记。", "点击该指标“查看趋势”，再点击“交给 Agent 分析”查看该指标的安全查询路径。"] },
   data: { title:"示例：核对告警表数据", steps:["在表目录选择“监控告警（alerts）”。", "查看字段结构、总行数和本页样例；点击“下一页”继续只读浏览。", "如需按条件筛选，例如只看 P1，请转到智能查询输入 <code>查询最近的 P1 告警</code>。"] },
@@ -100,7 +100,7 @@ const guideExamples = {
   approval: { title:"示例：安全处理删除请求", steps:["以“运维工程师”在智能查询输入 <code>删除已关闭告警</code>，系统只创建 pending 审批单。", "进入审批中心，先阅读影响预估、抽样数据和有效期。", "切换为“值班负责人”后批准；默认安全模式会变为 approved_safe_mode，仅留痕和预估，不会删除任何告警。"] },
   policy: { title:"示例：验证角色权限确实生效", steps:["切换为“观察者”，在智能查询输入 <code>删除已关闭告警</code>。", "系统会拒绝发起变更审批，并将拒绝动作写入审计。", "切换为“运维工程师”再次发起，则可以创建审批单；这说明限制在后端生效，而非页面隐藏按钮。"] },
   knowledge: { title:"示例：新增 SOP 并验证 RAG", steps:["切换为“运维工程师”，填写标题、标签和至少 10 个字符的 SOP 正文后点击“保存并纳入 RAG”。", "在右侧检索框输入与该 SOP 对应的问题，确认能看到命中文档片段。", "回到智能查询提出规范类问题；当无可靠 SQL 时，系统会使用知识库并展示来源。"] },
-  skills: { title:"示例：运行告警分诊 Skill", steps:["找到 <code>incident_triage</code> 卡片，点击“运行 Skill”。", "输入 <code>华东 P1 网关离线，影响支付链路</code> 作为本次上下文。", "查看结构化结论和下一步建议；该过程只生成诊断建议并写入审计，不会关闭告警。"] },
+  skills: { title:"示例：自动或手动运行告警分诊流程", steps:["在聊天或智能查询输入 <code>执行华东 P1 告警分诊</code>，Agent 会自动选择 <code>incident_triage</code>。", "也可以在本页找到该流程，点击“运行流程”并输入 <code>华东 P1 网关离线</code>。", "查看它调用的告警和设备工具、结构化结论及下一步建议；流程只读，不会关闭告警。"] },
   tools: { title:"示例：比较只读工具与变更工具", steps:["点击 <code>alert_query</code> 的“试运行工具”，会立刻返回未关闭告警的结构化结果并写审计。", "点击 <code>close_alert</code> 的“试运行工具”，不会关闭告警，而是创建审批单。", "点击 <code>database_maintenance</code> 会被直接拒绝；系统没有任意数据库命令执行入口。"] }
 };
 
@@ -383,19 +383,21 @@ function renderSkills() {
   const target = $("#skills-list");
   const kind = $("#skill-filter").value;
   const risk = $("#skill-risk-filter").value;
-  const skills = allSkills.filter((skill) => (!kind || (kind === "runnable" ? skill.runnable : !skill.runnable)) && (!risk || skill.risk === risk));
-  $("#skill-count-note").textContent = "显示 " + skills.length + " / " + allSkills.length + " 个能力";
+  const skills = allSkills.filter((skill) => (!kind || skill.runnable) && (!risk || skill.risk === risk));
+  $("#skill-count-note").textContent = "显示 " + skills.length + " / " + allSkills.length + " 个运维流程";
   target.innerHTML = skills.length ? skills.map((skill, index) => {
       const suggestions = (skill.suggestions || []).map((item) => '<button class="skill-suggestion" data-run-skill="' + escapeHtml(skill.name) + '" data-skill-input="' + escapeHtml(item) + '">' + escapeHtml(item) + '</button>').join("");
-      const run = skill.runnable ? '<button class="primary-button skill-run" data-run-skill="' + escapeHtml(skill.name) + '">运行 Skill ↗</button>' : '<span class="skill-tag">规范型能力</span>';
-      return `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><span class="skill-risk ${escapeHtml(skill.risk || "auto")}">${escapeHtml((skill.category || "通用") + " · " + (skill.risk || "auto").toUpperCase())}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维领域能力")}</p><div class="skill-suggestions">${suggestions}</div><div class="skill-actions"><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看完整 SOP</button>${run}</div></article>`;
-  }).join("") : "<div class='empty-state'><strong>没有符合筛选条件的 Skill</strong><p>调整类型或风险筛选后重试。</p></div>";
+      const toolNames = (skill.tools || []).map(escapeHtml).join("、") || "无工具依赖（规则评审流程）";
+      const triggers = (skill.triggers || []).map((item) => '<span class="skill-trigger">' + escapeHtml(item) + '</span>').join("");
+      const steps = (skill.steps || []).map((item) => '<li>' + escapeHtml(item) + '</li>').join("");
+      return `<article class="card skill-card"><span class="skill-symbol">${index ? "⌘" : "◈"}</span><span class="skill-risk ${escapeHtml(skill.risk || "auto")}">${escapeHtml((skill.category || "通用") + " · " + (skill.risk || "auto").toUpperCase())}</span><h3>${escapeHtml(skill.name)}</h3><p>${escapeHtml(skill.description || "可复用的运维流程")}</p><div class="skill-flow-meta"><strong>触发场景</strong><div>${triggers || "需手动运行"}</div><strong>需要输入</strong><p>${escapeHtml(skill.required_input || "无需额外参数")}</p><strong>依赖工具</strong><p>${toolNames}</p><strong>执行步骤</strong><ol>${steps}</ol><strong>结果包含</strong><p>${escapeHtml(skill.output || "结构化流程结果")}</p></div><div class="skill-suggestions">${suggestions}</div><div class="skill-actions"><button class="text-button" data-skill="${escapeHtml(skill.name)}">查看流程定义</button><button class="primary-button skill-run" data-run-skill="${escapeHtml(skill.name)}">运行流程 ↗</button></div></article>`;
+  }).join("") : "<div class='empty-state'><strong>没有符合筛选条件的运维流程</strong><p>调整风险筛选后重试。</p></div>";
   document.querySelectorAll("[data-skill]").forEach((button) => button.addEventListener("click", () => viewSkill(button.dataset.skill)));
   document.querySelectorAll("[data-run-skill]").forEach((button) => button.addEventListener("click", () => runSkill(button.dataset.runSkill, button.dataset.skillInput || "")));
 }
 
 function renderSkillHistory(rows) {
-  $("#skill-history-list").innerHTML = rows.length ? rows.map((row) => '<div><strong>' + escapeHtml(row.payload.skill || "未知 Skill") + '</strong><span>' + escapeHtml(row.payload.input || "未填写业务上下文") + '</span><em>' + escapeHtml(row.payload.status || "—") + ' · ' + new Date(row.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</em></div>').join("") : "<div class='empty-state'><strong>暂未运行过 Skill</strong><p>选择一个可运行 Skill 后，记录会显示在这里。</p></div>";
+  $("#skill-history-list").innerHTML = rows.length ? rows.map((row) => '<div><strong>' + escapeHtml(row.payload.skill || "未知流程") + '</strong><span>' + escapeHtml(row.payload.input || "未填写业务上下文") + '</span><em>' + escapeHtml(row.payload.status || "—") + ' · ' + new Date(row.created_at).toLocaleString("zh-CN", {month:"numeric", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false}) + '</em></div>').join("") : "<div class='empty-state'><strong>暂未运行过运维流程</strong><p>手动或由 Agent 自动运行流程后，记录会显示在这里。</p></div>";
 }
 
 async function loadSkillHistory() {
@@ -409,7 +411,7 @@ async function loadSkills() {
   try {
     const response = await fetch("/api/v1/skills"); allSkills = await response.json();
     if (!response.ok) throw new Error("加载失败"); renderSkills(); loadSkillHistory();
-  } catch { $("#skills-list").innerHTML = "<p>加载 Skills 失败。</p>"; }
+  } catch { $("#skills-list").innerHTML = "<p>加载运维流程失败。</p>"; }
 }
 
 async function viewSkill(name) {
@@ -417,25 +419,27 @@ async function viewSkill(name) {
     const skill = await (await fetch(`/api/v1/skills/${encodeURIComponent(name)}`)).json();
     $("#skill-content").textContent = skill.content; $("#skill-detail").hidden = false;
     $("#skill-detail").scrollIntoView({ behavior:"smooth", block:"start" });
-  } catch { toast("无法读取 Skill 内容"); }
+  } catch { toast("无法读取流程定义"); }
 }
 
 function runSkill(name, suggestedInput) {
   activeAuditAction = "skill";
   activeSkillRun = { name, suggestedInput: suggestedInput || "" };
-  renderAuditAction("运行 " + name, "SKILL RUNTIME", '<p class="modal-lead">填写本次业务上下文后，Skill 会执行其注册的只读诊断流程，并将输入摘要、结果状态写入审计记录。</p><label class="action-field">业务上下文<textarea id="skill-run-input" maxlength="500" placeholder="例如：华东 P1 网关离线，影响支付链路">' + escapeHtml(suggestedInput || "") + '</textarea></label><div class="action-callout"><strong>安全边界</strong><span>Skill 只读取授权数据并输出建议，不会关闭告警、创建工单、修改数据库或直接执行命令。</span></div>', "运行 Skill");
+  const skill = allSkills.find((item) => item.name === name);
+  const requiredInput = skill?.required_input || "补充本次业务上下文";
+  renderAuditAction("运行流程 " + name, "OPERATIONS FLOW", '<p class="modal-lead">该流程将按定义调用工具：' + escapeHtml((skill?.tools || []).join("、") || "无") + '。完成后返回结构化结果并写入审计。</p><label class="action-field">' + escapeHtml(requiredInput) + '<textarea id="skill-run-input" maxlength="500" placeholder="例如：华东 P1 网关离线，影响支付链路">' + escapeHtml(suggestedInput || "") + '</textarea></label><div class="action-callout"><strong>安全边界</strong><span>流程只通过工具白名单读取授权数据并输出建议，不会直接修改业务数据或执行命令。</span></div>', "运行流程");
   setAuditActionVisible(true);
 }
 
 async function executeSkill(name, input) {
   try {
     const response = await fetch("/api/v1/skills/" + encodeURIComponent(name) + "/run", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({ role:currentRole(), requester:"Lenovo", user_input:input }) });
-    const result = await response.json(); if (!response.ok) throw new Error(result.detail || "Skill 运行失败");
+    const result = await response.json(); if (!response.ok) throw new Error(result.detail || "运维流程运行失败");
     const steps = (result.next_steps || []).map((item) => "- " + item).join("\n");
     $("#skill-content").textContent = "# " + name + " 运行结果\n\n状态：" + result.status + "\n风险：" + result.risk + "\n\n## 结论\n" + result.summary + "\n\n## 下一步\n" + (steps || "无") + "\n\n## 结构化数据\n" + JSON.stringify(result.data, null, 2);
     $("#skill-detail").hidden = false; $("#skill-detail").scrollIntoView({ behavior:"smooth", block:"start" });
-    toast(name + " 运行完成"); loadAudit(); loadSkillHistory();
-  } catch (error) { toast(error.message || "Skill 运行失败"); }
+    toast(name + " 流程运行完成"); loadAudit(); loadSkillHistory();
+  } catch (error) { toast(error.message || "运维流程运行失败"); }
 }
 
 function renderKnowledge(documents, total) {
@@ -852,7 +856,7 @@ async function verifyAuditIntegrity(scope) {
 document.querySelectorAll(".nav-item").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".nav-item").forEach((node) => node.classList.remove("active")); button.classList.add("active");
   document.querySelectorAll(".page").forEach((page) => page.classList.remove("active-page")); $(`#${button.dataset.page}-page`).classList.add("active-page");
-  const titles = { agent:"智能运维查询", chat:"Agent 聊天", monitoring:"监控中心", metrics:"指标中心", data:"数据浏览器", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"Skills 与 SOP" }; $("#page-title").textContent = titles[button.dataset.page];
+  const titles = { agent:"智能运维查询", chat:"Agent 聊天", monitoring:"监控中心", metrics:"指标中心", data:"数据浏览器", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"运维流程" }; $("#page-title").textContent = titles[button.dataset.page];
   if (button.dataset.page === "chat") loadChat(); if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") { loadKnowledgeTags(); loadKnowledge(); } if (button.dataset.page === "tools") loadTools();
 }));
 $("#run-query").addEventListener("click", runQuery);
@@ -952,7 +956,7 @@ $("#cancel-edit-knowledge").addEventListener("click", cancelKnowledgeEdit);
 $("#close-skill-detail").addEventListener("click", () => { $("#skill-detail").hidden = true; });
 $("#approve-button").addEventListener("click", () => { if (latestApprovalId) resolveApproval(latestApprovalId, $("#approve-button")); });
 $("#show-system-info").addEventListener("click", async () => { try { const metric = await (await fetch("/api/v1/metrics")).json(); toast("LLM：" + (metric.llm_enabled ? "已配置" : "离线规则模式") + "；审批写库：" + (metric.approved_writes_enabled ? "已开启" : "安全关闭")); } catch { toast("无法读取运行配置"); } });
-$("#show-help").addEventListener("click", () => toast("可查询数据、查看审批与审计、维护知识库，并查看 Skill/SOP。"));
+$("#show-help").addEventListener("click", () => toast("可查询数据、查看审批与审计、维护知识库和运维流程。"));
 loadSkills(); loadKnowledgeTags(); loadKnowledge(); loadApprovals(); loadMetrics();
 
 function chatRequestOptions(method, body) {

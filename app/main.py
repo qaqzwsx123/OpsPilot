@@ -6,7 +6,7 @@
 3. 提供智能查询接口：同步 SQL Agent 工作流和 SSE 工作流轨迹；
 4. 提供审批中心接口：批准、拒绝、删除审批单；
 5. 提供审计中心接口：查询、清理、单条删除和哈希链校验；
-6. 提供数据浏览器、Skills、知识库、Chroma、指标、工具、记忆和离线评测接口；
+6. 提供数据浏览器、运维流程、知识库、Chroma、指标、工具、记忆和离线评测接口；
 7. 在每个写操作入口做 RBAC 权限检查，并写入审计日志。
 
 安全边界：
@@ -92,6 +92,7 @@ from app.chat_service import AgentChatService  # Agent 聊天服务
 from app.evaluation import available_evaluation_cases, run_evaluation  # SQL Agent 离线评测
 from app.skills import SkillRegistry, run_skill  # Skill 注册表和运行入口
 from app.tool_registry import catalog, definition, invoke  # 工具目录、定义、调用
+from app.tool_planner import ToolPlanner  # Agent 聊天中的只读工具规划
 from app.workflow import SqlAgentWorkflow  # SQL Agent 工作流
 from app.rag import KnowledgeRag  # RAG 检索
 from app.chroma_store import (
@@ -254,6 +255,72 @@ class ChatTurnRequest(MutationActorRequest):
     content: str = Field(min_length=1, max_length=4000)
 
 
+def _bounded_context_value(value: Any, list_limit: int = 3) -> Any:
+    """裁剪自动流程结果，避免把完整数据库样本塞入聊天上下文。"""
+    if isinstance(value, dict):
+        return {key: _bounded_context_value(item, list_limit) for key, item in value.items()}
+    if isinstance(value, list):
+        return {
+            "items": [_bounded_context_value(item, list_limit) for item in value[:list_limit]],
+            "omitted": max(0, len(value) - list_limit),
+        }
+    return value
+
+
+def _prepare_chat_automation(question: str, plan: dict[str, Any], requester: str, role: str) -> dict[str, Any]:
+    """优先路由可执行流程；普通查询再由只读工具规划器提供真实数据证据。"""
+    registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
+    skill = registry.match(question)
+    if skill:
+        result = run_skill(skill.name, question)
+        plan.update({
+            "route": "运维流程：" + skill.name,
+            "steps": list(skill.steps),
+            "automation_type": "skill",
+            "automation_name": skill.name,
+            "automation_context": json.dumps(_bounded_context_value({
+                "summary": result.get("summary"), "data": result.get("data"),
+                "next_steps": result.get("next_steps"), "tools_used": result.get("tools_used"),
+            }), ensure_ascii=False, default=str)[:9000],
+        })
+        write_audit(requester, "skill_run", {
+            "skill": skill.name, "input": question[:160], "status": result.get("status"),
+            "tools": result.get("tools_used", []), "source": "agent_chat", "role": role,
+        })
+        for evidence in result.get("tool_evidence", []):
+            write_audit(requester, "agent_tool_invoked", {
+                "tool": evidence["tool"], "status": evidence["status"],
+                "result_count": evidence["result_count"], "reason": evidence["reason"],
+                "selection_mode": "skill_workflow", "role": role,
+            })
+        return {"type": "skill", "name": skill.name, "tools": result.get("tools_used", [])}
+
+    # 涉及运维数据或 SOP 的聊天请求可以直接取得真实只读工具证据。
+    if plan.get("route") in {"智能查询建议", "知识库检索建议"}:
+        planner = ToolPlanner()
+        if settings.model_tool_planner_enabled:
+            selections, evidence, summary, mode = planner.execute_agent(question)
+        else:
+            selections, evidence = planner.execute(question)
+            summary, mode = "", "rule_based_allowlist"
+        plan["automation_context"] = json.dumps({"summary": summary, "evidence": evidence}, ensure_ascii=False, default=str)[:9000]
+        plan["automation_type"] = "tools" if selections else "none"
+        plan["automation_name"] = "、".join(item.name for item in selections)
+        if selections:
+            write_audit(requester, "agent_tool_plan", {
+                "tools": [{"name": item.name, "reason": item.reason} for item in selections],
+                "selection_mode": mode, "planner": "Agent 聊天只读工具规划", "role": role,
+            })
+            for item in evidence:
+                write_audit(requester, "agent_tool_invoked", {
+                    "tool": item["tool"], "status": item.get("status"),
+                    "result_count": item.get("result_count", 0), "reason": item.get("reason", ""),
+                    "selection_mode": mode, "role": role,
+                })
+        return {"type": plan["automation_type"], "name": plan["automation_name"], "tools": [item.name for item in selections]}
+    return {"type": "none", "name": "", "tools": []}
+
+
 class ApprovalActionRequest(BaseModel):
     """审批人对一张变更审批单的处理意见。"""
     # 必须拥有 approve_change 权限。
@@ -392,10 +459,12 @@ def chat_turn(conversation_id: str, request: ChatTurnRequest) -> dict:
     if history is None:
         raise HTTPException(status_code=404, detail="对话不存在或无权访问。")
 
-    # 调用聊天服务；reply 内部会处理流式/非流式和兜底。
-    content, provider = chat_service.reply([
+    messages = [
         {"role": item["role"], "content": item["content"]} for item in history
-    ])
+    ]
+    plan = chat_service.plan_turn(request.content, messages)
+    _prepare_chat_automation(request.content, plan, request.requester, request.role)
+    content, provider = chat_service.reply(messages, plan=plan)
 
     # 写入助手消息并记录审计。
     message = add_chat_message(conversation_id, request.requester, "assistant", content)
@@ -442,6 +511,16 @@ def chat_turn_stream(conversation_id: str, request: ChatTurnRequest) -> Streamin
         def emit(name: str, payload: dict) -> str:
             """把事件名和 payload 编码为 SSE 字符串。"""
             return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        # 先识别可运行流程或真实只读工具；首个 SSE 事件让前端显示正在规划。
+        yield emit("stage", {"stage": "route", "message": "正在识别运维流程和只读工具…"})
+        automation = _prepare_chat_automation(request.content, plan, request.requester, request.role)
+        if automation["type"] != "none":
+            yield emit("stage", {
+                "stage": "automation",
+                "message": ("执行运维流程：" if automation["type"] == "skill" else "已调用只读工具：") + automation["name"],
+                "tools": automation["tools"],
+            })
 
         # 等 SSE 连接建立后再调用摘要模型，避免摘要过程阻塞 HTTP 响应头。
         model_messages, context_stats = chat_service.prepare_context(messages, plan)
@@ -841,6 +920,8 @@ def skills() -> list[dict]:
             "name": item.name, "description": item.description,
             "category": item.category, "risk": item.risk,
             "suggestions": list(item.suggestions), "runnable": item.runnable,
+            "triggers": list(item.triggers), "tools": list(item.tools),
+            "required_input": item.required_input, "steps": list(item.steps), "output": item.output,
         }
         for item in registry.load()
     ]
@@ -862,16 +943,20 @@ def skill_detail(skill_name: str) -> dict[str, str]:
     registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
     for item in registry.load():
         if item.name == skill_name:
-            return {"name": item.name, "description": item.description, "content": item.content}
+            return {
+                "name": item.name, "description": item.description, "content": item.content,
+                "triggers": list(item.triggers), "tools": list(item.tools),
+                "required_input": item.required_input, "steps": list(item.steps), "output": item.output,
+            }
     raise HTTPException(status_code=404, detail="Skill 不存在")
 
 
 @app.post("/api/v1/skills/{skill_name}/run")
 def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
-    """运行一个可执行的 Skill。
+    """运行一个可执行的运维流程。
 
     - 检查 read 权限；
-    - 规范型 Skill（runnable=False）不允许直接运行；
+    - 仅注册为 runnable 的流程可运行；
     - 运行结果写审计。
     """
     if not permitted(request.role, "read"):
@@ -881,7 +966,7 @@ def execute_skill(skill_name: str, request: SkillRunRequest) -> dict:
     if skill is None:
         raise HTTPException(status_code=404, detail="Skill 不存在")
     if not skill.runnable:
-        raise HTTPException(status_code=400, detail="该 Skill 是规范型能力，请在智能查询或对应页面中使用。")
+        raise HTTPException(status_code=400, detail="该条目不是可运行流程，请到知识库查看对应 SOP 文档。")
     result = run_skill(skill_name, request.user_input)
     write_audit(request.requester, "skill_run", {
         "skill": skill_name, "input": request.user_input[:160],

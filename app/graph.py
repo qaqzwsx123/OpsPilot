@@ -1,6 +1,7 @@
 # 启用延迟注解求值，允许在类型注解中引用尚未定义的名称。
 from __future__ import annotations
 
+from pathlib import Path
 import time
 from typing import Any, Callable, Literal, TypedDict
 
@@ -14,7 +15,8 @@ from app.policy import permitted
 from app.providers import ResilientSqlWriter
 from app.rag import KnowledgeRag
 from app.sql_agent import MetadataRetriever, RiskAssessor, SqlFixer, SqlReviewer
-from app.tool_planner import ToolPlanner
+from app.skills import SkillRegistry, run_skill
+from app.tool_planner import ToolPlanner, ToolSelection
 
 
 # 事件处理器类型：接收一个 WorkflowEvent，无返回值。
@@ -40,6 +42,7 @@ class WorkflowState(TypedDict, total=False):
     tool_context: list[dict[str, Any]]  # 工具执行返回的上下文证据
     tool_summary: str                   # 工具结果汇总文本
     selection_mode: str                 # 工具选择模式：模型函数调用或规则白名单
+    active_skill: str                   # 本次匹配的运维流程名称
     candidates: list[CandidateTable]    # 元数据召回得到的候选表
     allowed_tables: list[str]           # 允许访问的表名白名单
     generated: GeneratedSql             # 生成的 SQL 对象
@@ -79,6 +82,7 @@ class SqlAgentGraph:
         self.risk_assessor = risk_assessor  # 风险评估器：判断 SQL 是自动执行还是人工审批
         self.rag = rag                      # 知识库 RAG：SQL 无法生成或执行失败时兜底回答
         self.tool_planner = tool_planner    # 工具规划器：决定调用哪些只读工具
+        self.skill_registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
         self.graph = self._build_graph()    # 编译后的 LangGraph 状态图
 
     def _build_graph(self):
@@ -215,15 +219,28 @@ class SqlAgentGraph:
         save_memory(requester, "user", question)  # 保存用户问题
 
         planner_started = time.perf_counter()  # 开始计时
-        if state.get("use_model_tools", False):
-            # 使用本地 LLM 进行工具规划（Function Calling）
+        skill = self.skill_registry.match(question)
+        active_skill = skill.name if skill else ""
+        if skill:
+            # 明确匹配到复合流程时，流程负责按元数据顺序调用它声明的只读工具。
+            skill_result = run_skill(skill.name, question)
+            tool_context = skill_result.get("tool_evidence", [])
+            selections = [ToolSelection(item["tool"], item["reason"]) for item in tool_context]
+            tool_summary = skill_result.get("summary", "")
+            selection_mode = "skill_workflow"
+            write_audit(requester, "skill_run", {
+                "skill": skill.name, "input": question[:160], "status": skill_result.get("status"),
+                "tools": skill_result.get("tools_used", []), "source": "intelligent_query", "role": state["role"],
+            })
+        elif state.get("use_model_tools", False):
+            # 普通查询交由本地 LLM 从工具白名单中选择。
             selections, tool_context, tool_summary, selection_mode = self.tool_planner.execute_agent(question)
         else:
             # 使用规则白名单兜底
             selections, tool_context = self.tool_planner.execute(question)
             tool_summary, selection_mode = "", "rule_based_allowlist"
         planner_latency_ms = round((time.perf_counter() - planner_started) * 1000)  # 计算耗时
-        planner_name = "本地 LLM Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底"
+        planner_name = "运维流程" if active_skill else ("本地 LLM Function Calling" if selection_mode == "model_function_calling" else "规则白名单兜底")
         role = state["role"]
         if state.get("use_model_tools", False):
             # 如果是模型规划，记录审计日志
@@ -241,15 +258,17 @@ class SqlAgentGraph:
             "tool_context": tool_context,
             "tool_summary": tool_summary,
             "selection_mode": selection_mode,
+            "active_skill": active_skill,
             "events": events,
         }
-        if selections:
+        if selections or active_skill:
             # 如果有选中的工具，发送 tool_plan 事件
             next_state["events"] = self._emit(
                 {**state, **next_state},
                 "tool_plan",
-                "Agent 已选择只读白名单工具",
+                f"Agent 已选择运维流程：{active_skill}" if active_skill else "Agent 已选择只读白名单工具",
                 tools=[{"name": item.name, "reason": item.reason} for item in selections],
+                skill=active_skill or None,
                 selection_mode=selection_mode,
                 planner=planner_name,
                 latency_ms=planner_latency_ms,

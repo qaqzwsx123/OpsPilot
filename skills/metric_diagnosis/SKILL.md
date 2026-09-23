@@ -5,6 +5,11 @@ category: 可观测性
 risk: auto
 runnable: true
 suggestions: 指标 #1|指标 #6
+triggers: 指标诊断|指标趋势分析|CPU 指标异常|指标波动分析
+tools: metric_catalog
+input: 指标编号，例如 #1；未提供时使用默认 CPU 指标
+steps: 读取指定指标趋势|计算最新值、均值、最小值和最大值|依据波动生成验证建议
+output: 指标名称、最新值、趋势统计、偏差和验证建议
 ---
 
 # 指标诊断 SOP

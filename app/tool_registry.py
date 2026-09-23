@@ -19,6 +19,7 @@
 
 from __future__ import annotations  # 延迟解析类型注解，提升兼容性并避免运行时求值
 
+import re
 from dataclasses import asdict, dataclass  # asdict 用于把 ToolDefinition 序列化为字典
 from typing import Any  # 宽松字典类型标注
 
@@ -32,6 +33,7 @@ from app.database import (
     list_audit,                   # 审计列表
     list_knowledge_documents,     # 知识文档列表
     list_metric_definitions,      # 指标定义列表
+    metric_trend,                 # 指定指标的只读时序样本
     system_metrics,               # 系统指标
 )
 
@@ -79,7 +81,7 @@ TOOLS = (
     # ---------- AUTO 只读工具（17 个）----------
     # 只读查询，可直接执行，不改变任何业务状态。
     ToolDefinition("asset_lookup", "查询离线与维护中的设备资产", "auto", "资产"),
-    ToolDefinition("alert_query", "查询最近的未关闭告警", "auto", "告警"),
+    ToolDefinition("alert_query", "查询最近的未关闭告警及关联设备编号", "auto", "告警"),
     ToolDefinition("ticket_query", "查询当前未关闭运维工单", "auto", "工单"),
     ToolDefinition("work_order_query", "查询待执行运维作业", "auto", "作业"),
     ToolDefinition("knowledge_search", "查看当前知识库文档索引", "auto", "知识库"),
@@ -213,8 +215,10 @@ def invoke(name: str, query: str = "", arguments: dict[str, Any] | None = None) 
             "WHERE status != 'online' ORDER BY updated_at DESC LIMIT 20;"
         ),
         "alert_query": (
-            "SELECT id, severity, title, status, created_at FROM alerts "
-            "WHERE status != 'closed' ORDER BY created_at DESC LIMIT 20;"
+            "SELECT a.id, a.asset_id, a.severity, a.title, a.status, a.created_at, "
+            "s.name AS asset_name, s.region, s.status AS asset_status "
+            "FROM alerts AS a LEFT JOIN assets AS s ON s.id = a.asset_id "
+            "WHERE a.status != 'closed' ORDER BY a.created_at DESC LIMIT 20;"
         ),
         "ticket_query": (
             "SELECT id, priority, title, status, assignee, created_at FROM tickets "
@@ -312,8 +316,14 @@ def invoke(name: str, query: str = "", arguments: dict[str, Any] | None = None) 
     if name == "audit_recent":
         return {"status": "completed", "tool": name, "events": list_audit(limit=20)}
 
-    # 指标目录工具：返回最近 20 个指标定义。
+    # 指标目录工具：无编号时返回指标定义；指定编号时返回该指标最近 24 个样本点。
     if name == "metric_catalog":
+        metric_id = re.search(r"(?:#|指标(?:编号)?\s*)(\d+)\b", query)
+        if metric_id:
+            trend = metric_trend(int(metric_id.group(1)), points=24)
+            if trend is None:
+                return {"status": "completed", "tool": name, "message": f"未找到指标 #{metric_id.group(1)}。", "metrics": []}
+            return {"status": "completed", "tool": name, "trend": trend, "metrics": [trend]}
         return {"status": "completed", "tool": name, "metrics": list_metric_definitions(limit=20)}
 
     # MANUAL 工具：不在此处执行写操作，只返回 approval_required，

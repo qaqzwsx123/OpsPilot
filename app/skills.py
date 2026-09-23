@@ -1,17 +1,17 @@
 """Skills 注册与运行层：把重复运维经验封装为可审计的只读能力。
 
 本模块是 OpsPilot 的 Skill 体系，核心设计目标：
-1. 把常见运维经验（如 P1 事件分诊、值班简报、容量巡检）封装为可复用的 SOP；
-2. 每个 Skill 定义在 skills/*/SKILL.md，前端可浏览，后端可路由；
-3. 只读 Skill 走参数化查询或白名单只读函数，绝不拥有任意写库权限；
+1. 把常见运维任务封装为声明式流程，流程定义在 skills/*/SKILL.md；
+2. 每个流程声明触发语、工具白名单、输入、步骤和结构化输出；
+3. 流程统一通过工具注册表读取数据，绝不拥有任意 SQL 或写库权限；
 4. 高风险 Skill（如变更评审）只输出风险评估结果，实际变更仍需走审批；
 5. 每次运行都由上层 API 写审计，保证可追溯、可复现。
 
 安全边界：
-- Skill 本身不获得任意 SQL 执行权，运行时按名称路由到固定实现；
-- 所有查询均使用参数化或固定 SQL，避免 SQL 注入；
+- Skill 本身不获得任意 SQL 执行权，只能调用 frontmatter 声明且已注册的 AUTO 工具；
+- 工具查询继续由统一工具白名单执行，避免 SQL 注入；
 - 写操作不在 Skill 中执行，只通过审批中心走受控流程；
-- 规范型 Skill（runnable=False）只作为文档，不直接运行。
+- 非可运行的 SOP 文档由知识库管理，不出现在流程目录。
 """
 
 from __future__ import annotations  # 延迟解析类型注解，提升兼容性并避免运行时求值
@@ -19,10 +19,9 @@ from __future__ import annotations  # 延迟解析类型注解，提升兼容性
 from dataclasses import dataclass  # 声明 Skill 数据结构
 from pathlib import Path  # 跨平台路径处理，定位 skills 目录
 import re  # 用于从用户输入中提取 P1/P2/P3、区域、指标编号等
-from statistics import mean  # 计算指标均值，用于诊断和容量评估
 from typing import Any  # 宽松字典类型标注
 
-from app.database import execute_readonly, list_approvals, metric_trend  # 只读数据库入口
+from app.tool_registry import definition as tool_definition, invoke as invoke_tool  # 统一受控的工具目录和执行入口
 from app.sql_agent import RiskAssessor  # 风险分级器，用于 change_review Skill
 
 
@@ -66,16 +65,23 @@ class Skill:
     # 是否有对应的确定性运行器，而不是只作为规范文档存在。
     runnable: bool = False
 
+    # 自动路由用触发短语、流程可用工具及面向用户的执行说明。
+    triggers: tuple[str, ...] = ()
+    tools: tuple[str, ...] = ()
+    required_input: str = ""
+    steps: tuple[str, ...] = ()
+    output: str = ""
+
 
 class SkillRegistry:
     """Skill 文件系统注册表。
 
-    每次读取目录而不是把内容硬编码在 Python 中，因此新增或编辑 SOP 后可以直接刷新；
-    注册表只负责发现和解析，真正执行仍由 ``run_skill`` 的固定白名单路由完成。
+    每次读取目录而不是把流程元数据硬编码在 Python 中，因此修改触发语、依赖工具或步骤后可以直接刷新；
+    流程只能调用元数据声明且已注册的 AUTO 工具。
 
     使用方式：
         registry = SkillRegistry(Path("skills"))
-        skills = registry.load()           # 加载全部 Skill
+        skills = registry.load()           # 加载可运行的运维流程
         skill = registry.get("incident_triage")  # 按名称获取
     """
 
@@ -83,8 +89,8 @@ class SkillRegistry:
         # skills 根目录，例如项目根目录下的 skills/。
         self.root = root
 
-    def load(self) -> list[Skill]:
-        """加载所有 skills/*/SKILL.md，解析为 Skill 列表。
+    def load(self, runnable_only: bool = True) -> list[Skill]:
+        """加载 skills/*/SKILL.md；默认只返回可执行运维流程。
 
         返回：
         - list[Skill]：按路径排序的 Skill 列表。
@@ -102,6 +108,9 @@ class SkillRegistry:
 
             # 解析 frontmatter 元数据（--- 之间的 key: value）。
             metadata = self._metadata(content)
+            runnable = metadata.get("runnable", "false").lower() == "true"
+            if runnable_only and not runnable:
+                continue
 
             # suggestions 用 | 分隔多个示例问题。
             suggestions = tuple(
@@ -118,14 +127,35 @@ class SkillRegistry:
                 metadata.get("category", "通用"),
                 metadata.get("risk", "auto"),
                 suggestions,
-                # runnable 字段用字符串 "true"/"false" 表示，需转换。
-                metadata.get("runnable", "false").lower() == "true",
+                runnable,
+                self._items(metadata.get("triggers", "")),
+                self._items(metadata.get("tools", "")),
+                metadata.get("input", ""),
+                self._items(metadata.get("steps", "")),
+                metadata.get("output", ""),
             ))
         return skills
 
     def get(self, name: str) -> Skill | None:
         """按名称查找 Skill，不存在时返回 None。"""
         return next((skill for skill in self.load() if skill.name == name), None)
+
+    def match(self, text: str) -> Skill | None:
+        """按配置的明确触发短语选择最匹配的运维流程。"""
+        normalized = "".join(text.casefold().split())
+        matches = [
+            skill for skill in self.load()
+            if any("".join(term.casefold().split()) in normalized for term in skill.triggers)
+        ]
+        return max(
+            matches,
+            key=lambda skill: max((len(term) for term in skill.triggers if "".join(term.casefold().split()) in normalized), default=0),
+            default=None,
+        )
+
+    @staticmethod
+    def _items(value: str) -> tuple[str, ...]:
+        return tuple(item.strip() for item in value.split("|") if item.strip())
 
     @staticmethod
     def _metadata(content: str) -> dict[str, str]:
@@ -162,297 +192,112 @@ class SkillRegistry:
 
 
 def run_skill(name: str, user_input: str = "") -> dict[str, Any]:
-    """Deterministic, auditable skill runtimes. Skills never mutate business data.
+    """执行一个声明式运维流程；所有业务数据均由工具白名单读取。"""
+    registry = SkillRegistry(Path(__file__).resolve().parent.parent / "skills")
+    skill = registry.get(name)
+    if skill is None:
+        return {"skill": name, "status": "not_found", "summary": "未找到可运行的运维流程。", "data": [], "next_steps": [], "risk": "auto", "tools_used": [], "tool_evidence": []}
 
-    按 Skill 名称路由到固定实现，返回统一结构的结果。
-
-    参数：
-    - name：Skill 名称，必须与注册表中的 name 一致；
-    - user_input：用户在运行 Skill 时提供的补充上下文。
-
-    返回：
-    - dict：统一结构，包含：
-      * skill：Skill 名称；
-      * status：运行状态（completed / not_found / reviewed / not_runnable）；
-      * summary：一句话结论，便于前端展示；
-      * data：结构化数据，供前端表格或详情使用；
-      * next_steps：推荐的下一步动作；
-      * risk：本次运行的风险等级。
-
-    安全边界：
-    - 运行时按 Skill 名称路由到固定实现，Skill 不拥有任意 SQL 或写库权限；
-    - 所有 SQL 均为固定查询或参数化查询；
-    - 变更类 Skill 只输出风险评审，不执行写操作。
-
-    支持的 Skill：
-    - incident_triage：P1/P2/P3 事件分诊；
-    - metric_diagnosis：指标诊断；
-    - ticket_handoff：工单交接；
-    - oncall_briefing：值班简报；
-    - capacity_review：容量巡检；
-    - change_review：变更评审。
-    """
-    # 运行时按 Skill 名称路由到固定实现，Skill 不拥有任意 SQL 或写库权限。
     text = user_input.strip()
-
-    # ---------- Skill: 事件分诊 ----------
-    if name == "incident_triage":
-        # 从输入中提取 P1/P2/P3，默认 P1；大小写不敏感。
-        severity = (re.search(r"P[123]", text.upper()) or ["P1"])[0]
-
-        # 从输入中提取区域（华东/华南/华北），可选。
-        region_match = re.search(r"华东|华南|华北", text)
-
-        # 构造参数化查询条件：固定过滤未关闭告警，可选叠加区域。
-        clauses, params = ["a.severity = ?", "a.status != 'closed'"], [severity]
-        if region_match:
-            clauses.append("s.region = ?")
-            params.append(region_match[0])
-
-        # 固定 SQL 模板，使用 ? 占位符防止注入。
-        sql = (
-            "SELECT a.id, a.severity, a.title, a.status, a.created_at, s.name AS asset_name, s.region "
-            "FROM alerts a JOIN assets s ON a.asset_id = s.id "
-            "WHERE " + " AND ".join(clauses) + " ORDER BY a.created_at DESC LIMIT 20"
-        )
-
-        # 通过参数化辅助函数执行查询。
-        rows = execute_readonly_with_params(sql, params)
-
-        return {
-            "skill": name,
-            "status": "completed",
-            "summary": f"识别到 {len(rows)} 条未关闭 {severity} 告警。先确认影响范围，再检查网络、心跳、供电和网关日志。",
-            "data": rows,
-            "next_steps": [
-                "5 分钟内确认告警影响范围",
-                "核查设备网络、心跳和最近变更",
-                "未恢复则创建高优工单并升级值班负责人",
-            ],
-            "risk": "auto",
-        }
-
-    # ---------- Skill: 指标诊断 ----------
-    if name == "metric_diagnosis":
-        # 从输入中提取指标编号，支持 "#123" 或 "123" 格式，默认 1。
-        metric_id = int((re.search(r"#?(\d+)", text) or ["", "1"])[1])
-
-        # 查询指标趋势（默认最近 24 个点）。
-        trend = metric_trend(metric_id)
-        if trend is None:
-            return {
-                "skill": name,
-                "status": "not_found",
-                "summary": f"未找到指标 #{metric_id}。请在指标中心选择有效指标编号。",
-                "data": [],
-                "next_steps": [],
-                "risk": "auto",
-            }
-
-        # 计算统计量：均值、最新值、偏差百分比。
-        values = [point["value"] for point in trend["points"]]
-        average, latest = mean(values), values[-1]
-        deviation = round((latest - average) / average * 100, 1) if average else 0
-
-        # 根据偏差判断当前值相对均值的方向。
-        assessment = "高于" if deviation > 15 else "低于" if deviation < -15 else "接近"
-
-        return {
-            "skill": name,
-            "status": "completed",
-            "summary": (
-                f"{trend['name']} 当前值 {latest}{trend['unit']}，"
-                f"{assessment} 24 小时均值 {average:.2f}{trend['unit']}（偏差 {deviation}%）。"
-            ),
-            "data": {
-                "metric": trend["name"],
-                "latest": latest,
-                "average": round(average, 2),
-                "minimum": min(values),
-                "maximum": max(values),
-                "points": len(values),
-            },
-            "next_steps": [
-                "确认异常时间点是否对应发布或流量变化",
-                "查看关联设备和同类指标",
-                "超过阈值时创建告警并记录处理结论",
-            ],
-            "risk": "auto",
-        }
-
-    # ---------- Skill: 工单交接 ----------
-    if name == "ticket_handoff":
-        # 查询未关闭工单，按优先级高优在前、创建时间早的在前。
-        rows = execute_readonly(
-            "SELECT id, priority, title, status, assignee, created_at FROM tickets "
-            "WHERE status != 'closed' "
-            "ORDER BY CASE priority WHEN 'high' THEN 1 ELSE 2 END, created_at ASC LIMIT 20"
-        )
-        high_count = sum(row["priority"] == "high" for row in rows)
-        return {
-            "skill": name,
-            "status": "completed",
-            "summary": f"当前有 {len(rows)} 个未关闭工单，其中高优 {high_count} 个。交接时应优先处理高优和无人认领工单。",
-            "data": rows,
-            "next_steps": [
-                "逐单确认负责人、当前进展和阻塞项",
-                "高优工单补齐最近动作与下次更新时间",
-                "交接后在工单中记录接手人和验证计划",
-            ],
-            "risk": "auto",
-        }
-
-    # ---------- Skill: 值班简报 ----------
-    if name == "oncall_briefing":
-        # 查询未关闭告警，按严重级别和创建时间排序。
-        alerts = execute_readonly(
-            "SELECT severity, title, status, created_at FROM alerts "
-            "WHERE status != 'closed' "
-            "ORDER BY CASE severity WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END, created_at DESC LIMIT 20"
-        )
-
-        # 查询未关闭工单，按优先级排序。
-        tickets = execute_readonly(
-            "SELECT priority, title, status, assignee, created_at FROM tickets "
-            "WHERE status != 'closed' "
-            "ORDER BY CASE priority WHEN 'high' THEN 1 ELSE 2 END, created_at ASC LIMIT 20"
-        )
-
-        # 查询未完成作业单。
-        work_orders = execute_readonly(
-            "SELECT action, status, created_at FROM work_orders "
-            "WHERE status != 'completed' ORDER BY created_at ASC LIMIT 20"
-        )
-
-        # 过滤出待审批单。
-        approvals = [item for item in list_approvals(limit=20) if item["status"] == "pending"]
-
-        # 统计 P1 数量。
-        p1_count = sum(item["severity"] == "P1" for item in alerts)
-
-        return {
-            "skill": name,
-            "status": "completed",
-            "summary": (
-                f"已生成值班简报：{len(alerts)} 条未关闭告警（P1 {p1_count} 条）、"
-                f"{len(tickets)} 个未关闭工单、{len(work_orders)} 个待执行作业、"
-                f"{len(approvals)} 张待审批单。"
-            ),
-            "data": {
-                "alerts": alerts,
-                "tickets": tickets,
-                "work_orders": work_orders,
-                "pending_approvals": approvals,
-            },
-            "next_steps": [
-                "优先确认 P1 告警与其负责人",
-                "补齐高优工单的下一次更新时间",
-                "明确待审批变更的窗口、影响和审批人",
-                "将本简报同步给下一值班人员",
-            ],
-            "risk": "auto",
-        }
-
-    # ---------- Skill: 容量巡检 ----------
-    if name == "capacity_review":
-        # 查询非在线资产（离线或维护中）。
-        rows = execute_readonly(
-            "SELECT id, name, region, status, updated_at FROM assets "
-            "WHERE status != 'online' ORDER BY updated_at DESC LIMIT 20"
-        )
-
-        # 查询指标 #1（演示环境为 CPU 使用率）的趋势。
-        trend = metric_trend(1)
-        values = [point["value"] for point in (trend or {}).get("points", [])]
-        latest = values[-1] if values else None
-        average = round(mean(values), 2) if values else None
-
-        return {
-            "skill": name,
-            "status": "completed",
-            "summary": (
-                f"容量巡检发现 {len(rows)} 台非在线资产；"
-                f"CPU 指标当前值为 {latest if latest is not None else '—'}%，"
-                f"24 小时均值为 {average if average is not None else '—'}%。"
-            ),
-            "data": {
-                "non_online_assets": rows,
-                "cpu_latest": latest,
-                "cpu_average": average,
-                "cpu_peak": max(values) if values else None,
-            },
-            "next_steps": [
-                "核对离线或维护资产是否处于计划窗口",
-                "观察 CPU 高点是否与流量或发布记录重合",
-                "容量持续紧张时创建扩容评估工单",
-                "记录本次巡检结论和下一复核时间",
-            ],
-            "risk": "auto",
-        }
-
-    # ---------- Skill: 变更评审 ----------
     if name == "change_review":
-        # 优先使用用户输入作为变更提案；为空时用示例 DELETE 语句。
         proposal = text or "DELETE FROM alerts WHERE status = 'closed';"
-
-        # 调用风险分级器判断变更风险等级。
         decision = RiskAssessor().assess(proposal)
-
-        # 非 auto 模式视为高风险，必须走审批。
-        high_risk = decision.mode.value != "auto"
-
         return {
-            "skill": name,
-            "status": "reviewed",
-            "summary": (
-                f"变更评审结果：{decision.reason}。"
-                f"{'必须发起审批，不能直接执行。' if high_risk else '属于只读操作，仍需通过 SQL 审查。'}"
-            ),
-            "data": {
-                "proposal": proposal,
-                "risk_mode": decision.mode.value,
-                "reason": decision.reason,
-            },
-            "next_steps": [
-                "确认影响范围和回滚方案",
-                "选择维护窗口并指定审批人",
-                "通过审批中心创建可审计的变更记录",
-            ],
-            "risk": decision.mode.value,
+            "skill": name, "status": "reviewed",
+            "summary": f"变更评审结果：{decision.reason}。{'必须进入人工审批，不能直接执行。' if decision.mode.value != 'auto' else '属于只读操作，仍需经过 SQL 审查。'}",
+            "data": {"proposal": proposal, "risk_mode": decision.mode.value, "reason": decision.reason},
+            "next_steps": list(skill.steps), "risk": decision.mode.value, "tools_used": [], "tool_evidence": [],
         }
 
-    # ---------- 未匹配到运行器 ----------
-    # 规范型 Skill 或未注册的 Skill：返回提示，不执行任何操作。
+    results: dict[str, dict[str, Any]] = {}
+    evidence: list[dict[str, Any]] = []
+    for tool_name in skill.tools:
+        definition = tool_definition(tool_name)
+        if definition is None or definition.risk != "auto":
+            continue
+        tool_query = text
+        if tool_name == "metric_catalog" and not re.search(r"(?:#|指标(?:编号)?\s*)\d+", tool_query):
+            tool_query = "#1"
+        try:
+            result = invoke_tool(tool_name, query=tool_query)
+        except Exception as exc:
+            result = {"status": "failed", "message": f"工具调用失败：{type(exc).__name__}"}
+        results[tool_name] = result
+        records = result.get("rows") or result.get("metrics") or result.get("approvals") or result.get("documents") or result.get("events") or []
+        count = len(records) if isinstance(records, list) else 0
+        evidence.append({
+            "tool": tool_name,
+            "reason": f"流程 {skill.name} 按定义步骤调用该只读工具",
+            "status": result.get("status", "unknown"),
+            "result_count": count,
+            "sample": records[:3] if isinstance(records, list) else [],
+            "summary": f"{tool_name} 返回 {count} 条记录",
+            "selection_mode": "skill_workflow",
+            "round": 1,
+        })
+
+    def rows(tool_name: str) -> list[dict[str, Any]]:
+        value = results.get(tool_name, {}).get("rows", [])
+        return value if isinstance(value, list) else []
+
+    data: dict[str, Any]
+    summary: str
+    status = "completed"
+    next_steps = list(skill.steps)
+    risk = skill.risk
+
+    if name == "incident_triage":
+        severity = (re.search(r"P[123]", text.upper()) or ["P1"])[0]
+        region = re.search(r"华东|华南|华北", text)
+        assets = {str(row.get("id")): row for row in rows("asset_lookup")}
+        alerts = [dict(row) for row in rows("alert_query") if str(row.get("severity", "")).upper() == severity]
+        if region:
+            alerts = [row for row in alerts if row.get("region") == region[0]]
+        for alert in alerts:
+            asset = assets.get(str(alert.get("asset_id", "")), {})
+            alert["asset_name"] = alert.get("asset_name") or asset.get("name")
+            alert["region"] = alert.get("region") or asset.get("region")
+            alert["asset_status"] = alert.get("asset_status") or asset.get("status")
+        data = {"alerts": alerts, "severity": severity, "region": region[0] if region else None}
+        summary = f"识别到 {len(alerts)} 条符合条件的未关闭 {severity} 告警。"
+    elif name == "metric_diagnosis":
+        trend = results.get("metric_catalog", {}).get("trend")
+        points = (trend or {}).get("points", [])
+        values = [float(point["value"]) for point in points if point.get("value") is not None]
+        if not trend or not values:
+            status, summary, data, next_steps = "not_found", "未找到该指标或没有可用样本。", [], []
+        else:
+            average, latest = sum(values) / len(values), values[-1]
+            deviation = round((latest - average) / average * 100, 1) if average else 0
+            direction = "高于" if deviation > 15 else "低于" if deviation < -15 else "接近"
+            summary = f"{trend['name']} 当前值 {latest}{trend['unit']}，{direction} 24 小时均值 {average:.2f}{trend['unit']}（偏差 {deviation}%）。"
+            data = {"metric": trend["name"], "latest": latest, "average": round(average, 2), "minimum": min(values), "maximum": max(values), "points": len(values)}
+    elif name == "ticket_handoff":
+        tickets, unassigned = rows("ticket_query"), rows("unassigned_tickets")
+        high_count = sum(row.get("priority") == "high" for row in tickets)
+        data = {"tickets": tickets, "unassigned": unassigned}
+        summary = f"当前有 {len(tickets)} 个未关闭工单，其中高优 {high_count} 个、未分配 {len(unassigned)} 个。"
+    elif name == "oncall_briefing":
+        alerts, tickets, work_orders = rows("alert_query"), rows("ticket_query"), rows("work_order_query")
+        approvals = [row for row in results.get("approval_queue", {}).get("approvals", []) if row.get("status") == "pending"]
+        p1_count = sum(row.get("severity") == "P1" for row in alerts)
+        data = {"alerts": alerts, "tickets": tickets, "work_orders": work_orders, "pending_approvals": approvals}
+        summary = f"值班简报：{len(alerts)} 条未关闭告警（P1 {p1_count} 条）、{len(tickets)} 个工单、{len(work_orders)} 个待执行作业、{len(approvals)} 张待审批单。"
+    elif name == "capacity_review":
+        assets = rows("asset_lookup")
+        trend = results.get("metric_catalog", {}).get("trend")
+        points = (trend or {}).get("points", [])
+        values = [float(point["value"]) for point in points if point.get("value") is not None]
+        latest = values[-1] if values else None
+        average = round(sum(values) / len(values), 2) if values else None
+        data = {"non_online_assets": assets, "metric": trend.get("name") if trend else None, "latest": latest, "average": average, "peak": max(values) if values else None, "recent_samples": rows("latest_metric_samples")}
+        summary = f"容量巡检发现 {len(assets)} 台非在线资产；{data['metric'] or '指标'}当前值 {latest if latest is not None else '—'}，24 小时均值 {average if average is not None else '—'}。"
+    else:
+        data = {tool_name: result for tool_name, result in results.items()}
+        summary = f"已完成运维流程 {skill.name}。"
+
     return {
-        "skill": name,
-        "status": "not_runnable",
-        "summary": "该 Skill 是规范型能力，请在智能查询或对应业务页面中使用。",
-        "data": [],
-        "next_steps": [],
-        "risk": "auto",
+        "skill": skill.name, "status": status, "summary": summary, "data": data,
+        "next_steps": next_steps, "risk": risk, "tools_used": [item["tool"] for item in evidence],
+        "tool_evidence": evidence,
     }
-
-
-def execute_readonly_with_params(sql: str, params: list[str]) -> list[dict[str, Any]]:
-    """The demo's parameterized skill query; kept isolated from generated SQL execution.
-
-    参数化只读查询辅助函数，专门用于 Skill 内部的固定 SQL 模板。
-
-    参数：
-    - sql：带 ? 占位符的固定 SQL；
-    - params：与占位符顺序对应的参数列表。
-
-    返回：
-    - list[dict]：查询结果，每行为字典。
-
-    安全边界：
-    - 与模型生成的 SQL 执行路径隔离，避免 Skill 查询被注入；
-    - 只做查询，不提供写操作入口；
-    - 使用 with 管理连接，自动关闭。
-    """
-    # 延迟导入 connect，避免模块级循环依赖。
-    from app.database import connect
-
-    with connect() as conn:
-        # 使用参数化执行，SQLite 会正确转义参数，防止注入。
-        return [dict(row) for row in conn.execute(sql, params).fetchall()]

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpsPilot · 安全可控 SQL Agent</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260923-tools-20-pagination" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260923-operations-flows" />
 </head>
 <body>
   <!-- 左侧导航只负责切换视图；每个业务动作仍通过后端 API 完成权限校验。 -->
@@ -23,7 +23,7 @@
         <button class="nav-item" data-page="policy"><span>⊹</span> 权限中心</button>
         <button class="nav-item" data-page="knowledge"><span>▤</span> 知识库</button>
         <button class="nav-item" data-page="tools"><span>⌘</span> 工具中心</button>
-        <button class="nav-item" data-page="skills"><span>◇</span> Skills 与 SOP</button>
+        <button class="nav-item" data-page="skills"><span>◇</span> 运维流程</button>
       </nav>
       <div class="sidebar-bottom">
         <div class="security-card"><span class="shield">◈</span><div><strong>安全执行已开启</strong><small>高危操作需人工审批</small></div></div>
@@ -109,11 +109,11 @@
       </section>
 
       <section id="skills-page" class="page">
-        <div class="section-intro"><span class="pill">REUSABLE EXPERIENCE</span><button class="page-help-button" data-guide="skills">使用说明 ?</button><h2>让 SOP 成为 Agent 的可复用能力。</h2><p>每个 Skill 都声明了业务场景、风险等级、推荐输入与结构化输出；可试运行的 Skill 全程只读并写入审计。</p></div>
+        <div class="section-intro"><span class="pill">REUSABLE OPERATIONS FLOWS</span><button class="page-help-button" data-guide="skills">使用说明 ?</button><h2>把多个只读工具组织成完整运维流程。</h2><p>Agent 可按触发语自动选择流程，也可手动运行。流程声明依赖工具、输入、步骤和输出；纯规范型 SOP 已归入知识库。</p></div>
         <article id="skill-detail" class="card skill-detail" hidden><button id="close-skill-detail" class="text-button">关闭</button><pre id="skill-content"></pre></article>
-        <div class="capability-toolbar"><label>筛选类型<select id="skill-filter"><option value="">全部 Skill</option><option value="runnable">可运行</option><option value="sop">规范型 SOP</option></select></label><label>风险等级<select id="skill-risk-filter"><option value="">全部风险</option><option value="auto">AUTO 只读</option><option value="manual">MANUAL 审查</option></select></label><span id="skill-count-note">—</span></div>
+        <div class="capability-toolbar"><label>筛选类型<select id="skill-filter"><option value="">全部流程</option><option value="runnable">可自动路由</option></select></label><label>风险等级<select id="skill-risk-filter"><option value="">全部风险</option><option value="auto">AUTO 只读</option><option value="manual">MANUAL 审查</option></select></label><span id="skill-count-note">—</span></div>
         <div id="skills-list" class="skill-grid"></div>
-        <article class="card capability-history"><div class="card-heading"><div><p class="section-label">SKILL RUN HISTORY</p><h3>最近运行记录</h3></div><button id="refresh-skill-history" class="text-button">刷新</button></div><div id="skill-history-list" class="capability-history-list"></div></article>
+        <article class="card capability-history"><div class="card-heading"><div><p class="section-label">OPERATIONS FLOW HISTORY</p><h3>最近流程运行记录</h3></div><button id="refresh-skill-history" class="text-button">刷新</button></div><div id="skill-history-list" class="capability-history-list"></div></article>
       </section>
 
       <!-- 知识库：文档版本、分块预览、RAG 检索和 Chroma 索引状态。 -->
@@ -213,6 +213,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260923-tools-20-pagination"></script>
+  <script src="/static/app.js?v=20260923-operations-flows"></script>
 </body>
 </html>
