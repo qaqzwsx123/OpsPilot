@@ -113,6 +113,8 @@ class QueryResult:
     failure_reasons: list[str] = field(default_factory=list)
     # 需要澄清时的追问及建议回答选项。
     clarification: dict[str, Any] | None = None
+    # SQL 结果整理统计；包含实际行列数、Token 估算、截断状态和原因。
+    result_processing: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)

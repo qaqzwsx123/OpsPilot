@@ -197,29 +197,41 @@ function guardItem(label, detail, state, verdict) {
 }
 
 function updateContextStat(result) {
-  const runner = (result.events || []).filter((event) => event.stage === "runner").at(-1);
-  const context = runner?.details?.context;
-  const reduction = context && Number.isFinite(Number(context.before)) && Number.isFinite(Number(context.after))
-    ? Math.max(0, Math.round((1 - Number(context.after) / Math.max(1, Number(context.before))) * 100)) : null;
-  const reset = (headline, note) => {
+  const processing = result.result_processing || (result.events || []).filter((event) => event.stage === "runner").at(-1)?.details?.result_processing;
+  const card = $("#context-stat");
+  const reset = (headline, note, state = "idle") => {
+    card.dataset.state = state;
     $("#context-reduction").textContent = headline; $("#context-before").textContent = "—"; $("#context-after").textContent = "—"; $("#context-percent").textContent = "—";
     $("#context-progress-bar").style.width = "0%"; $("#context-note").textContent = note;
   };
-  if (!context || result.status !== "completed") {
-    if (result.status === "running") reset("计算中", "等待只读 SQL 返回结果后再计算真实 Token 数。");
-    else if (result.status === "needs_clarification") reset("等待补充", "条件补充前尚未执行查询。");
-    else if (result.status === "approval_required") reset("未执行", "本次请求等待审批，未产生可压缩的 SQL 结果。");
-    else if (result.status === "answered_by_rag") reset("不适用", "本次由知识库回答，未产生 SQL 结果压缩统计。");
-    else if (result.status === "blocked") reset("未执行", "本次请求已被策略拦截，未产生可压缩的 SQL 结果。");
-    else reset("等待本次结果", "仅在只读 SQL 返回结果后计算，不使用固定展示值。");
+  if (!processing) {
+    if (result.status === "running") reset("处理中", "等待 SQL 执行并生成结果统计。", "running");
+    else if (result.status === "needs_clarification") reset("等待补充", "条件补充前尚未执行查询。", "idle");
+    else if (result.status === "approval_required") reset("未执行", "本次请求等待审批，尚无 SQL 结果。", "idle");
+    else if (result.status === "answered_by_rag") reset("不适用", "本次由知识库回答，没有结构化 SQL 结果。", "idle");
+    else if (result.status === "blocked") reset("未执行", "本次请求已被策略拦截，没有 SQL 结果。", "failed");
+    else if (result.status === "completed") reset("统计缺失", "服务未返回查询结果处理统计；请确认后端已重启到最新版本。", "failed");
+    else reset("等待本次结果", "查询完成后显示真实行数、字段数和 Token 估算。", "idle");
     return;
   }
-  $("#context-before").textContent = context.before + " tokens";
-  $("#context-after").textContent = context.after + " tokens";
-  $("#context-percent").textContent = reduction + "%";
-  $("#context-reduction").textContent = context.strategy === "not_needed" ? "无需压缩" : "Token ↓ " + reduction + "%";
+  const state = processing.status || "failed";
+  const beforeTokens = Number(processing.tokens_before_estimated);
+  const afterTokens = Number(processing.tokens_after_estimated);
+  const hasTokenStats = Number.isFinite(beforeTokens) && Number.isFinite(afterTokens);
+  const reduction = hasTokenStats && beforeTokens > 0 ? Math.max(0, Math.round((1 - afterTokens / beforeTokens) * 100)) : 0;
+  const rowsBefore = Number.isFinite(Number(processing.sql_rows)) ? Number(processing.sql_rows) : null;
+  const rowsAfter = Number.isFinite(Number(processing.display_rows)) ? Number(processing.display_rows) : null;
+  const columnsBefore = Number.isFinite(Number(processing.columns_before)) ? Number(processing.columns_before) : null;
+  const columnsAfter = Number.isFinite(Number(processing.columns_after)) ? Number(processing.columns_after) : null;
+  const label = { not_needed:"无需压缩", organized:"已整理", truncated:"已截断", failed:"处理失败" }[state] || "状态未知";
+  card.dataset.state = state;
+  $("#context-reduction").textContent = label;
+  $("#context-before").textContent = rowsBefore === null ? "—" : `${rowsBefore} 行 · ${columnsBefore ?? "—"} 列`;
+  $("#context-after").textContent = rowsAfter === null ? "—" : `${rowsAfter} 行 · ${columnsAfter ?? "—"} 列`;
+  $("#context-percent").textContent = hasTokenStats ? `≈${beforeTokens} → ≈${afterTokens}` : "—";
   $("#context-progress-bar").style.width = reduction + "%";
-  $("#context-note").textContent = context.strategy === "not_needed" ? "结果未超过 180 Token 预算，保留原文以避免无意义压缩。" : "完整结果已归档，本次向后续 Agent 仅传递压缩上下文。";
+  const estimateNote = hasTokenStats ? `Token 为字符规则估算（非模型分词器精确值），本次减少 ${reduction}%。` : "本次没有可用的 Token 估算。";
+  $("#context-note").textContent = [processing.reason || "未提供处理说明。", estimateNote].join(" ");
 }
 
 function updateGuard(result) {
@@ -298,7 +310,7 @@ function renderResult(result) {
 
 // 发起智能查询 SSE：阶段事件更新轨迹，最终 result 事件更新结果和护栏。
 async function runQuery(questionOverride = null) {
-  const question = (questionOverride || $("#question").value).trim(); if (!question) return toast("请先输入一个运维问题");
+  const question = (typeof questionOverride === "string" ? questionOverride : $("#question").value).trim(); if (!question) return toast("请先输入一个运维问题");
   const button = $("#run-query"); button.disabled = true; button.textContent = "分析中…";
   resetGuard();
   const badge = $("#trace-status"); badge.textContent = "Agent 执行中"; badge.className = "trace-status running";
@@ -950,7 +962,7 @@ document.querySelectorAll(".nav-item").forEach((button) => button.addEventListen
   const titles = { agent:"智能运维查询", chat:"Agent 聊天", monitoring:"监控中心", metrics:"指标中心", data:"数据浏览器", audit:"审计中心", approval:"审批中心", policy:"权限中心", knowledge:"知识库", tools:"工具中心", skills:"运维流程" }; $("#page-title").textContent = titles[button.dataset.page];
   if (button.dataset.page === "chat") loadChat(); if (button.dataset.page === "monitoring") loadMonitoring(); if (button.dataset.page === "metrics") loadMetricCatalog(); if (button.dataset.page === "data") loadDataExplorer(); if (button.dataset.page === "audit") loadAudit(); if (button.dataset.page === "approval") loadApprovals(); if (button.dataset.page === "policy") loadPolicies(); if (button.dataset.page === "skills") loadSkills(); if (button.dataset.page === "knowledge") { loadKnowledgeTags(); loadKnowledge(); } if (button.dataset.page === "tools") loadTools();
 }));
-$("#run-query").addEventListener("click", runQuery);
+$("#run-query").addEventListener("click", () => runQuery());
 document.querySelectorAll("[data-guide]").forEach((button) => button.addEventListener("click", () => openPageGuide(button.dataset.guide)));
 $("#tool-help-got-it").addEventListener("click", () => setToolHelpVisible(false));
 $("#tool-help-modal").addEventListener("click", (event) => { if (event.target === event.currentTarget) setToolHelpVisible(false); });

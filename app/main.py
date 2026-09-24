@@ -422,7 +422,7 @@ def health() -> dict[str, str]:
 @app.get("/", include_in_schema=False)
 def console() -> FileResponse:
     """返回前端首页 index.html。"""
-    return FileResponse(WEB_DIR / "index.html")
+    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
 
 # ---------- Agent 聊天：会话、历史消息和流式回复 ----------

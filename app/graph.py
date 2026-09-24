@@ -1,6 +1,8 @@
 # 启用延迟注解求值，允许在类型注解中引用尚未定义的名称。
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 import re
 import time
@@ -23,6 +25,65 @@ from app.tool_planner import ToolPlanner, ToolSelection, classify_query_intent, 
 # 事件处理器类型：接收一个 WorkflowEvent，无返回值。
 # 用于向前端实时推送工作流进度，例如通过 SSE。
 EventHandler = Callable[[WorkflowEvent], None]
+
+# SQL 结果传给浏览器的软预算。截断时只省略完整的尾部行，不改字段或单元格值。
+QUERY_RESULT_TOKEN_BUDGET = 1800
+QUERY_RESULT_SMALL_TOKEN_THRESHOLD = 180
+
+
+def _estimate_result_tokens(rows: list[dict[str, Any]]) -> int:
+    """用中英文字符规则估算结构化结果 Token 数；不冒充模型分词器的精确计数。"""
+    serialized = json.dumps(rows, ensure_ascii=False, separators=(",", ":"), default=str)
+    cjk_count = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", serialized))
+    other_count = len(serialized) - cjk_count
+    return max(1, cjk_count + math.ceil(other_count / 4))
+
+
+def _prepare_query_result(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """量度查询结果；结果过大时按预算保留完整行，返回真实的前后统计。"""
+    columns_before = list(dict.fromkeys(column for row in rows for column in row))
+    tokens_before = _estimate_result_tokens(rows)
+    display_rows: list[dict[str, Any]] = []
+    for row in rows:
+        candidate = display_rows + [row]
+        if display_rows and _estimate_result_tokens(candidate) > QUERY_RESULT_TOKEN_BUDGET:
+            break
+        display_rows.append(row)
+
+    columns_after = list(dict.fromkeys(column for row in display_rows for column in row))
+    tokens_after = _estimate_result_tokens(display_rows)
+    truncated = len(display_rows) < len(rows)
+    if truncated:
+        status = "truncated"
+        reason = (
+            f"SQL 实际返回 {len(rows)} 行；结果 Token 估算超过 {QUERY_RESULT_TOKEN_BUDGET} 预算，"
+            f"界面保留前 {len(display_rows)} 行。所有保留行的字段和值均完整，未裁剪单元格。"
+        )
+    elif tokens_before <= QUERY_RESULT_SMALL_TOKEN_THRESHOLD:
+        status = "not_needed"
+        reason = f"结果约 {tokens_before} Token，低于整理阈值；{len(rows)} 行、{len(columns_before)} 列完整保留。"
+    else:
+        status = "organized"
+        reason = (
+            f"结果约 {tokens_before} Token，在返回预算内；按结构化字段返回，"
+            f"{len(rows)} 行、{len(columns_before)} 列均完整保留，没有删减数据。"
+        )
+        if tokens_after > QUERY_RESULT_TOKEN_BUDGET:
+            reason += " 单行记录本身超过预算，因此仍完整保留该行。"
+
+    return display_rows, {
+        "status": status,
+        "stage": "查询结果整理",
+        "sql_rows": len(rows),
+        "display_rows": len(display_rows),
+        "columns_before": len(columns_before),
+        "columns_after": len(columns_after),
+        "tokens_before_estimated": tokens_before,
+        "tokens_after_estimated": tokens_after,
+        "token_budget": QUERY_RESULT_TOKEN_BUDGET,
+        "token_method": "字符规则估算，非模型分词器精确值",
+        "reason": reason,
+    }
 
 
 def _data_question_from_mixed_intent(question: str) -> str:
@@ -497,8 +558,8 @@ class SqlAgentGraph:
 
         当风险评估为 auto 时进入此节点。
         调用 execute_readonly 执行 SQL。如果执行失败，则走 RAG 兜底。
-        如果成功，完整结果保留给用户界面；只有后续模型请求才会按上下文预算压缩，
-        然后发送 runner 事件、写审计日志并构造 completed 结果。
+        成功后统计行列数和 Token 估算；超出返回预算时仅省略完整尾部行，
+        并在结果和 runner 事件中记录整理状态与原因。
         """
         sql = state["review"].normalized_sql or state["generated"].sql
         try:
@@ -508,13 +569,30 @@ class SqlAgentGraph:
             events = self._emit(state, "runner", "SQL 执行失败，转知识库兜底", error=type(exc).__name__)
             answer, sources = self.rag.answer(state["question"])
             write_audit(state["requester"], "sql_execution_failed", {"sql": sql, "error": type(exc).__name__})
-            result = QueryResult("answered_by_rag", answer, sql=sql, sources=sources, events=events)
+            processing = {
+                "status": "failed", "stage": "SQL 执行",
+                "reason": f"只读 SQL 执行失败（{type(exc).__name__}），未得到结构化结果；已转知识库兜底。",
+            }
+            result = QueryResult("answered_by_rag", answer, sql=sql, sources=sources, events=events, result_processing=processing)
             return {"events": events, "result": result}
-        # 执行成功；查询行是用户可见结果，不在此处做无效压缩或另存一份原始副本。
-        events = self._emit(state, "runner", "只读 SQL 执行完成", row_count=len(rows))
+        # 结果超过预算时仅省略尾部完整行，记录 SQL 原始行数与最终展示行数。
+        try:
+            display_rows, processing = _prepare_query_result(rows)
+        except Exception as exc:
+            display_rows = rows
+            processing = {
+                "status": "failed", "stage": "查询结果整理",
+                "sql_rows": len(rows), "display_rows": len(rows),
+                "reason": f"结果统计失败（{type(exc).__name__}）；查询结果未裁剪，仍完整返回。",
+            }
+        events = self._emit(
+            state, "runner", "只读 SQL 执行完成",
+            row_count=len(rows), display_row_count=len(display_rows),
+            result_processing=processing,
+        )
         write_audit(state["requester"], "sql_executed", {"question": state["question"], "sql": sql, "row_count": len(rows)})
         tool_summary = state.get("tool_summary", "")
-        answer = (tool_summary + "\n\n" if tool_summary else "") + f"查询完成，共返回 {len(rows)} 条记录。"
+        answer = (tool_summary + "\n\n" if tool_summary else "") + f"SQL 查询返回 {len(rows)} 条记录，界面展示 {len(display_rows)} 条。"
         sources = []
         for evidence in state.get("tool_context", []):
             if evidence.get("tool") != "knowledge_search":
@@ -527,7 +605,7 @@ class SqlAgentGraph:
                 source = f"{title} · 片段 {chunk_index + 1}" if isinstance(chunk_index, int) else title
                 if source not in sources:
                     sources.append(source)
-        result = QueryResult("completed", answer, sql=sql, rows=rows, sources=sources, events=events)
+        result = QueryResult("completed", answer, sql=sql, rows=display_rows, sources=sources, events=events, result_processing=processing)
         return {"events": events, "result": result}
 
     def _rag(self, state: WorkflowState) -> dict[str, Any]:

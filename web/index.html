@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>OpsPilot · 安全可控 SQL Agent</title>
-  <link rel="stylesheet" href="/static/styles.css?v=20260923-operations-flows" />
+  <link rel="stylesheet" href="/static/styles.css?v=20260924-query-result-processing" />
 </head>
 <body>
   <!-- 左侧导航只负责切换视图；每个业务动作仍通过后端 API 完成权限校验。 -->
@@ -90,7 +90,7 @@
             <div id="guard-verdict" class="guard-verdict waiting"><span class="guard-verdict-icon">◌</span><div><strong>尚未发起查询</strong><small>护栏会根据每一次实际工作流输出动态更新。</small></div></div>
             <div id="guard-list" class="policy-list"><div><span class="policy-check waiting">1</span><div><strong>元数据范围约束</strong><small>等待召回授权表</small></div><em>待判定</em></div><div><span class="policy-check waiting">2</span><div><strong>SQL 审查</strong><small>等待生成候选 SQL</small></div><em>待判定</em></div><div><span class="policy-check waiting">3</span><div><strong>风险分级</strong><small>等待判断执行方式</small></div><em>待判定</em></div><div><span class="policy-check waiting">4</span><div><strong>全链路审计</strong><small>完成后写入防篡改审计链</small></div><em>待判定</em></div></div>
             <div class="guard-actions"><button id="guard-open-audit" class="text-button">查看审计记录 →</button><button id="guard-open-approval" class="text-button" hidden>前往审批中心 →</button></div>
-            <div id="context-stat" class="context-stat"><div class="context-stat-heading"><span>Context Engineering</span><strong id="context-reduction">等待本次结果</strong></div><div class="context-values"><span>原始 <b id="context-before">—</b></span><span>压缩后 <b id="context-after">—</b></span><span>实际减少 <b id="context-percent">—</b></span></div><div class="context-progress"><i id="context-progress-bar"></i></div><small id="context-note">仅在只读 SQL 返回结果后计算，不使用固定展示值。</small></div>
+            <div id="context-stat" class="context-stat" data-state="idle"><div class="context-stat-heading"><span>查询结果处理</span><strong id="context-reduction">等待本次结果</strong></div><div class="context-values"><span>SQL 结果<b id="context-before">—</b></span><span>界面返回<b id="context-after">—</b></span><span>Token 估算（前 → 后）<b id="context-percent">—</b></span></div><div class="context-progress"><i id="context-progress-bar"></i></div><small id="context-note">查询完成后显示真实行数、字段数和 Token 估算。</small></div>
           </article>
         </section>
       </section>
@@ -216,6 +216,6 @@
     </section>
   </div>
   <div id="toast" class="toast"></div>
-  <script src="/static/app.js?v=20260923-operations-flows"></script>
+  <script src="/static/app.js?v=20260924-query-result-processing"></script>
 </body>
 </html>
