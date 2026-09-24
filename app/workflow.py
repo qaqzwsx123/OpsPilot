@@ -22,7 +22,8 @@
 from __future__ import annotations  # 延迟解析类型注解，提升兼容性并避免运行时求值
 
 from app.graph import EventHandler, SqlAgentGraph  # LangGraph 图对象和事件回调类型
-from app.models import QueryResult  # 统一的查询结果模型
+from app.models import QueryResult, WorkflowEvent  # 统一结果和可回放轨迹
+from app.query_clarification import clarification_for_query  # 执行前确认缺失的查询条件
 from app.providers import ResilientSqlWriter  # 可恢复的 SQL Writer：模型优先，规则兜底
 from app.rag import KnowledgeRag  # 知识检索：优先 Chroma，失败时回退本地轻量检索
 from app.sql_agent import (
@@ -93,7 +94,19 @@ class SqlAgentWorkflow:
         on_event: EventHandler | None = None,
         use_model_tools: bool = False,
     ) -> QueryResult: # 返回类型标注，表示这个方法最终返回一个 QueryResult 对象。包含状态、SQL、结果行、证据等。
-      # 构造了一个字典 state，它是传给 LangGraph 图的初始状态。
+        clarification = clarification_for_query(question)
+        if clarification:
+            event = WorkflowEvent(
+                "clarification", "查询条件不完整，等待用户补充",
+                {"domain": clarification["domain"], "prompt": clarification["prompt"]},
+            )
+            if on_event:
+                on_event(event)
+            return QueryResult(
+                "needs_clarification", clarification["prompt"],
+                events=[event], clarification=clarification,
+            )
+        # 构造了一个字典 state，它是传给 LangGraph 图的初始状态。
         state = {
             "question": question,
             "requester": requester,

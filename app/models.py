@@ -105,6 +105,14 @@ class QueryResult:
     approval_id: str | None = None
     # 从 Context Memory 到 Runner 的完整可回放轨迹。
     events: list[WorkflowEvent] = field(default_factory=list)
+    # SQL 或工具本次实际访问的数据对象。
+    data_sources: list[str] = field(default_factory=list)
+    # 便于前端直接展示的实际工作流执行步骤。
+    execution_steps: list[dict[str, Any]] = field(default_factory=list)
+    # 对用户可读的审查、工具或执行失败原因。
+    failure_reasons: list[str] = field(default_factory=list)
+    # 需要澄清时的追问及建议回答选项。
+    clarification: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)

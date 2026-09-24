@@ -76,10 +76,12 @@
             <div id="result-empty" class="empty-state"><div class="empty-icon">⌘</div><strong>等待一次安全查询</strong><p>查询结果、生成 SQL 与知识库来源将显示在这里。</p></div>
             <div id="result-content" hidden>
               <div id="result-status" class="result-status"></div>
+              <section id="query-clarification" class="query-clarification" hidden><strong>需要补充查询条件</strong><p id="query-clarification-prompt"></p><div id="query-clarification-examples" class="query-clarification-examples"></div><label>补充条件<textarea id="query-clarification-answer" rows="2" placeholder="输入区域、状态、级别或时间范围"></textarea></label><button id="continue-clarified-query" class="secondary-button">补充条件并继续查询</button></section>
               <pre id="sql-code" class="sql-code"></pre>
               <div id="table-wrap" class="table-wrap"></div>
               <div id="rag-answer" class="rag-answer" hidden></div>
               <div id="sources" class="sources" hidden></div>
+              <section id="query-provenance" class="query-provenance" hidden></section>
               <div id="approval-box" class="approval-box" hidden><div><span>⚠</span><div><strong>检测到需要审批的操作</strong><p id="approval-description"></p></div></div><button id="approve-button" class="warning-button">批准并进入安全执行</button></div>
             </div>
           </article>

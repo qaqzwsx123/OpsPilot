@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import time
 from typing import Any, Callable, Literal, TypedDict
 
@@ -546,6 +547,42 @@ class SqlAgentGraph:
         """
         result = state["result"]
         save_memory(state["requester"], "assistant", result.answer)
+        result.execution_steps = [
+            {"stage": event.stage, "message": event.message, "details": event.details}
+            for event in result.events
+        ]
+        data_sources: list[str] = []
+        for event in result.events:
+            if event.stage == "tool" and event.details.get("tool"):
+                label = f"只读工具：{event.details['tool']}"
+                if label not in data_sources:
+                    data_sources.append(label)
+        executed_sql = result.sql or ""
+        sql_tables = list(dict.fromkeys(
+            match.group(1) for match in re.finditer(r"\b(?:FROM|JOIN)\s+[\"`]?([A-Za-z_][A-Za-z0-9_]*)", executed_sql, re.IGNORECASE)
+        ))
+        runner_failed = any(event.stage == "runner" and event.details.get("error") for event in result.events)
+        if result.status == "completed" or runner_failed:
+            prefix = "SQLite 业务表：" if result.status == "completed" else "尝试查询 SQLite 业务表："
+            data_sources.extend(prefix + table for table in sql_tables)
+        for source in result.sources:
+            label = f"知识库：{source}"
+            if label not in data_sources:
+                data_sources.append(label)
+        result.data_sources = data_sources
+
+        failures: list[str] = []
+        for event in result.events:
+            details = event.details
+            if details.get("status") in {"failed", "blocked", "not_found"}:
+                failures.append(f"工具 {details.get('tool', '未知工具')}：{details.get('summary') or event.message}")
+            if details.get("error"):
+                failures.append(f"{event.message}（{details['error']}）")
+            if result.status in {"blocked", "failed"} and isinstance(details.get("issues"), list):
+                failures.extend(str(issue) for issue in details["issues"])
+        if result.status == "blocked" and not failures:
+            failures.append(result.answer)
+        result.failure_reasons = list(dict.fromkeys(failures))
         return {"result": result, "events": result.events}
 
     # 以下为条件边的路由函数，根据 state 中的 route 或 review 结果决定下一步节点。
